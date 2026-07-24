@@ -1,0 +1,434 @@
+# Control protocol reference
+
+This document describes the implemented `a4s.io/v1alpha1` control vocabulary
+and the current node envelope. It is a behavioral reference, not a generated
+schema. The Go types in `control/types.go` and `node/envelope.go` remain the
+executable source of truth.
+
+## Design rules
+
+- Desired outcomes are represented as goals, not Kubernetes-style object
+  graphs.
+- Observed state is revisioned and supplied to agents as a world snapshot.
+- Agents return proposals but never execute actions.
+- The deterministic kernel authorizes the entire ordered proposal before its
+  first mutation.
+- Node mutation uses short-lived, signed, typed action envelopes.
+- Completion requires evidence; agent reasoning is never evidence.
+- Every mutating action must be safe to repeat with the same semantic identity.
+
+## Scenario document
+
+The current CLI accepts a `Scenario` JSON document:
+
+```json
+{
+  "goal": {},
+  "world": {}
+}
+```
+
+The decoder rejects unknown fields. The scenario wrapper is a simulation and
+validation input, not the planned external server API. A future server will
+ingest goals, observations, and approvals as separately authenticated events.
+
+## Goal
+
+```json
+{
+  "api_version": "a4s.io/v1alpha1",
+  "id": "web-public",
+  "objective": "Keep one healthy web replica publicly reachable.",
+  "workload": {
+    "name": "web",
+    "image": "registry.example/web@sha256:<64 lowercase hex characters>",
+    "replicas": 1,
+    "port": 8080,
+    "resources": {
+      "cpu_millis": 100,
+      "memory_mb": 128
+    }
+  },
+  "route": {
+    "host": "web.example.com",
+    "port": 443,
+    "exposure": "public"
+  },
+  "constraints": {
+    "required_labels": {
+      "pool": "edge"
+    },
+    "allowed_nodes": ["edge-1"]
+  }
+}
+```
+
+### Goal fields
+
+| Field | Required | Current rule |
+|---|---:|---|
+| `api_version` | yes | Exactly `a4s.io/v1alpha1` |
+| `id` | yes | Lowercase DNS-style label, maximum 63 characters |
+| `objective` | yes | Non-whitespace human-readable outcome |
+| `workload` | yes | One stateless OCI service specification |
+| `route` | no | One `tailnet` or `public` route |
+| `constraints` | yes in Go shape | May contain labels or allowed-node IDs |
+
+### Workload fields
+
+| Field | Rule |
+|---|---|
+| `name` | Lowercase DNS-style label |
+| `image` | Immutable reference ending in an exact lowercase SHA-256 digest |
+| `replicas` | At least 1 |
+| `port` | 1 through 65535 |
+| `resources.cpu_millis` | Positive integer |
+| `resources.memory_mb` | Positive integer |
+| `privileged` | Must be false in v1alpha1 |
+| `stateful` | Must be false until volume ownership exists |
+
+`objective` is preserved in the accepted-goal event and can guide an agent, but
+hard authorization derives from structured fields and policy.
+
+## World
+
+A `World` is a materialized snapshot of accepted observations and approvals:
+
+| Field | Meaning |
+|---|---|
+| `revision` | Monotonic version against which proposals are bound |
+| `nodes` | Node identity, labels, total and used resources, image presence, health |
+| `allocations` | Materialized workload replicas and their phases |
+| `routes` | Materialized service routes |
+| `approvals` | Separately authenticated operator decisions |
+
+The simulation accepts the starting world from JSON. In the intended server,
+agents never submit a replacement world. Projections rebuild it from durable
+events and expiring observations.
+
+### Approval
+
+An approval contains `id`, `goal_id`, `scope`, `issued_by`, and `granted`.
+Public exposure currently requires a granted approval with scope
+`public-route` for the exact goal.
+
+The fact that simulation JSON contains both the goal and approval does not mean
+a caller may self-approve in production. The future API must authenticate and
+persist approvals separately from goals and proposals.
+
+## Agent and proposal
+
+An agent exposes an authenticated descriptor:
+
+```text
+id + role + declared capabilities
+```
+
+The kernel does not trust the descriptor's declared capability list as the
+grant. It indexes its own policy grants by authenticated agent ID.
+
+A proposal contains:
+
+| Field | Meaning |
+|---|---|
+| `id` | Proposal identity |
+| `agent_id` | Must equal the authenticated descriptor ID |
+| `goal_id` | Must equal the evaluated goal |
+| `based_on_revision` | Must equal the current world revision |
+| `reasoning` | Audit explanation; never authorization or evidence |
+| `actions` | Ordered, typed mutation plan |
+| `expected_evidence` | Checks required after actions execute |
+
+The default kernel allows at most eight actions per proposal. Action IDs must
+be nonempty and unique within the proposal. Every `depends_on` ID must refer to
+an earlier action that has already been simulated.
+
+## Implemented actions
+
+### `pull_image`
+
+Required semantic fields: `id`, `kind`, `target`, `node`, and `image`.
+
+Kernel rules:
+
+- Node exists and is healthy.
+- Image exactly matches the goal's pinned image.
+
+Node behavior:
+
+- Pull and unpack through containerd.
+- Compare the pulled target digest with the requested digest.
+- Return `image.present` evidence.
+
+### `create_allocation`
+
+Required semantic fields: `id`, `kind`, `target`, `workload`, `node`, `image`,
+`replica`, and `resources`.
+
+Kernel rules:
+
+- Allocation does not already exist in the simulated world.
+- Node is healthy and satisfies allowed-node and label constraints.
+- Image is present on that node and equals the goal image.
+- Workload and resource request equal the goal.
+- Node has remaining capacity.
+- Replica index is within the goal's desired replica count.
+
+Node behavior:
+
+- Accept a matching existing a4s-managed container as an idempotent repeat.
+- Reject an existing container that does not have the requested ownership,
+  workload, and image labels.
+- Create an OCI container and snapshot with hardened defaults.
+- Return `allocation.created` evidence.
+
+### `start_allocation`
+
+Required semantic fields: `id`, `kind`, `target`, and `workload`.
+
+Kernel rules:
+
+- Allocation exists in `created` phase.
+- Workload equals both the goal and allocation workload.
+- Proposal declares an `allocation_ready` check for the target.
+
+Node behavior:
+
+- Return the existing running task as an idempotent repeat.
+- Otherwise create and start a containerd task.
+- Return `allocation.running`, which is not readiness evidence.
+
+No executor returns readiness. The memory executor reports `allocation.running`
+exactly as the real node does; an independent prober supplies
+`allocation.ready`. See "Evidence and projection" below.
+
+### `publish_route`
+
+Required semantic fields: `id`, `kind`, `target`, `workload`, `port`, and
+`exposure`.
+
+Kernel rules:
+
+- Goal requests the exact route.
+- Workload equals the goal workload.
+- Every desired allocation is ready.
+- Public exposure has a granted `public-route` approval.
+- Proposal declares a `route_reachable` check for the host.
+
+Only the memory executor implements this action. There is no node gateway
+backend yet.
+
+## Current capability grants
+
+| Agent ID | Granted actions |
+|---|---|
+| `placement-agent` | `pull_image`, `create_allocation`, `start_allocation` |
+| `network-agent` | `publish_route` |
+
+An agent cannot acquire another action by returning it in its descriptor or
+proposal.
+
+## Reconciliation sequence
+
+```text
+goal accepted
+    |
+    v
+fresh world snapshot -> agent proposes against revision R
+    |
+    v
+kernel authenticates actor and simulates every action
+    |
+    +---- deny ----> denial event -> next agent or blocked goal
+    |
+  approve
+    |
+    v
+persist action.dispatched -> execute -> project evidence
+    |
+    v
+persist action.completed
+    |
+    v
+independent probes observe -> project probe evidence
+    |
+    v
+verify declared evidence against projected world
+    |
+    +---- fail ----> goal.blocked
+    |
+  next revision / next agent / goal.achieved
+```
+
+Placement intentionally proposes no more than one missing replica per world
+revision. That keeps each mutation batch small and forces re-observation before
+the next replica.
+
+## Evidence and projection
+
+Evidence is the only input that advances the world. An action never mutates the
+projection directly: an executor performs a host mutation and reports what it
+observed, and `control.Project` independently interprets that evidence. A
+faulty or adversarial executor can therefore only report evidence, never assert
+world state.
+
+`Project` is pure and idempotent. It never mutates its input world, and applying
+the same evidence twice yields the same result. That property is what makes
+action replay safe after a node crashes between host mutation and recording the
+result: the replayed action produces the same evidence, which projects to the
+same state instead of double-counting capacity.
+
+Implemented evidence kinds:
+
+| Kind | Produced by | Effect on the world |
+|---|---|---|
+| `image.present` | Executor | Marks the image present on the observed node |
+| `allocation.created` | Executor | Creates the allocation and charges node capacity once |
+| `allocation.running` | Executor | Moves the allocation to `running`; never sets readiness |
+| `allocation.ready` | Prober | Sets readiness on an allocation already observed running |
+| `route.reachable` | Prober or gateway | Records the route |
+
+The separation between `allocation.running` and `allocation.ready` is a
+security boundary, not a naming detail. The component that started a container
+is not permitted to declare that container healthy.
+
+`OptimisticProber` currently supplies readiness so the spike can converge. It is
+a deliberate stand-in and must be replaced by process, TCP, and HTTP probes
+before any real deployment. It is the single remaining place where readiness is
+assumed rather than observed.
+
+## Events
+
+Every event contains `sequence`, UTC `at`, `type`, `actor`, `goal_id`, current
+`world_revision`, and `message`. Proposal, action, and evidence fields appear
+when applicable.
+
+Implemented event types:
+
+| Event | Meaning |
+|---|---|
+| `goal.accepted` | Evaluation began for an accepted goal |
+| `proposal.created` | An agent produced a nonempty proposal |
+| `proposal.approved` | The kernel authorized the whole proposal |
+| `proposal.denied` | Agent error or deterministic authorization denial |
+| `action.dispatched` | Mutation intent was durably recorded before execution |
+| `action.completed` | Executor returned evidence successfully |
+| `observation.recorded` | A prober produced evidence independently of the executor |
+| `goal.achieved` | Current world satisfies the goal query |
+| `goal.blocked` | Execution, evidence, progress, or round budget failed |
+
+The file event store wraps each event in a record containing `previous_hash`
+and `hash`. The first record has no prior hash.
+
+## Signed node envelope
+
+The current envelope version is integer `1` and is independent of the goal API
+version.
+
+```json
+{
+  "envelope": {
+    "version": 1,
+    "id": "envelope-123",
+    "node_id": "edge-1",
+    "goal_id": "web-public",
+    "proposal_id": "placement-agent-r7",
+    "world_revision": 7,
+    "lease_id": "lease-123",
+    "idempotency_key": "web-0-start-v1",
+    "issued_at": "2026-07-22T12:00:00Z",
+    "expires_at": "2026-07-22T12:00:30Z",
+    "action": {}
+  },
+  "key_id": "control-1",
+  "signature": "<unpadded base64>"
+}
+```
+
+The signature is Ed25519 over the exact bytes of the `envelope` member as
+transmitted, encoded with unpadded standard base64.
+
+The verifier authenticates the received bytes and only then decodes them. It
+never re-serializes a decoded struct to reconstruct the signed payload, because
+that would authenticate the verifier's own encoding rather than the sender's:
+any payload that decoded to an equivalent struct would pass, and the signature
+would silently depend on encoder stability across Go versions, field additions,
+and languages. Verifying the received bytes removes that dependency, so a
+cross-language signer only needs to reproduce bytes, not Go's encoder.
+
+Decoding rejects unknown fields and trailing content, so a node never executes
+an envelope it did not fully understand.
+
+Envelope validation requires:
+
+- Version 1.
+- Nonempty envelope, node, goal, proposal, lease, and idempotency identities.
+- Expiry after issue time and no more than five minutes later.
+- Action node either empty or equal to envelope node.
+- Runtime clock no earlier than thirty seconds before issue time.
+- Runtime clock strictly before expiry.
+- Known local key ID and valid signature.
+
+`lease_id` and `world_revision` are signed but not yet checked against local
+lease state. They reserve the protocol fields for the next server/node slice.
+
+## Dispatch response
+
+The node emits exactly one response per received envelope. A rejected or failed
+action does not terminate the node.
+
+Success:
+
+```json
+{
+  "envelope_id": "envelope-123",
+  "result": {
+    "envelope_digest": "<hex sha256 of the signed envelope bytes>",
+    "evidence": {
+      "kind": "allocation.running",
+      "target": "web-0",
+      "observed": {
+        "pid": "1234",
+        "already_running": "false"
+      }
+    }
+  }
+}
+```
+
+Failure:
+
+```json
+{
+  "envelope_id": "envelope-123",
+  "error": "action envelope expired"
+}
+```
+
+`envelope_id` on a failure response is read from unauthenticated input and is
+reported only to correlate the failure. It must not be treated as trustworthy.
+
+The only condition that still terminates the reader is an undecodable frame,
+because a malformed frame desynchronizes the stream and the reader cannot
+determine where the next envelope begins.
+
+Repeating the same idempotency key and envelope returns the stored result
+without invoking the runtime. Reusing the key with a different envelope digest
+is rejected.
+
+## Versioning policy
+
+Until a stable release:
+
+- Additive JSON changes require explicit defaults and tests.
+- Removing, renaming, or changing field meaning requires a new API or envelope
+  version.
+- New actions require kernel policy, simulation, real executor behavior,
+  evidence semantics, capability grants, security review, and tests together.
+- Unknown fields remain rejected to prevent silent policy bypass.
+- Do not infer authority from a newer field when an older node cannot validate
+  it.
+
+No compatibility guarantee exists for v1alpha1 yet. Record deliberate breaking
+changes in `CHANGELOG.md` and an architectural decision record when they alter
+the trust model.
