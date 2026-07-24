@@ -7,6 +7,15 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Service discovery: a directory mapping workload names to the endpoints
+  observed serving them. Derived from verified evidence only, so an allocation
+  appears solely when it has an address and unexpired readiness.
+- Caddy gateway backend applying whole route snapshots through the admin API,
+  with native ACME for public routes and internal issuance for tailnet-only
+  ones. This replaces ingress and cert-manager with one component.
+- Route snapshots resolving each route to its serving endpoints, so the gateway
+  proxies to real allocation addresses.
+
 - Per-allocation networking: an `attach_network` action, a CNI backend invoking
   the standard bridge/host-local plugins, node-local IPAM, and containers that
   join the namespace CNI created for them. Each allocation now has its own
@@ -85,6 +94,10 @@ release or compatibility guarantee yet.
 - The node reports rejected and failed envelopes per message instead of exiting.
 
 ### Fixed
+
+- A route with no healthy endpoint is now answered with 503 rather than being
+  dropped from the gateway. Dropping it let the hostname fall through to an
+  unrelated site, which is worse than an honest error.
 
 - Replicas of one workload could not share a node: containers ran on the host
   network and contended for the same port. Every allocation now has its own
