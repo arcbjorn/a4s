@@ -19,6 +19,8 @@ func DefaultPolicy() Policy {
 				ActionCreateAllocation: true,
 				ActionAttachNetwork:    true,
 				ActionMountSecret:      true,
+				ActionCreateVolume:     true,
+				ActionAttachVolume:     true,
 				ActionStartAllocation:  true,
 			},
 			"network-agent": {
@@ -30,6 +32,9 @@ func DefaultPolicy() Policy {
 			"rollout-agent": {
 				ActionStopAllocation:   true,
 				ActionDeleteAllocation: true,
+				// Releasing a volume is part of retiring an allocation, but the
+				// rollout agent may not create or snapshot one.
+				ActionDetachVolume: true,
 			},
 		},
 	}
@@ -153,6 +158,79 @@ func validateAction(goal Goal, world World, action Action) error {
 			return fmt.Errorf("replica index is outside goal")
 		}
 
+	case ActionCreateVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("create volume requires a volume reference")
+		}
+		if !workloadDeclaresVolume(goal, action.Volume.Name) {
+			return fmt.Errorf("volume %q is not declared by the goal", action.Volume.Name)
+		}
+		node, ok := world.Nodes[action.Node]
+		if !ok || !node.Healthy {
+			return fmt.Errorf("node %q is missing or unhealthy", action.Node)
+		}
+		if existing, exists := world.Volumes[action.Volume.Name]; exists && existing.Node != action.Node {
+			// Creating the same volume on a second node would silently produce
+			// two divergent copies of what the operator thinks is one volume.
+			return fmt.Errorf("volume %q already exists on node %q", action.Volume.Name, existing.Node)
+		}
+
+	case ActionAttachVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("attach volume requires a volume reference")
+		}
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		if allocation.Phase != AllocationCreated {
+			return fmt.Errorf("volumes must be attached before allocation %q starts", action.Target)
+		}
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		if !workloadDeclaresVolume(goal, action.Volume.Name) {
+			return fmt.Errorf("volume %q is not declared by the goal", action.Volume.Name)
+		}
+		// The single-writer rule. Attaching a volume that another allocation
+		// still owns is how two processes end up writing one filesystem.
+		if volume.Owner != "" && volume.Owner != action.Target {
+			return fmt.Errorf("volume %q is owned by allocation %q", action.Volume.Name, volume.Owner)
+		}
+		// Local storage stays local. Attaching across nodes would mean the data
+		// is not where the workload is.
+		if volume.Node != allocation.Node {
+			return fmt.Errorf("volume %q lives on node %q but allocation %q is on %q",
+				action.Volume.Name, volume.Node, action.Target, allocation.Node)
+		}
+
+	case ActionDetachVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("detach volume requires a volume reference")
+		}
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		if volume.Owner != "" && volume.Owner != action.Target {
+			return fmt.Errorf("allocation %q does not own volume %q", action.Target, action.Volume.Name)
+		}
+		// Detaching from a running writer would pull storage out from under a
+		// live process. Stopping first is what makes the release safe.
+		if allocation, ok := world.Allocations[action.Target]; ok && allocation.Phase == AllocationRunning {
+			return fmt.Errorf("allocation %q must stop before releasing volume %q",
+				action.Target, action.Volume.Name)
+		}
+
+	case ActionSnapshotVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("snapshot volume requires a volume reference")
+		}
+		if _, ok := world.Volumes[action.Volume.Name]; !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+
 	case ActionMountSecret:
 		allocation, ok := world.Allocations[action.Target]
 		if !ok {
@@ -190,6 +268,25 @@ func validateAction(goal Goal, world World, action Action) error {
 		}
 		if action.Workload != goal.Workload.Name || allocation.Workload != action.Workload {
 			return fmt.Errorf("workload differs from goal")
+		}
+		// Every declared volume must be attached at the current generation. A
+		// stale generation means this allocation was fenced while it was
+		// unreachable and must not resume writing.
+		for _, ref := range goal.Workload.Volumes {
+			volume, ok := world.Volumes[ref.Name]
+			if !ok {
+				return fmt.Errorf("allocation %q needs volume %q, which does not exist", action.Target, ref.Name)
+			}
+			attached, held := allocation.Volumes[ref.Name]
+			if !held {
+				return fmt.Errorf("allocation %q is missing volume %q", action.Target, ref.Name)
+			}
+			if attached != volume.Generation {
+				return fmt.Errorf("allocation %q holds a fenced generation of volume %q", action.Target, ref.Name)
+			}
+			if volume.Owner != action.Target {
+				return fmt.Errorf("volume %q is no longer owned by allocation %q", ref.Name, action.Target)
+			}
 		}
 		// Every declared secret must be mounted before the workload starts, or
 		// it would run without credentials it was promised.
@@ -241,8 +338,16 @@ func validateAction(goal Goal, world World, action Action) error {
 		if action.Workload != allocation.Workload {
 			return fmt.Errorf("workload differs from allocation")
 		}
-		if allocation.Stateful {
-			return fmt.Errorf("stateful allocation %q requires the future volume ownership protocol", action.Target)
+		// Deleting an allocation that still owns a volume would orphan the
+		// storage, leaving data no workload can reach and no operator expects.
+		if len(allocation.Volumes) > 0 {
+			return fmt.Errorf("allocation %q must release its volumes before deletion", action.Target)
+		}
+		// Destroying durable data is the one action that cannot be undone by
+		// reconciliation, so it requires a separately authenticated approval
+		// rather than an agent's judgement.
+		if allocation.Stateful && !hasApproval(world, goal.ID, "destroy-stateful") {
+			return fmt.Errorf("deleting stateful allocation %q requires destroy-stateful approval", action.Target)
 		}
 
 	case ActionPublishRoute:
@@ -296,6 +401,7 @@ func cloneWorld(world World) World {
 		Nodes:       make(map[string]*Node, len(world.Nodes)),
 		Allocations: make(map[string]*Allocation, len(world.Allocations)),
 		Routes:      make(map[string]*Route, len(world.Routes)),
+		Volumes:     make(map[string]*Volume, len(world.Volumes)),
 		Approvals:   make(map[string]*Approval, len(world.Approvals)),
 		KnownGood:   make(map[string]string, len(world.KnownGood)),
 	}
@@ -316,6 +422,12 @@ func cloneWorld(world World) World {
 	}
 	for id, allocation := range world.Allocations {
 		copyAllocation := *allocation
+		if allocation.Volumes != nil {
+			copyAllocation.Volumes = make(map[string]uint64, len(allocation.Volumes))
+			for name, generation := range allocation.Volumes {
+				copyAllocation.Volumes[name] = generation
+			}
+		}
 		if allocation.Secrets != nil {
 			copyAllocation.Secrets = make(map[string]string, len(allocation.Secrets))
 			for name, version := range allocation.Secrets {
@@ -327,6 +439,10 @@ func cloneWorld(world World) World {
 	for host, route := range world.Routes {
 		copyRoute := *route
 		clone.Routes[host] = &copyRoute
+	}
+	for name, volume := range world.Volumes {
+		copyVolume := *volume
+		clone.Volumes[name] = &copyVolume
 	}
 	for id, approval := range world.Approvals {
 		copyApproval := *approval
@@ -381,6 +497,16 @@ func matchingReadyAllocations(goal Goal, world World) int {
 func goalDeclaresSecret(goal Goal, ref SecretRef) bool {
 	for _, declared := range goal.Workload.Secrets {
 		if declared == ref {
+			return true
+		}
+	}
+	return false
+}
+
+// workloadDeclaresVolume reports whether the goal authorized this volume.
+func workloadDeclaresVolume(goal Goal, name string) bool {
+	for _, ref := range goal.Workload.Volumes {
+		if ref.Name == name {
 			return true
 		}
 	}
