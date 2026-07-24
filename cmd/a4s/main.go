@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/arcbjorn/a4s/control"
 	"github.com/arcbjorn/a4s/eventlog"
 	a4snode "github.com/arcbjorn/a4s/node"
+	"github.com/arcbjorn/a4s/obs"
 	"github.com/arcbjorn/a4s/reason"
 	"github.com/arcbjorn/a4s/server"
 )
@@ -323,11 +325,19 @@ func runServer(args []string) error {
 	keyID := flags.String("key-id", "control-1", "identifier for this server signing key")
 	signingKeyPath := flags.String("signing-key", "", "path to the base64 Ed25519 private signing key")
 	nodeKeyDir := flags.String("node-keys", "", "directory of <node-id>.pub enrolled node keys")
+	logLevel := flags.String("log-level", "info", "log verbosity: debug, info, warn, or error")
+	logFormat := flags.String("log-format", "text", "log format: text or json")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *eventLog == "" {
 		return fmt.Errorf("event-log is required")
+	}
+	logger, err := obs.New(obs.Config{
+		Level: *logLevel, Format: obs.Format(*logFormat), Component: "server",
+	})
+	if err != nil {
+		return err
 	}
 
 	base := control.World{}
@@ -341,10 +351,10 @@ func runServer(args []string) error {
 		goal = &scenario.Goal
 	}
 
-	instance, err := server.Open(server.Config{EventLog: *eventLog, Base: base},
+	instance, openErr := server.Open(server.Config{EventLog: *eventLog, Base: base},
 		control.RolloutAgent{}, control.PlacementAgent{}, control.NetworkAgent{})
-	if err != nil {
-		return err
+	if openErr != nil {
+		return openErr
 	}
 	defer instance.Close()
 
@@ -354,11 +364,20 @@ func runServer(args []string) error {
 		}
 	}
 	status := instance.Status()
-	fmt.Printf("recovered revision %d from %d events: %d nodes, %d allocations, %d routes, %d goals\n",
-		status.Revision, status.Events, status.Nodes, status.Allocations, status.Routes, status.Goals)
 	if *statusOnly {
+		// --status is an operator query, so its answer goes to stdout where it
+		// can be read or piped, not into the log stream.
+		fmt.Printf("recovered revision %d from %d events: %d nodes, %d allocations, %d routes, %d goals\n",
+			status.Revision, status.Events, status.Nodes, status.Allocations, status.Routes, status.Goals)
 		return nil
 	}
+	logger.Info("recovered world from event log",
+		slog.Uint64("revision", status.Revision),
+		slog.Uint64("events", status.Events),
+		slog.Int("nodes", status.Nodes),
+		slog.Int("allocations", status.Allocations),
+		slog.Int("routes", status.Routes),
+		slog.Int("goals", status.Goals))
 	if *listen == "" {
 		return fmt.Errorf("listen is required to serve; use --status to inspect recovered state")
 	}
@@ -378,7 +397,11 @@ func runServer(args []string) error {
 	defer registry.CloseAll()
 	listener, err := a4snode.Listen("tcp", *listen, registry, a4snode.ListenerConfig{
 		NodeKeys: nodeKeys, ServerKeyID: *keyID,
-		OnError: func(err error) { fmt.Fprintln(os.Stderr, "a4s: enrollment:", err) },
+		OnError: func(err error) {
+			// A rejected enrollment is a security-relevant event, not noise:
+			// it is what an unenrolled or misconfigured peer looks like.
+			logger.Warn("enrollment rejected", slog.Any("error", err))
+		},
 	})
 	if err != nil {
 		return err
@@ -389,26 +412,28 @@ func runServer(args []string) error {
 	defer cancel()
 	go func() {
 		if err := listener.Serve(ctx); err != nil {
-			fmt.Fprintln(os.Stderr, "a4s: listener:", err)
+			logger.Error("listener stopped", slog.Any("error", err))
 		}
 	}()
-	fmt.Printf("accepting enrolled nodes on %s as key %q\n", listener.Addr(), *keyID)
+	logger.Info("accepting enrolled nodes",
+		slog.String("addr", listener.Addr().String()),
+		slog.String("key_id", *keyID))
 
 	executor := a4snode.NewRegistryExecutor(registry, *keyID, signingKey)
-	return reconcileLoop(ctx, instance, executor, registry)
+	return reconcileLoop(ctx, logger, instance, executor, registry)
 }
 
 // reconcileLoop drives accepted goals whenever nodes are connected. A goal that
 // cannot converge is reported and retried rather than terminating the server,
 // because the cause is usually a node that has not connected yet.
-func reconcileLoop(ctx context.Context, instance *server.Server,
+func reconcileLoop(ctx context.Context, logger *slog.Logger, instance *server.Server,
 	executor *a4snode.RegistryExecutor, registry *a4snode.Registry) error {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("shutting down")
+			logger.Info("shutting down")
 			return nil
 		case <-ticker.C:
 			if len(registry.Nodes()) == 0 {
@@ -416,12 +441,16 @@ func reconcileLoop(ctx context.Context, instance *server.Server,
 			}
 			for _, goal := range instance.Goals() {
 				if err := instance.Reconcile(goal.ID, executor); err != nil {
-					fmt.Fprintf(os.Stderr, "a4s: reconcile %s: %v\n", goal.ID, err)
+					logger.Warn("reconcile failed",
+						slog.String("goal", goal.ID), slog.Any("error", err))
 					continue
 				}
 				status := instance.Status()
-				fmt.Printf("goal %s converged at revision %d: %d allocations, %d routes\n",
-					goal.ID, status.Revision, status.Allocations, status.Routes)
+				logger.Info("goal converged",
+					slog.String("goal", goal.ID),
+					slog.Uint64("revision", status.Revision),
+					slog.Int("allocations", status.Allocations),
+					slog.Int("routes", status.Routes))
 			}
 		}
 	}
@@ -509,12 +538,21 @@ func runNode(args []string) error {
 	tlsInternal := flags.Bool("tls-internal", false, "issue internal certificates instead of using ACME")
 	serverAddress := flags.String("server", "", "server address to connect to (empty reads stdin)")
 	identityKeyPath := flags.String("identity-key", "", "path to this node's base64 Ed25519 private key")
+	logLevel := flags.String("log-level", "info", "log verbosity: debug, info, warn, or error")
+	logFormat := flags.String("log-format", "text", "log format: text or json")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *nodeID == "" || *keyID == "" || *publicKeyPath == "" {
 		return fmt.Errorf("node-id, key-id, and public-key are required")
 	}
+	logger, err := obs.New(obs.Config{
+		Level: *logLevel, Format: obs.Format(*logFormat), Component: "node",
+	})
+	if err != nil {
+		return err
+	}
+	logger = logger.With(slog.String("node_id", *nodeID))
 	publicKey, err := loadPublicKey(*publicKeyPath)
 	if err != nil {
 		return err
@@ -660,7 +698,7 @@ func runNode(args []string) error {
 	supervisor := a4snode.NewSupervisor(runtime, desired)
 	supervisorCtx, stopSupervisor := context.WithCancel(ctx)
 	defer stopSupervisor()
-	go superviseLoop(supervisorCtx, supervisor, *superviseInterval)
+	go superviseLoop(supervisorCtx, logger, supervisor, *superviseInterval)
 
 	if *serverAddress == "" {
 		// Without a server address the node reads a local stream, which remains
@@ -674,7 +712,7 @@ func runNode(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "a4s: connecting to %s as node %q\n", *serverAddress, *nodeID)
+	logger.Info("connecting to server", slog.String("addr", *serverAddress))
 	return a4snode.DialServer(ctx, "tcp", *serverAddress, *nodeID, identityKey, &dispatcher, 0)
 }
 
@@ -690,7 +728,8 @@ func volumeRefsFor(allocation string, desired *a4snode.DesiredState) []control.V
 
 // superviseLoop periodically reconciles observed local state toward the node's
 // last server-authorized desired state.
-func superviseLoop(ctx context.Context, supervisor *a4snode.Supervisor, interval time.Duration) {
+func superviseLoop(ctx context.Context, logger *slog.Logger,
+	supervisor *a4snode.Supervisor, interval time.Duration) {
 	if interval <= 0 {
 		return
 	}
@@ -703,11 +742,16 @@ func superviseLoop(ctx context.Context, supervisor *a4snode.Supervisor, interval
 		case <-ticker.C:
 			observations, err := supervisor.Reconcile(ctx)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "a4s: supervise:", err)
+				logger.Warn("supervision failed", slog.Any("error", err))
 				continue
 			}
 			for _, evidence := range observations {
-				fmt.Fprintf(os.Stderr, "a4s: supervise %s %s %v\n", evidence.Kind, evidence.Target, evidence.Observed)
+				// Local supervision acts during a control-plane outage, so this
+				// is often the only record that a workload was restarted.
+				logger.Info("supervised allocation",
+					slog.String("kind", string(evidence.Kind)),
+					slog.String("target", evidence.Target),
+					slog.Any("observed", evidence.Observed))
 			}
 		}
 	}
