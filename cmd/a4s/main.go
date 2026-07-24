@@ -406,6 +406,10 @@ func runNode(args []string) error {
 	cniNetwork := flags.String("cni-network", "a4s0", "CNI network name")
 	allocationSubnet := flags.String("subnet", "10.42.0.0/24", "node-local allocation subnet")
 	netnsDir := flags.String("netns-dir", "/var/run/a4s/netns", "allocation network namespace directory")
+	gatewayAdmin := flags.String("gateway-admin", "", "Caddy admin API address (empty disables the gateway)")
+	gatewayConfig := flags.String("gateway-config", "/var/lib/a4s/gateway.json", "path for the applied gateway config")
+	acmeEmail := flags.String("acme-email", "", "contact address for certificate issuance")
+	tlsInternal := flags.Bool("tls-internal", false, "issue internal certificates instead of using ACME")
 	serverAddress := flags.String("server", "", "server address to connect to (empty reads stdin)")
 	identityKeyPath := flags.String("identity-key", "", "path to this node's base64 Ed25519 private key")
 	if err := flags.Parse(args); err != nil {
@@ -458,12 +462,45 @@ func runNode(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The gateway is optional: only a node that fronts public traffic needs one.
+	var router *a4snode.Router
+	if *gatewayAdmin != "" {
+		gateway, err := a4snode.NewCaddyGateway(a4snode.CaddyConfig{
+			AdminAddress: *gatewayAdmin, ConfigPath: *gatewayConfig,
+			ACMEEmail: *acmeEmail, TLSInternal: *tlsInternal,
+		})
+		if err != nil {
+			return err
+		}
+		router = a4snode.NewRouter(gateway)
+		// Routes resolve to allocations this node has attached and that a probe
+		// measured serving. An endpoint is never asserted, only observed.
+		router.Endpoints = func(workload string) []control.Endpoint {
+			var endpoints []control.Endpoint
+			for _, entry := range desired.List() {
+				if entry.Workload != workload || !entry.Running {
+					continue
+				}
+				attachment, err := network.Attachment(ctx, entry.ID)
+				if err != nil || attachment.Address == "" {
+					continue
+				}
+				endpoints = append(endpoints, control.Endpoint{
+					Allocation: entry.ID, Node: *nodeID,
+					Address: attachment.Address, Port: entry.Probe.Port,
+				})
+			}
+			return endpoints
+		}
+	}
+
 	dispatcher := a4snode.Dispatcher{
 		NodeID: *nodeID,
 		Keys:   map[string]ed25519.PublicKey{*keyID: publicKey},
 		Runtime: &a4snode.CompositeRuntime{
 			Containers: runtime,
 			Networks:   network,
+			Routes:     router,
 		},
 		Ledger:  ledger,
 		Desired: desired,
@@ -613,6 +650,7 @@ Usage:
   a4s validate --file scenario.json
   a4s simulate --file scenario.json [--json] [--event-log /path] [--max-rounds N]
   a4s node --node-id ID --key-id ID --public-key /path [runtime flags]
+           [--gateway-admin http://127.0.0.1:2019 --acme-email you@example.com]
   a4s server --event-log /path [--file scenario.json] [--status]
              [--listen host:port --signing-key /path --node-keys /dir]
   a4s keygen --out /path
