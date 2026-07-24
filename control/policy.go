@@ -46,6 +46,7 @@ func DefaultPolicy() Policy {
 				ActionQuiesceVolume:   true,
 				ActionTransferVolume:  true,
 				ActionAdoptVolume:     true,
+				ActionPruneSnapshots:  true,
 			},
 		},
 	}
@@ -323,6 +324,25 @@ func validateAction(goal Goal, world World, action Action) error {
 				action.Node, volume.Handoff.To)
 		}
 
+	case ActionPruneSnapshots:
+		if action.Volume == nil {
+			return fmt.Errorf("prune snapshots requires a volume reference")
+		}
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		// Keeping zero snapshots would leave no recovery point at all, which
+		// defeats the reason snapshots exist. Retention has a floor of one.
+		if action.Retain < 1 {
+			return fmt.Errorf("prune must retain at least one snapshot")
+		}
+		// Pruning during a move could remove the very snapshot being
+		// transferred, stranding the handoff.
+		if volume.Handoff != nil {
+			return fmt.Errorf("volume %q is being moved and cannot be pruned", action.Volume.Name)
+		}
+
 	case ActionBackupSnapshot:
 		if action.Volume == nil {
 			return fmt.Errorf("backup snapshot requires a volume reference")
@@ -589,6 +609,9 @@ func cloneWorld(world World) World {
 			for id, checksum := range volume.Snapshots {
 				copyVolume.Snapshots[id] = checksum
 			}
+		}
+		if volume.SnapshotOrder != nil {
+			copyVolume.SnapshotOrder = append([]string(nil), volume.SnapshotOrder...)
 		}
 		if volume.Handoff != nil {
 			copyHandoff := *volume.Handoff
