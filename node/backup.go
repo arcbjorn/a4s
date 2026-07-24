@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/arcbjorn/a4s/control"
 )
 
 // BackupStore holds snapshots somewhere other than the node that took them.
@@ -119,4 +121,55 @@ func withinPath(candidate, parent string) bool {
 		return true
 	}
 	return strings.HasPrefix(candidate, parent+string(filepath.Separator))
+}
+
+// WithBackupStore attaches an off-host backup store.
+func (v *Volumes) WithBackupStore(store BackupStore) *Volumes {
+	v.backups = store
+	return v
+}
+
+// backup ships a verified snapshot off-host.
+//
+// Only a snapshot already taken and checksummed is shipped. Backing up a live
+// volume directly would put a possibly inconsistent copy off-host under a name
+// an operator would later trust.
+func (v *Volumes) backup(ctx context.Context, action control.Action) (control.Evidence, error) {
+	if v.backups == nil {
+		return control.Evidence{}, fmt.Errorf("node has no backup store configured")
+	}
+	v.mu.Lock()
+	record, ok := v.volumes[action.Volume.Name]
+	v.mu.Unlock()
+	if !ok {
+		return control.Evidence{}, fmt.Errorf("volume %q does not exist on this node", action.Volume.Name)
+	}
+	if action.Snapshot == "" {
+		return control.Evidence{}, fmt.Errorf("backup requires a snapshot id")
+	}
+
+	source := filepath.Join(v.snapshots, record.Name, action.Snapshot)
+	if _, err := os.Stat(source); err != nil {
+		return control.Evidence{}, fmt.Errorf(
+			"snapshot %q of volume %q is not present on this node", action.Snapshot, record.Name)
+	}
+	// Checksum before shipping, so a snapshot that rotted on local disk is not
+	// propagated to the store as though it were good.
+	checksum, err := checksumTree(source)
+	if err != nil {
+		return control.Evidence{}, err
+	}
+	if action.Volume.Checksum != "" && action.Volume.Checksum != checksum {
+		return control.Evidence{}, fmt.Errorf(
+			"snapshot %q of volume %q failed verification before backup: recorded %s, found %s",
+			action.Snapshot, record.Name, action.Volume.Checksum, checksum)
+	}
+
+	location, err := v.backups.Put(ctx, record.Name, action.Snapshot, source)
+	if err != nil {
+		return control.Evidence{}, fmt.Errorf("back up snapshot %q: %w", action.Snapshot, err)
+	}
+	return volumeEvidence(control.EvidenceVolumeBackedUp, record.Name, map[string]string{
+		"snapshot": action.Snapshot, "location": location, "checksum": checksum,
+	}), nil
 }
