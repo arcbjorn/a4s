@@ -49,7 +49,9 @@ contract.
 - Node health, placement-label, allowed-node, resource-capacity, replica-index,
   and image policy.
 - Digest-pinned image requirement.
-- Privileged and stateful workload rejection in v1alpha1.
+- Privileged workload rejection in v1alpha1.
+- Stateful workloads limited to one replica, pinned to the node holding their
+  data, and never relocated on a missing heartbeat.
 - Separate authenticated approval record for public routes.
 - Required evidence declarations for allocation start and route publication.
 - Bounded reconciliation rounds and blocked-goal events.
@@ -73,6 +75,8 @@ contract.
   resolving each route to the endpoints observed serving it.
 - Opaque secret references with node-sealed material, version-only evidence, and
   redaction proven by scanning every serialized artifact.
+- Volumes with generation-fenced single-writer ownership, durable on the node so
+  a restart cannot produce a second writer.
 - Target leases acquired before the first mutation and released on every exit
   path, so two proposals cannot interleave on one allocation. Leases expire so
   an abandoned holder cannot block a target indefinitely.
@@ -191,7 +195,9 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
   resolve across nodes.
 - nftables policy compilation from typed network intent.
 - Public ingress or TLS automation.
-- Volumes, snapshots, backups, or stateful ownership handoff.
+- Volume snapshots, off-host backup, and ownership handoff between nodes.
+  Volumes, single-writer fencing, and node-local mounts are implemented;
+  moving a volume to another node is not.
 - Secret rotation without a workload restart, and a Vault-backed broker. The
   file broker and the mount path are implemented; rotation currently means
   changing the goal's version, which replaces the allocation.
