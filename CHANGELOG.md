@@ -7,6 +7,17 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Database workloads: a workload may declare an `engine` (postgres), which makes
+  it single-writer, volume-backed, and readiness-checked by an accepted
+  connection rather than an open port.
+- `database_backup`, which invokes the engine's own consistent-backup tool
+  (pg_basebackup) against the live database. A raw filesystem snapshot of a
+  running database is now refused, since its files are torn when copied.
+- A PostgreSQL engine backend: pg_basebackup for backups and a real connection
+  for readiness, so a database still replaying its WAL is not reported ready.
+- Database backups are first-class recovery points: verifiable, prunable, and
+  restorable like any other snapshot.
+
 - Scheduled restore verification: a `verify_backup` action restores a snapshot
   into scratch space, checksums it, and discards it, proving a backup is
   recoverable without touching the live volume. A restore test that could damage
