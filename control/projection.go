@@ -22,6 +22,7 @@ const (
 	EvidenceVolumeTransferred = "volume.transferred"
 	EvidenceVolumeAdopted     = "volume.adopted"
 	EvidenceSnapshotsPruned   = "volume.snapshots_pruned"
+	EvidenceBackupVerified    = "volume.backup_verified"
 	EvidenceNetworkAttached   = "network.attached"
 	EvidenceNetworkDetached   = "network.detached"
 	EvidenceAllocationRunning = "allocation.running"
@@ -309,6 +310,28 @@ func projectInto(world *World, evidence Evidence) error {
 			if len(volume.SnapshotOrder) > 0 {
 				volume.LastSnapshot = volume.SnapshotOrder[len(volume.SnapshotOrder)-1]
 			}
+		}
+
+	case EvidenceBackupVerified:
+		volume, ok := world.Volumes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
+		}
+		snapshot := evidence.Observed["snapshot"]
+		if snapshot == "" {
+			return fmt.Errorf("evidence %q must observe a snapshot id", evidence.Kind)
+		}
+		// A failed verification records nothing as verified. Recording a time
+		// on failure would tell an operator a broken backup is recoverable.
+		if evidence.Observed["verified"] != "true" {
+			return nil
+		}
+		if _, known := volume.Snapshots[snapshot]; !known {
+			return fmt.Errorf("verification names unknown snapshot %q of volume %q", snapshot, evidence.Target)
+		}
+		volume.VerifiedSnapshot = snapshot
+		if !evidence.ObservedAt.IsZero() {
+			volume.VerifiedAt = evidence.ObservedAt
 		}
 
 	case EvidenceVolumeRestored:
