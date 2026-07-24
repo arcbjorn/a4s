@@ -3,10 +3,14 @@ package node
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"sync"
 
@@ -35,8 +39,11 @@ type VolumeRecord struct {
 // outlives every process that uses it, and because the failure mode here is
 // permanent data loss rather than a restart.
 type Volumes struct {
-	root  string
-	state string
+	root string
+	// snapshots holds immutable copies, kept separate from live volumes so a
+	// snapshot cannot be mistaken for one and mounted.
+	snapshots string
+	state     string
 
 	mu      sync.Mutex
 	volumes map[string]VolumeRecord
@@ -52,7 +59,14 @@ func OpenVolumes(root, statePath string) (*Volumes, error) {
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o750); err != nil {
 		return nil, fmt.Errorf("create volume state directory: %w", err)
 	}
-	volumes := &Volumes{root: root, state: statePath, volumes: make(map[string]VolumeRecord)}
+	snapshots := filepath.Join(filepath.Dir(root), "snapshots")
+	if err := os.MkdirAll(snapshots, 0o750); err != nil {
+		return nil, fmt.Errorf("create snapshot root: %w", err)
+	}
+	volumes := &Volumes{
+		root: root, snapshots: snapshots, state: statePath,
+		volumes: make(map[string]VolumeRecord),
+	}
 	if err := volumes.load(); err != nil {
 		return nil, err
 	}
@@ -123,6 +137,8 @@ func (v *Volumes) Execute(ctx context.Context, action control.Action) (control.E
 		return v.detach(action)
 	case control.ActionSnapshotVolume:
 		return v.snapshot(ctx, action)
+	case control.ActionRestoreSnapshot:
+		return v.restore(ctx, action)
 	default:
 		return control.Evidence{}, fmt.Errorf("volumes do not support action kind %q", action.Kind)
 	}
@@ -214,8 +230,11 @@ func (v *Volumes) detach(action control.Action) (control.Evidence, error) {
 	}), nil
 }
 
-// snapshot records a point-in-time copy. The first implementation copies the
-// directory; a filesystem-native snapshot satisfies the same contract.
+// snapshot records a checksummed, immutable copy of a quiesced volume.
+//
+// The first implementation copies the directory. A filesystem-native snapshot
+// satisfies the same contract, because what the control plane requires is an
+// identifier and a checksum, not a particular mechanism.
 func (v *Volumes) snapshot(_ context.Context, action control.Action) (control.Evidence, error) {
 	v.mu.Lock()
 	record, ok := v.volumes[action.Volume.Name]
@@ -230,7 +249,202 @@ func (v *Volumes) snapshot(_ context.Context, action control.Action) (control.Ev
 		return control.Evidence{}, fmt.Errorf(
 			"volume %q is attached to %q; quiesce it before snapshotting", record.Name, record.Owner)
 	}
-	return control.Evidence{}, fmt.Errorf("volume snapshots are not implemented")
+
+	id := action.Snapshot
+	if id == "" {
+		return control.Evidence{}, fmt.Errorf("snapshot requires an id")
+	}
+	if !snapshotIDPattern.MatchString(id) {
+		return control.Evidence{}, fmt.Errorf("snapshot id %q must be lowercase alphanumeric", id)
+	}
+	destination := filepath.Join(v.snapshots, record.Name, id)
+	if _, err := os.Stat(destination); err == nil {
+		// A snapshot is immutable. Overwriting one would silently change what a
+		// previously verified id refers to.
+		checksum, err := checksumTree(destination)
+		if err != nil {
+			return control.Evidence{}, err
+		}
+		return volumeEvidence(control.EvidenceVolumeSnapshotted, record.Name, map[string]string{
+			"snapshot": id, "checksum": checksum, "repeated": "true",
+		}), nil
+	}
+
+	// Copy into a staging directory first, so an interrupted snapshot never
+	// leaves a partial tree under a name that looks complete.
+	staging := destination + ".partial"
+	if err := os.RemoveAll(staging); err != nil {
+		return control.Evidence{}, fmt.Errorf("clear staging snapshot: %w", err)
+	}
+	if err := copyTree(record.Path, staging); err != nil {
+		_ = os.RemoveAll(staging)
+		return control.Evidence{}, fmt.Errorf("snapshot volume %q: %w", record.Name, err)
+	}
+	checksum, err := checksumTree(staging)
+	if err != nil {
+		_ = os.RemoveAll(staging)
+		return control.Evidence{}, err
+	}
+	if err := os.Rename(staging, destination); err != nil {
+		_ = os.RemoveAll(staging)
+		return control.Evidence{}, fmt.Errorf("finalize snapshot: %w", err)
+	}
+	return volumeEvidence(control.EvidenceVolumeSnapshotted, record.Name, map[string]string{
+		"snapshot": id, "checksum": checksum, "repeated": "false",
+	}), nil
+}
+
+// restore overwrites a volume from a snapshot, after verifying the snapshot is
+// intact.
+//
+// Verification happens before anything is overwritten. Restoring a corrupt
+// snapshot would destroy the only remaining copy of the data and replace it
+// with something unusable, which is worse than the failure being restored from.
+func (v *Volumes) restore(_ context.Context, action control.Action) (control.Evidence, error) {
+	v.mu.Lock()
+	record, ok := v.volumes[action.Volume.Name]
+	v.mu.Unlock()
+	if !ok {
+		return control.Evidence{}, fmt.Errorf("volume %q does not exist on this node", action.Volume.Name)
+	}
+	if record.Owner != "" {
+		return control.Evidence{}, fmt.Errorf(
+			"volume %q is attached to %q; detach it before restoring", record.Name, record.Owner)
+	}
+	if action.Snapshot == "" {
+		return control.Evidence{}, fmt.Errorf("restore requires a snapshot id")
+	}
+
+	source := filepath.Join(v.snapshots, record.Name, action.Snapshot)
+	if _, err := os.Stat(source); err != nil {
+		return control.Evidence{}, fmt.Errorf(
+			"snapshot %q of volume %q is not present on this node", action.Snapshot, record.Name)
+	}
+	checksum, err := checksumTree(source)
+	if err != nil {
+		return control.Evidence{}, err
+	}
+	// The controller supplies the checksum it recorded when the snapshot was
+	// taken. A mismatch means the snapshot has changed since, so it is refused
+	// rather than written over live data.
+	if action.Volume.Checksum != "" && action.Volume.Checksum != checksum {
+		return control.Evidence{}, fmt.Errorf(
+			"snapshot %q of volume %q failed verification: recorded %s, found %s",
+			action.Snapshot, record.Name, action.Volume.Checksum, checksum)
+	}
+
+	// Restore into a staging directory and swap, so a failure part way through
+	// does not leave the volume holding a mixture of old and restored data.
+	staging := record.Path + ".restoring"
+	if err := os.RemoveAll(staging); err != nil {
+		return control.Evidence{}, fmt.Errorf("clear staging restore: %w", err)
+	}
+	if err := copyTree(source, staging); err != nil {
+		_ = os.RemoveAll(staging)
+		return control.Evidence{}, fmt.Errorf("restore volume %q: %w", record.Name, err)
+	}
+	// Verify the restored copy before it replaces anything.
+	restored, err := checksumTree(staging)
+	if err != nil || restored != checksum {
+		_ = os.RemoveAll(staging)
+		return control.Evidence{}, fmt.Errorf(
+			"restored copy of volume %q does not match the snapshot", record.Name)
+	}
+
+	previous := record.Path + ".replaced"
+	_ = os.RemoveAll(previous)
+	if err := os.Rename(record.Path, previous); err != nil && !os.IsNotExist(err) {
+		_ = os.RemoveAll(staging)
+		return control.Evidence{}, fmt.Errorf("set aside volume %q: %w", record.Name, err)
+	}
+	if err := os.Rename(staging, record.Path); err != nil {
+		// Put the original back rather than leaving the volume missing.
+		_ = os.Rename(previous, record.Path)
+		_ = os.RemoveAll(staging)
+		return control.Evidence{}, fmt.Errorf("replace volume %q: %w", record.Name, err)
+	}
+	_ = os.RemoveAll(previous)
+
+	return volumeEvidence(control.EvidenceVolumeRestored, record.Name, map[string]string{
+		"snapshot": action.Snapshot, "checksum": checksum,
+	}), nil
+}
+
+// snapshotIDPattern keeps snapshot ids to safe path components, so an id can
+// never escape the snapshot directory.
+var snapshotIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// copyTree copies a directory recursively, preserving file modes.
+func copyTree(source, destination string) error {
+	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, relative)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		// Only regular files are copied. A symlink or device node in a snapshot
+		// could point outside the volume when restored elsewhere.
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("volume contains a non-regular file %q", relative)
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			return err
+		}
+		return os.WriteFile(target, content, info.Mode().Perm())
+	})
+}
+
+// checksumTree computes a checksum over a directory's contents and structure.
+//
+// Paths are included alongside content, so moving a file between names changes
+// the checksum. Entries are sorted so the result depends on the tree rather than
+// on filesystem iteration order.
+func checksumTree(root string) (string, error) {
+	var paths []string
+	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	}); err != nil {
+		return "", fmt.Errorf("walk %q: %w", root, err)
+	}
+	sort.Strings(paths)
+
+	digest := sha256.New()
+	for _, path := range paths {
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return "", err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		digest.Write([]byte(relative))
+		digest.Write([]byte{0})
+		digest.Write(content)
+		digest.Write([]byte{0})
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 func volumeEvidence(kind, target string, observed map[string]string) control.Evidence {
