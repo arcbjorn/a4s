@@ -31,6 +31,11 @@ type WorkloadSpec struct {
 	// Volumes names durable storage this workload needs. A workload declaring
 	// volumes is stateful, which changes what the kernel will authorize.
 	Volumes []VolumeRef `json:"volumes,omitempty"`
+	// Engine names a database engine when this workload is one. A database is
+	// not a generic container: its files are inconsistent when copied while it
+	// runs, and it is ready only when it accepts connections. Declaring the
+	// engine is what lets the kernel and agents treat it correctly.
+	Engine string `json:"engine,omitempty"`
 }
 
 // VolumeRef names durable storage a workload requires.
@@ -321,6 +326,7 @@ const (
 	ActionAdoptVolume      ActionKind = "adopt_volume"
 	ActionPruneSnapshots   ActionKind = "prune_snapshots"
 	ActionVerifyBackup     ActionKind = "verify_backup"
+	ActionDatabaseBackup   ActionKind = "database_backup"
 	ActionStartAllocation  ActionKind = "start_allocation"
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
@@ -342,6 +348,8 @@ type Action struct {
 	Volume *VolumeRef `json:"volume,omitempty"`
 	// Snapshot names the snapshot to restore from.
 	Snapshot string `json:"snapshot,omitempty"`
+	// Engine names the database engine for a database_backup action.
+	Engine string `json:"engine,omitempty"`
 	// Retain is how many recent snapshots a prune keeps.
 	Retain int `json:"retain,omitempty"`
 	// DryRun asks a prune to report what it would remove without removing it.
