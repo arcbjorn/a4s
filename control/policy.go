@@ -22,6 +22,13 @@ func DefaultPolicy() Policy {
 			"network-agent": {
 				ActionPublishRoute: true,
 			},
+			// The rollout agent may retire an allocation but may not create
+			// one. Replacement is placement's job, which keeps destruction and
+			// creation in separate capability sets.
+			"rollout-agent": {
+				ActionStopAllocation:   true,
+				ActionDeleteAllocation: true,
+			},
 		},
 	}
 }
@@ -164,6 +171,16 @@ func validateAction(goal Goal, world World, action Action) error {
 		if action.Workload != allocation.Workload {
 			return fmt.Errorf("workload differs from allocation")
 		}
+		// The kernel enforces the availability floor independently. An agent
+		// that respects its own budget is convenient; an agent that cannot
+		// exceed it is a safety property.
+		if allocation.ReadyAt(world.Now()) {
+			floor := disruptionFloor(goal)
+			if remaining := servingAllocations(goal, world) - 1; remaining < floor {
+				return fmt.Errorf("stopping %q would leave %d ready replicas, below the availability floor of %d",
+					action.Target, remaining, floor)
+			}
+		}
 
 	case ActionDeleteAllocation:
 		allocation, ok := world.Allocations[action.Target]
@@ -260,6 +277,34 @@ func cloneWorld(world World) World {
 		clone.Approvals[id] = &copyApproval
 	}
 	return clone
+}
+
+// disruptionFloor is the number of ready replicas that must survive any single
+// authorized disruption. A single-replica workload cannot be updated without a
+// gap, so its floor is zero; anything larger keeps a replica serving.
+func disruptionFloor(goal Goal) int {
+	if goal.Workload.Replicas <= 1 {
+		return 0
+	}
+	return goal.Workload.Replicas - 1
+}
+
+// servingAllocations counts replicas currently serving the workload, whatever
+// image they run.
+//
+// Availability during a rollout is about what users can reach, not about which
+// version is deployed. Counting only allocations matching the goal's new image
+// would read as zero availability at the start of every rollout and either
+// block it forever or permit unlimited disruption.
+func servingAllocations(goal Goal, world World) int {
+	serving := 0
+	now := world.Now()
+	for _, allocation := range world.Allocations {
+		if allocation.Workload == goal.Workload.Name && allocation.ReadyAt(now) {
+			serving++
+		}
+	}
+	return serving
 }
 
 func matchingReadyAllocations(goal Goal, world World) int {
