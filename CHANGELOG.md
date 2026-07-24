@@ -7,6 +7,15 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Per-allocation networking: an `attach_network` action, a CNI backend invoking
+  the standard bridge/host-local plugins, node-local IPAM, and containers that
+  join the namespace CNI created for them. Each allocation now has its own
+  address and namespace.
+- Multi-replica placement, batched at two replicas per proposal to keep blast
+  radius and the action budget bounded.
+- `network.attached` and `network.detached` evidence, with the address recorded
+  on the allocation.
+
 - `a4s explain`: reconstructs why an allocation or route exists from the
   hash-chained log, including the agent's reasoning, the kernel's
   authorization, and the probe evidence that proved the outcome. An action
@@ -76,6 +85,14 @@ release or compatibility guarantee yet.
 - The node reports rejected and failed envelopes per message instead of exiting.
 
 ### Fixed
+
+- Replicas of one workload could not share a node: containers ran on the host
+  network and contended for the same port. Every allocation now has its own
+  network namespace and address.
+- Readiness probes fell back to dialing loopback, which could report a dead
+  workload healthy because an unrelated process held the port, and could not
+  distinguish replicas. The probe now targets the allocation's own address and
+  refuses to guess when it has none.
 
 - Node deduplication compared whole envelopes, so a legitimate retry with fresh
   issue and expiry times was rejected as idempotency-key reuse. The ledger now
