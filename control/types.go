@@ -77,6 +77,10 @@ type Volume struct {
 	// RestoredFrom records the snapshot this volume was last restored from,
 	// which is what an operator needs to know after a recovery.
 	RestoredFrom string `json:"restored_from,omitempty"`
+	// Handoff tracks a move in progress. Movement is a sequence of evidenced
+	// steps rather than a single action, because each step must be proven
+	// before the next is safe: quiesce, snapshot, transfer, verify, adopt.
+	Handoff *VolumeHandoff `json:"handoff,omitempty"`
 	// Backups records which snapshots have been shipped off-host, by id. A
 	// snapshot that exists only on the volume's own node does not survive the
 	// loss of that node, which is the failure backups exist for.
@@ -236,6 +240,37 @@ type Route struct {
 	Exposure string `json:"exposure"`
 }
 
+// HandoffPhase is how far a volume move has progressed.
+//
+// The phases are ordered and each is entered only on evidence from the last.
+// A move that stalls stays in its phase rather than advancing on assumption.
+type HandoffPhase string
+
+const (
+	// HandoffQuiesced means the writer has stopped and the data is at rest.
+	HandoffQuiesced HandoffPhase = "quiesced"
+	// HandoffSnapshotted means a verified snapshot exists to move.
+	HandoffSnapshotted HandoffPhase = "snapshotted"
+	// HandoffTransferred means the target node holds a verified copy. The
+	// origin is still authoritative at this point.
+	HandoffTransferred HandoffPhase = "transferred"
+	// HandoffAdopted means ownership moved. This is the only irreversible step.
+	HandoffAdopted HandoffPhase = "adopted"
+)
+
+// VolumeHandoff records an in-progress move between nodes.
+type VolumeHandoff struct {
+	// From and To are the origin and target nodes.
+	From string `json:"from"`
+	To   string `json:"to"`
+	// Phase is how far the move has progressed.
+	Phase HandoffPhase `json:"phase"`
+	// Snapshot is the verified snapshot being moved.
+	Snapshot string `json:"snapshot,omitempty"`
+	// Checksum is what the target must reproduce to prove it holds the data.
+	Checksum string `json:"checksum,omitempty"`
+}
+
 type AgentDescriptor struct {
 	ID           string       `json:"id"`
 	Role         string       `json:"role"`
@@ -270,6 +305,9 @@ const (
 	ActionSnapshotVolume   ActionKind = "snapshot_volume"
 	ActionRestoreSnapshot  ActionKind = "restore_snapshot"
 	ActionBackupSnapshot   ActionKind = "backup_snapshot"
+	ActionQuiesceVolume    ActionKind = "quiesce_volume"
+	ActionTransferVolume   ActionKind = "transfer_volume"
+	ActionAdoptVolume      ActionKind = "adopt_volume"
 	ActionStartAllocation  ActionKind = "start_allocation"
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
