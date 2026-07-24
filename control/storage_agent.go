@@ -27,9 +27,9 @@ func (StorageAgent) Descriptor() AgentDescriptor {
 	return AgentDescriptor{
 		ID: "storage-agent", Role: "verify, snapshot, and recover durable data",
 		Capabilities: []ActionKind{
-			ActionSnapshotVolume, ActionBackupSnapshot, ActionRestoreSnapshot,
-			ActionQuiesceVolume, ActionTransferVolume, ActionAdoptVolume,
-			ActionPruneSnapshots, ActionVerifyBackup,
+			ActionSnapshotVolume, ActionDatabaseBackup, ActionBackupSnapshot,
+			ActionRestoreSnapshot, ActionQuiesceVolume, ActionTransferVolume,
+			ActionAdoptVolume, ActionPruneSnapshots, ActionVerifyBackup,
 		},
 	}
 }
@@ -97,6 +97,40 @@ func (a StorageAgent) Propose(goal Goal, world World) (Proposal, error) {
 		Target: chosen.volume.Name, Workload: goal.Workload.Name,
 		Node: chosen.volume.Node, Volume: &ref, Snapshot: chosen.snapshot,
 	}}
+	return proposal, nil
+}
+
+// ProposeBackup asks for a fresh backup of a volume that has none.
+//
+// It is a separate entry point from Propose because taking a backup and
+// verifying an existing one are different operations with different frequencies:
+// a backup is scheduled, a verification confirms the last one still works. For a
+// database it uses the engine's consistent-backup path; for a generic volume it
+// snapshots the detached filesystem.
+func (a StorageAgent) ProposeBackup(goal Goal, world World, label string) (Proposal, error) {
+	descriptor := a.Descriptor()
+	proposal := Proposal{
+		ID:      fmt.Sprintf("%s-backup-r%d", descriptor.ID, world.Revision),
+		AgentID: descriptor.ID, GoalID: goal.ID, BasedOnRevision: world.Revision,
+		Reasoning: "back up the database with its own consistent-backup tool",
+	}
+	for _, ref := range goal.Workload.Volumes {
+		volume, ok := world.Volumes[ref.Name]
+		if !ok {
+			continue
+		}
+		if goal.Workload.Engine != "" {
+			// A database is backed up live with its own tool, never by copying
+			// its files, which are inconsistent while it runs.
+			proposal.Actions = []Action{{
+				ID: "db-backup-" + ref.Name, Kind: ActionDatabaseBackup,
+				Target: ref.Name, Workload: goal.Workload.Name, Node: volume.Node,
+				Volume: &VolumeRef{Name: ref.Name}, Snapshot: label,
+				Engine: goal.Workload.Engine,
+			}}
+			return proposal, nil
+		}
+	}
 	return proposal, nil
 }
 
