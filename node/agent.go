@@ -42,6 +42,10 @@ type Agents struct {
 	// tasks records which queue task each instance currently holds, which is
 	// what makes a drain observable rather than assumed.
 	tasks map[string]string
+	// draining records instances told to stop accepting work. It is sticky, so
+	// an instance cannot escape a drain by finishing one task and taking
+	// another.
+	draining map[string]bool
 	// meters records each instance's ceiling and what it has consumed. The node
 	// holds this because the controller is too far away to stop a runaway loop:
 	// a round trip through evidence, projection, and a proposal takes longer
@@ -81,6 +85,7 @@ func NewAgents(root string) *Agents {
 		Root:      root,
 		envelopes: make(map[string][]control.ToolGrant),
 		tasks:     make(map[string]string),
+		draining:  make(map[string]bool),
 		meters:    make(map[string]*meter),
 	}
 }
@@ -137,6 +142,14 @@ func (a *Agents) drain(action control.Action) (control.Evidence, error) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.draining == nil {
+		a.draining = make(map[string]bool)
+	}
+	// Draining is sticky. An instance that finished its task and then claimed
+	// another would never actually drain, and the rollout waiting on it would
+	// stall forever behind an agent that keeps finding new work.
+	a.draining[action.Target] = true
+
 	task := a.tasks[action.Target]
 	if task != "" {
 		return control.Evidence{
@@ -148,6 +161,42 @@ func (a *Agents) drain(action control.Action) (control.Evidence, error) {
 		Kind: control.EvidenceAllocationDrained, Target: action.Target,
 		Observed: map[string]string{"drained": "true"},
 	}, nil
+}
+
+// Draining reports whether an instance has been told to stop taking work.
+func (a *Agents) Draining(allocation string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.draining[allocation]
+}
+
+// MayClaim reports whether an instance is permitted to take new work.
+//
+// This is the gate between the queue and an instance's lifecycle. Three states
+// disqualify a worker, and each would otherwise produce a distinct failure: an
+// unmetered instance was never prepared here, an exhausted one cannot pay for
+// what it would start, and a draining one is on its way out and must not
+// acquire work that would block its own retirement.
+func (a *Agents) MayClaim(allocation string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	record, ok := a.meters[allocation]
+	if !ok {
+		return fmt.Errorf("allocation %q holds no budget reservation", allocation)
+	}
+	if record.spent.Exhausts(record.budget) {
+		return ErrBudgetExhausted
+	}
+	if a.draining[allocation] {
+		return ErrDraining
+	}
+	// Claiming a second task would make the first one's completion unobservable,
+	// since the node tracks one task slot per instance and a drain waits on it
+	// being empty.
+	if a.tasks[allocation] != "" {
+		return fmt.Errorf("allocation %q already holds task %q", allocation, a.tasks[allocation])
+	}
+	return nil
 }
 
 // Reserve records the ceiling an allocation may spend against.
@@ -294,6 +343,11 @@ var ErrToolNotGranted = errors.New("tool is not in the allocation's grant envelo
 // ErrBudgetExhausted is returned when an instance has spent its ceiling.
 var ErrBudgetExhausted = errors.New("allocation has exhausted its budget")
 
+// ErrDraining is returned when a draining instance reaches for new work. It is
+// distinct from exhaustion because the instance is still healthy and funded; it
+// is simply being retired.
+var ErrDraining = errors.New("allocation is draining and may not take new work")
+
 // AuthorizeToolCall is the gate a runtime passes before invoking a tool.
 //
 // This is where the envelope stops being a declaration and becomes an
@@ -370,6 +424,7 @@ func (a *Agents) Release(allocation string) {
 	defer a.mu.Unlock()
 	delete(a.envelopes, allocation)
 	delete(a.tasks, allocation)
+	delete(a.draining, allocation)
 	delete(a.meters, allocation)
 }
 
