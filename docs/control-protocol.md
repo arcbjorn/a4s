@@ -647,3 +647,36 @@ preceded it holds the specific reason. Diagnosis prefers the specific one.
 The diagnoser is the one place where model-backed reasoning is unambiguously
 safe. It reads events and produces text: no capability grants, no proposals, no
 mutation. A wrong diagnosis misleads an operator; it cannot break anything.
+
+## Service discovery
+
+A directory maps each workload to the endpoints currently serving it. Three
+conditions must all hold for an allocation to appear:
+
+- Readiness was measured and has not expired.
+- CNI has given it an address.
+- An accepted goal declares the port it listens on.
+
+The directory is derived, never asserted. There is no action by which an agent
+can add an endpoint, and an allocation that stops being measured as ready falls
+out on the next build. Routing traffic to an instance nobody has recently
+observed serving is exactly how a rollout becomes an outage.
+
+The workload port and the route port are deliberately different. The workload
+port is what an endpoint is dialed on inside its namespace; the route port is
+what the gateway listens on.
+
+## Gateway snapshots
+
+The gateway receives a complete configuration and replaces its own with it. It
+never merges, never decides, and never learns endpoints on its own, so routing
+stays exactly as authorized and cannot drift incrementally.
+
+A route whose workload has no healthy endpoint is still included, carrying an
+empty endpoint list, and the gateway answers 503 for it. Dropping the route
+would make the hostname fall through to an unrelated site, turning a transient
+outage into a wrong answer.
+
+Public routes get ACME certificate automation. A tailnet route has no public
+DNS, so ACME cannot issue for it; internal issuance is used instead of silently
+serving no TLS.
