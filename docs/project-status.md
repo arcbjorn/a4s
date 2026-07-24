@@ -18,10 +18,17 @@ a4s currently proves two boundaries:
    durably, and translate the container actions into containerd API calls
    through a narrow runtime contract.
 
-Those boundaries are implemented but not connected. There is no running a4s
-server and no controller-to-node network transport. The CLI simulation uses an
-in-memory executor. The `a4s node` command reads signed actions from standard
-input and writes results to standard output.
+Those boundaries are now connected. A `RemoteExecutor` issues signed
+capabilities for an authorized proposal, a node dispatches them, and the
+returned evidence advances a world projection that can be rebuilt from the
+durable event log. The end-to-end acceptance suite drives a real control engine
+against a real node dispatcher over the real protocol, with only containerd
+faked.
+
+What remains missing is a long-running server process and an authenticated
+network transport. The implemented transport is a byte-stream protocol currently
+carried over a pipe; moving it onto the tailnet does not change the control
+contract.
 
 ## Implemented
 
@@ -50,6 +57,13 @@ input and writes results to standard output.
   double-count capacity when an action is replayed.
 - Prober interface separating readiness observation from the executor that
   performed the mutation.
+- Observation freshness: readiness evidence expires, and expired readiness stops
+  satisfying a goal.
+- Stop and delete actions, with deletion refused while an allocation is running.
+- Durable world projection rebuilt from recorded evidence, so a restarted server
+  recovers authoritative state instead of losing it.
+- Remote executor that binds every issued capability to the proposal that
+  authorized it.
 
 ### Event persistence
 
@@ -80,6 +94,14 @@ security system.
 - Serialized dispatch in the initial implementation.
 - Per-message dispatch responses, so a rejected or failed action does not
   terminate the node.
+- Deduplication on a digest of the authorized work rather than the whole
+  envelope, so a legitimate retry returns the stored result while a key reused
+  for different work is refused.
+- Durable desired-state cache and a supervisor that restarts crashed workloads
+  during a control-plane outage, bounded by a crash-loop budget and backoff.
+- Orphan discovery for a4s-managed containers absent from desired state.
+- Node attribution of evidence: the node stamps its own identity and observation
+  time onto everything a runtime adapter reports.
 
 ### Linux container runtime
 
@@ -110,32 +132,31 @@ security system.
 - Placement across multiple observed nodes.
 - Public-route approval ingestion.
 
-No executor asserts readiness. The memory executor reports only what a real
-executor could observe, and readiness arrives as separate probe evidence.
-`OptimisticProber` currently supplies that evidence by declaring any running
-allocation ready; it exists solely to close the loop and must be replaced by
-process, TCP, and HTTP probes. It is now the single remaining place where
-readiness is assumed rather than measured.
+No executor asserts readiness. Readiness is measured by a prober and carries an
+expiry, so a stale observation stops satisfying a goal. The remaining assumption
+is that the in-memory simulation's observer reports a running task as ready; the
+node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 
 ## Not implemented
 
-- Long-running a4s server or external goal API.
-- Controller identity, key storage, key rotation, or envelope issuance service.
-- Controller-to-node transport and node-to-controller evidence transport.
-- Persistent materialized world state and observation ingestion.
+- Long-running a4s server process or external goal API.
+- Node enrollment, mutual authentication, and encrypted network transport. The
+  implemented transport is a byte-stream protocol carried over a pipe.
+- Controller key custody and key rotation.
 - Target leases despite the envelope carrying a `lease_id`.
 - Compensating actions and rollback execution.
-- Stop, kill, delete, garbage collection, and restart supervision.
-- Live process, TCP, HTTP, or route probes.
-- Containerd orphan discovery after daemon restart.
-- CNI, allocation network namespaces, DNS, service gateways, or nftables.
+- Rolling replacement, canary, and disruption budgets.
+- Garbage collection of unreferenced images and snapshots.
+- CNI, allocation network namespaces, DNS, or nftables. The router applies
+  gateway route snapshots but no gateway backend is implemented.
 - Public ingress or TLS automation.
 - Volumes, snapshots, backups, or stateful ownership handoff.
 - Secret broker and runtime credential mounts.
 - Seccomp/AppArmor selection, user namespaces, or rootless containers.
 - Operator API and separately authenticated approval workflow.
 - Model-backed agents, agent sandboxing, or agent resource budgets.
-- SQLite event storage, materialized projections, multi-server consensus, or HA.
+- SQLite event storage, multi-server consensus, or HA. The world projection is
+  rebuilt from the hash-chained file event log.
 - Kubernetes manifest importer.
 
 ## Known implementation constraints
@@ -175,19 +196,22 @@ against a live Linux containerd socket.
 
 ## Exact next milestone
 
-Run one disposable Linux-node experiment that proves this sequence:
+The action and evidence round trip, restart recovery, and outage survival are
+proven in the acceptance suite against a faked containerd. The next milestone
+replaces the fake with real hardware:
 
 1. Generate and install a temporary control signing key.
-2. Start containerd and the `a4s node` stream harness.
-3. Sign and submit pull, create, and start envelopes for a real digest-pinned
-   image.
-4. Restart `a4s node` and resubmit the same envelopes.
-5. Confirm the ledger returns prior results and containerd has exactly one
-   matching container and task.
-6. Add an independent process or HTTP probe and return readiness evidence.
-7. Record failures and required code changes before designing the network
-   transport.
+2. Start containerd and `a4s node` on a disposable Linux host.
+3. Converge the example goal against a real digest-pinned image.
+4. Kill the container out from under the node and confirm the supervisor
+   restarts it while the control plane is stopped.
+5. Restart `a4s node` and confirm replayed actions do not duplicate runtime
+   state and that orphan discovery reports anything left behind.
+6. Restart the server and confirm the world projection rebuilds from the event
+   log without redoing work.
+7. Record measured failure behavior, especially anything the faked backend did
+   not model.
 
-After that experiment, implement a minimal server-issued envelope path with
-mutual node identity. Do not begin CNI or storage until the action/evidence
-round trip survives node and server restart.
+Only after that should the transport move onto an authenticated tailnet
+connection. Do not begin CNI or storage until the round trip survives real node
+and server restarts on real hardware.
