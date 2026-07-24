@@ -214,6 +214,11 @@ func (d *Dispatcher) recordDesired(action control.Action) error {
 			},
 			UpdatedAt: d.Now().UTC(),
 		})
+	case control.ActionAttachVolume:
+		if action.Volume == nil {
+			return nil
+		}
+		return d.Desired.AddVolume(action.Target, *action.Volume)
 	case control.ActionStartAllocation:
 		return d.Desired.SetRunning(action.Target, true)
 	case control.ActionStopAllocation:
