@@ -3,6 +3,7 @@ package control
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func projectionWorld() World {
@@ -102,6 +103,149 @@ func TestProjectionRejectsReadinessWithoutRunning(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "cannot be ready in phase") {
 		t.Fatalf("expected phase rejection, got %v", err)
+	}
+}
+
+// Deleting an allocation must release the capacity its creation charged, or the
+// node leaks capacity until the projection is rebuilt.
+func TestDeletionReleasesNodeCapacity(t *testing.T) {
+	world := projectionWorld()
+	world, err := Project(world, createdEvidence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, Evidence{
+		Kind: EvidenceAllocationDeleted, Target: "app-0",
+		Observed: map[string]string{"deleted": "true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := world.Nodes["base"].Used; got != (Resources{}) {
+		t.Fatalf("deletion did not release capacity: %+v", got)
+	}
+	if _, exists := world.Allocations["app-0"]; exists {
+		t.Fatal("deletion left the allocation in the world")
+	}
+}
+
+// A replayed delete must not subtract capacity twice.
+func TestDeletionIsIdempotent(t *testing.T) {
+	world := projectionWorld()
+	world.Nodes["base"].Used = Resources{CPUMillis: 500, MemoryMB: 1024}
+	world, err := Project(world, createdEvidence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted := Evidence{Kind: EvidenceAllocationDeleted, Target: "app-0", Observed: map[string]string{"deleted": "true"}}
+	world, err = Project(world, deleted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, deleted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := world.Nodes["base"].Used; got != (Resources{CPUMillis: 500, MemoryMB: 1024}) {
+		t.Fatalf("replayed deletion double-released capacity: %+v", got)
+	}
+}
+
+// A stopped allocation must lose readiness, or a stale ready flag could satisfy
+// a goal or authorize a route for a workload that is no longer serving.
+func TestStopClearsReadiness(t *testing.T) {
+	world := projectionWorld()
+	world, err := Project(world, createdEvidence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, Evidence{Kind: EvidenceAllocationRunning, Target: "app-0", Observed: map[string]string{"node": "base"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, Evidence{Kind: EvidenceAllocationReady, Target: "app-0", Observed: map[string]string{"ready": "true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, Evidence{Kind: EvidenceAllocationStopped, Target: "app-0", Observed: map[string]string{"exit_code": "0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocation := world.Allocations["app-0"]
+	if allocation.Ready || allocation.Phase != AllocationStopped {
+		t.Fatalf("stop left the allocation ready: %+v", allocation)
+	}
+}
+
+// A crashed allocation must also lose readiness and record what was observed.
+func TestFailureClearsReadinessAndRecordsExit(t *testing.T) {
+	world := projectionWorld()
+	world, err := Project(world, createdEvidence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, Evidence{Kind: EvidenceAllocationRunning, Target: "app-0", Observed: map[string]string{"node": "base"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, Evidence{Kind: EvidenceAllocationReady, Target: "app-0", Observed: map[string]string{"ready": "true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, Evidence{
+		Kind: EvidenceAllocationFailed, Target: "app-0",
+		Observed: map[string]string{"exit_code": "137", "restarts": "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocation := world.Allocations["app-0"]
+	if allocation.Ready || allocation.ExitCode != 137 || allocation.Restarts != 2 {
+		t.Fatalf("failure evidence was not projected: %+v", allocation)
+	}
+}
+
+// Readiness is a perishable observation. Once it expires the allocation must
+// stop counting as ready, so a goal cannot stay "achieved" on the strength of a
+// measurement taken long ago.
+func TestExpiredReadinessDoesNotSatisfyGoal(t *testing.T) {
+	observedAt := time.Unix(1000, 0).UTC()
+	world := projectionWorld()
+	world, err := Project(world, createdEvidence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, Evidence{
+		Kind: EvidenceAllocationRunning, Target: "app-0",
+		Observed: map[string]string{"node": "base"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, Evidence{
+		Kind: EvidenceAllocationReady, Target: "app-0",
+		ObservedAt: observedAt, ExpiresAt: observedAt.Add(30 * time.Second),
+		Observed: map[string]string{"ready": "true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	allocation := world.Allocations["app-0"]
+	if !allocation.ReadyAt(observedAt.Add(time.Second)) {
+		t.Fatal("fresh readiness should count")
+	}
+	if allocation.ReadyAt(observedAt.Add(time.Minute)) {
+		t.Fatal("expired readiness must not count")
+	}
+
+	goal := validScenario().Goal
+	goal.Workload.Name = "app"
+	goal.Workload.Image = testImage
+	goal.Route = nil
+	world.ObservedAt = observedAt.Add(time.Minute)
+	if goalAchieved(goal, world) {
+		t.Fatal("goal was satisfied by expired readiness evidence")
 	}
 }
 
