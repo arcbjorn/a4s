@@ -8,6 +8,8 @@ import "fmt"
 const (
 	EvidenceImagePresent      = "image.present"
 	EvidenceAllocationCreated = "allocation.created"
+	EvidenceNetworkAttached   = "network.attached"
+	EvidenceNetworkDetached   = "network.detached"
 	EvidenceAllocationRunning = "allocation.running"
 	EvidenceAllocationReady   = "allocation.ready"
 	EvidenceAllocationStopped = "allocation.stopped"
@@ -78,6 +80,26 @@ func projectInto(world *World, evidence Evidence) error {
 			Phase: AllocationCreated,
 		}
 		node.Used = node.Used.Add(resources)
+
+	case EvidenceNetworkAttached:
+		allocation, ok := world.Allocations[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, evidence.Target)
+		}
+		address := evidence.Observed["address"]
+		if address == "" {
+			return fmt.Errorf("evidence %q must observe an address", evidence.Kind)
+		}
+		allocation.Address = address
+
+	case EvidenceNetworkDetached:
+		allocation, ok := world.Allocations[evidence.Target]
+		if !ok {
+			// Detaching a network from an allocation that is already gone is
+			// the expected result of a replayed teardown.
+			return nil
+		}
+		allocation.Address = ""
 
 	case EvidenceAllocationRunning:
 		allocation, ok := world.Allocations[evidence.Target]
