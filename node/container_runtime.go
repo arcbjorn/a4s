@@ -25,6 +25,8 @@ type ContainerSpec struct {
 	LogPath         string
 	NoNewPrivileges bool
 	Capabilities    []string
+	// VolumeMounts are durable storage bound into the container.
+	VolumeMounts []VolumeMountSpec
 	// SecretMounts are host paths bound read-only into the container. Material
 	// stays on the node's tmpfs; the container sees a file, never a value that
 	// passed through the control plane.
@@ -33,6 +35,13 @@ type ContainerSpec struct {
 	// Empty means the container keeps the runtime default, which is only
 	// appropriate for a workload that serves no port.
 	Namespace string
+}
+
+// VolumeMountSpec binds one durable volume into a container.
+type VolumeMountSpec struct {
+	Source      string
+	Destination string
+	ReadOnly    bool
 }
 
 // SecretMountSpec binds one secret file into a container.
@@ -82,6 +91,9 @@ type BackendState struct {
 
 type ContainerRuntime struct {
 	backend ContainerBackend
+	// VolumeMountsFor resolves an allocation's volume mounts, so a container
+	// receives the storage that was attached to it.
+	VolumeMountsFor func(string) []VolumeMountSpec
 	// SecretMountsFor resolves an allocation's secret mounts, so a container
 	// receives the credentials that were mounted for it.
 	SecretMountsFor func(string) []SecretMountSpec
@@ -93,6 +105,14 @@ type ContainerRuntime struct {
 
 func NewContainerRuntime(backend ContainerBackend) *ContainerRuntime {
 	return &ContainerRuntime{backend: backend}
+}
+
+// volumeMounts resolves the volume mounts for an allocation, if any.
+func (r *ContainerRuntime) volumeMounts(allocation string) []VolumeMountSpec {
+	if r == nil || r.VolumeMountsFor == nil {
+		return nil
+	}
+	return r.VolumeMountsFor(allocation)
 }
 
 // secretMounts resolves the secret mounts for an allocation, if any.
@@ -145,6 +165,7 @@ func (r *ContainerRuntime) Execute(ctx context.Context, action control.Action) (
 			return control.Evidence{}, fmt.Errorf("create allocation requires positive resource limits")
 		}
 		created, err := r.backend.Create(ctx, ContainerSpec{
+			VolumeMounts:    r.volumeMounts(action.Target),
 			SecretMounts:    r.secretMounts(action.Target),
 			Namespace:       r.Namespace(action.Target),
 			ID:              action.Target,
