@@ -1,9 +1,16 @@
 # Node runtime slice
 
 The first Linux data-plane slice is implemented. It is intentionally narrower
-than a kubelet: the node accepts signed typed actions and translates only
-`pull_image`, `create_allocation`, and `start_allocation` into containerd calls.
-It has no generic command or shell endpoint.
+than a kubelet: the node accepts signed typed actions and translates
+`pull_image`, `create_allocation`, `start_allocation`, `stop_allocation`, and
+`delete_allocation` into containerd calls, and `publish_route` into a gateway
+route snapshot. It has no generic command or shell endpoint.
+
+The node holds a durable record of server-authorized intent and supervises it.
+That is what lets workloads survive a control-plane outage: a container that
+dies while the server is unreachable is restarted locally, bounded by a
+crash-loop budget. The node never invents intent, changes images, or expands its
+own authority; it can only keep true what the server already authorized.
 
 ## Trust boundary
 
@@ -11,7 +18,8 @@ Every input is an Ed25519-signed `SignedAction`. The dispatcher rejects an
 action unless all of these are true:
 
 - The signing key ID is locally trusted.
-- The signature covers the complete canonical JSON envelope.
+- The signature covers the exact transmitted envelope bytes and is verified
+  before those bytes are decoded.
 - The envelope targets this exact node.
 - Its issue and expiry window is valid and no longer than five minutes.
 - The action's node agrees with the envelope node.
@@ -91,13 +99,18 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/a4s ./cmd/a4s
 
 ## Deliberately missing
 
-- Controller-to-node transport and mutual node authentication.
-- Stop/delete actions and restart supervision.
-- Process and application readiness probes.
-- CNI network namespaces and service routing.
+- Mutual node authentication and an encrypted network transport. The protocol is
+  implemented and carried over a stream; only the authenticated tailnet
+  connection is missing.
+- Automatic cleanup of orphaned containerd resources. Orphans are discovered and
+  reported, but removal stays an authorized action rather than a node decision.
+- CNI network namespaces and per-allocation addressing. Probes currently reach a
+  workload on loopback, which is why the endpoint resolution is deliberately
+  conservative.
 - Seccomp/AppArmor profile selection, user namespaces, and rootless execution.
-- Reconciliation of orphaned containerd resources after a node restart.
+- Image and snapshot garbage collection.
+- A concrete gateway backend behind the route snapshot interface.
 
 These are required before running a production workload. The next useful
-milestone is a server-issued envelope reaching a disposable node, followed by
-independent readiness evidence returning to the server.
+milestone is running the existing round trip against a live containerd on a
+disposable Linux host.
