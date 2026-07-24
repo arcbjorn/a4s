@@ -47,6 +47,8 @@ func run(args []string) error {
 		return runServer(args[1:])
 	case "keygen":
 		return keygen(args[1:])
+	case "seal":
+		return seal(args[1:])
 	case "explain":
 		return explain(args[1:])
 	case "plan":
@@ -189,6 +191,55 @@ func readEvents(path string) ([]control.Event, error) {
 	}
 	defer store.Close()
 	return store.ReplayEvents()
+}
+
+// seal encrypts secret material to one node's identity.
+//
+// Material is read from a file rather than an argument, because a command line
+// is visible in shell history and process listings. It is never echoed back.
+func seal(args []string) error {
+	flags := flag.NewFlagSet("seal", flag.ContinueOnError)
+	name := flags.String("secret", "", "secret name")
+	version := flags.String("version", "", "secret version")
+	nodeID := flags.String("node", "", "node this secret is sealed for")
+	nodeKeyPath := flags.String("node-key", "", "path to the node's base64 Ed25519 public key")
+	in := flags.String("in", "", "file holding the secret material")
+	outDir := flags.String("out", "", "directory to write the sealed secret into")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" || *version == "" || *nodeID == "" || *nodeKeyPath == "" || *in == "" || *outDir == "" {
+		return fmt.Errorf("secret, version, node, node-key, in, and out are required")
+	}
+	nodeKey, err := loadPublicKey(*nodeKeyPath)
+	if err != nil {
+		return err
+	}
+	material, err := os.ReadFile(*in)
+	if err != nil {
+		return fmt.Errorf("read secret material: %w", err)
+	}
+	if len(material) == 0 {
+		return fmt.Errorf("secret material is empty")
+	}
+	sealed, err := a4snode.Seal(*name, *version, *nodeID, nodeKey, material)
+	if err != nil {
+		return err
+	}
+	document, err := json.Marshal(sealed)
+	if err != nil {
+		return fmt.Errorf("encode sealed secret: %w", err)
+	}
+	if err := os.MkdirAll(*outDir, 0o750); err != nil {
+		return fmt.Errorf("create sealed secret directory: %w", err)
+	}
+	path := filepath.Join(*outDir, *name+"."+*version+".sealed")
+	if err := os.WriteFile(path, document, 0o600); err != nil {
+		return fmt.Errorf("write sealed secret: %w", err)
+	}
+	// Report only the reference. The material is never echoed.
+	fmt.Printf("sealed %s version %s for node %s: %s\n", *name, *version, *nodeID, path)
+	return nil
 }
 
 // keygen writes an Ed25519 keypair to disk. Keys are written to files with
@@ -406,6 +457,8 @@ func runNode(args []string) error {
 	cniNetwork := flags.String("cni-network", "a4s0", "CNI network name")
 	allocationSubnet := flags.String("subnet", "10.42.0.0/24", "node-local allocation subnet")
 	netnsDir := flags.String("netns-dir", "/var/run/a4s/netns", "allocation network namespace directory")
+	secretDir := flags.String("secret-dir", "/var/lib/a4s/secrets", "directory of sealed secrets for this node")
+	secretRoot := flags.String("secret-root", "/run/a4s/secrets", "tmpfs directory for decrypted material")
 	gatewayAdmin := flags.String("gateway-admin", "", "Caddy admin API address (empty disables the gateway)")
 	gatewayConfig := flags.String("gateway-config", "/var/lib/a4s/gateway.json", "path for the applied gateway config")
 	acmeEmail := flags.String("acme-email", "", "contact address for certificate issuance")
@@ -462,6 +515,35 @@ func runNode(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Secrets require the node identity key, which is also what proves identity
+	// during enrollment. One key per node rather than two that can drift.
+	var secrets *a4snode.Secrets
+	if *identityKeyPath != "" {
+		identity, err := loadPrivateKey(*identityKeyPath)
+		if err != nil {
+			return err
+		}
+		broker, err := a4snode.NewFileBroker(*secretDir, *nodeID, identity)
+		if err != nil {
+			return err
+		}
+		secrets, err = a4snode.NewSecrets(broker, *secretRoot)
+		if err != nil {
+			return err
+		}
+		defer secrets.Close()
+		runtime.SecretMountsFor = func(allocation string) []a4snode.SecretMountSpec {
+			mounts := secrets.Mounts(allocation)
+			specs := make([]a4snode.SecretMountSpec, 0, len(mounts))
+			for _, mount := range mounts {
+				specs = append(specs, a4snode.SecretMountSpec{
+					Source: mount.Path, Destination: mount.Path,
+				})
+			}
+			return specs
+		}
+	}
+
 	// The gateway is optional: only a node that fronts public traffic needs one.
 	var router *a4snode.Router
 	if *gatewayAdmin != "" {
@@ -501,6 +583,7 @@ func runNode(args []string) error {
 			Containers: runtime,
 			Networks:   network,
 			Routes:     router,
+			Secrets:    secrets,
 		},
 		Ledger:  ledger,
 		Desired: desired,
@@ -654,6 +737,7 @@ Usage:
   a4s server --event-log /path [--file scenario.json] [--status]
              [--listen host:port --signing-key /path --node-keys /dir]
   a4s keygen --out /path
+  a4s seal --secret NAME --version V --node ID --node-key /path --in /path --out /dir
   a4s plan --file scenario.json [--event-log /path] [--json]
   a4s explain --event-log /path --target ID [--json]
   a4s diagnose --event-log /path --goal ID [--file scenario.json] [--json]
