@@ -137,6 +137,8 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/a4s ./cmd/a4s
   implemented; a service name does not yet resolve to healthy endpoints.
 - Seccomp/AppArmor profile selection, user namespaces, and rootless execution.
 - Image and snapshot garbage collection.
+- Volume snapshots and moving a volume to another node. Ownership and mounting
+  are implemented; handoff is not.
 - Cross-node service routing. A route resolves to endpoints on the node that
   owns them; a service name does not yet resolve across the tailnet.
 
