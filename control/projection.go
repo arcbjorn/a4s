@@ -100,6 +100,15 @@ func projectInto(world *World, evidence Evidence) error {
 		// Carrying the expiry into the world lets the verifier reject a goal
 		// whose readiness is merely remembered rather than currently observed.
 		allocation.ReadyExpiresAt = evidence.ExpiresAt
+		if allocation.Ready {
+			// An image that has been observed serving becomes the version a
+			// failed rollout may return to. Recording it here, from evidence,
+			// means a rollback target is always one this cluster saw working.
+			if world.KnownGood == nil {
+				world.KnownGood = make(map[string]string)
+			}
+			world.KnownGood[allocation.Workload] = allocation.Image
+		}
 
 	case EvidenceAllocationStopped:
 		allocation, ok := world.Allocations[evidence.Target]
