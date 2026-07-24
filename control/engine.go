@@ -24,9 +24,12 @@ type Engine struct {
 	Executor Executor
 	World    Projector
 	Probers  []Prober
-	Events   []Event
-	Sink     EventSink
-	now      func() time.Time
+	// Leases grant exclusive claims on mutation targets, so two proposals
+	// built against the same revision cannot interleave on one allocation.
+	Leases *LeaseManager
+	Events []Event
+	Sink   EventSink
+	now    func() time.Time
 	// probeTargets is populated from the goal so readiness is measured against
 	// the port the workload actually declares.
 	probeTargets map[string]ProbeTarget
@@ -46,7 +49,7 @@ func NewEngine(executor *MemoryExecutor, agents ...Agent) *Engine {
 	engine := &Engine{
 		Kernel: Kernel{Policy: DefaultPolicy()}, Agents: agents,
 		Executor: executor, World: memoryProjector{executor: executor},
-		now: time.Now,
+		Leases: NewLeaseManager(), now: time.Now,
 	}
 	// The simulation still measures readiness through the probe path rather
 	// than assuming it, so the control loop exercises the same contract a real
@@ -65,7 +68,7 @@ func NewEngineWith(executor Executor, world Projector, agents ...Agent) *Engine 
 	return &Engine{
 		Kernel: Kernel{Policy: DefaultPolicy()}, Agents: agents,
 		Executor: executor, World: world, probeTargets: map[string]ProbeTarget{},
-		now: time.Now,
+		Leases: NewLeaseManager(), now: time.Now,
 	}
 }
 
@@ -120,48 +123,26 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 			if err := e.record(Event{Type: EventProposalApproved, Actor: "policy-kernel", GoalID: goal.ID, ProposalID: proposal.ID, Message: "all actions authorized against a simulated world"}); err != nil {
 				return err
 			}
-			// Bind the executor to this authorization so every capability it
-			// issues names the proposal that justified it.
-			if bound, ok := e.Executor.(BoundExecutor); ok {
-				bound.Bind(goal.ID, proposal.ID, proposal.BasedOnRevision, proposal.ID)
-			}
-			for _, action := range proposal.Actions {
-				// Persist intent before dispatch. If completion persistence fails,
-				// recovery can query the node's idempotency ledger using this ID.
-				if err := e.record(Event{Type: EventActionDispatched, Actor: "coordinator", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: string(action.Kind)}); err != nil {
-					return err
-				}
-				evidence, err := e.Executor.Execute(action)
-				if err != nil {
-					if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "node-executor", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: err.Error()}); recordErr != nil {
-						return fmt.Errorf("execute action: %v; persist failure: %w", err, recordErr)
-					}
-					return err
-				}
-				// Declare what readiness means for a new allocation before any
-				// probe runs, so readiness is measured rather than assumed.
-				e.registerProbeTarget(goal, action)
-				// Evidence, not the action, advances the world.
-				if err := e.World.Project(evidence); err != nil {
-					if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "projection", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: err.Error()}); recordErr != nil {
-						return recordErr
-					}
-					return fmt.Errorf("project evidence for action %q: %w", action.ID, err)
-				}
-				if err := e.record(Event{Type: EventActionCompleted, Actor: "node-executor", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: string(action.Kind), Evidence: &evidence}); err != nil {
-					return err
-				}
-				progress = true
-			}
-			// Independent probes supply the evidence the executor is not
-			// permitted to assert, such as readiness.
-			if err := e.observe(goal, proposal); err != nil {
-				return err
-			}
-			if err := verifyChecks(e.World.World(), proposal.ExpectedEvidence); err != nil {
-				if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "verifier", GoalID: goal.ID, ProposalID: proposal.ID, Message: err.Error()}); recordErr != nil {
+			// Claim every target before the first mutation. Revision binding
+			// alone would let two proposals built on the same revision both
+			// proceed and interleave on the same allocation.
+			leaseID, err := e.Leases.Acquire(goal.ID, proposal.ID, LeaseTargets(proposal))
+			if err != nil {
+				if recordErr := e.record(Event{Type: EventProposalDenied, Actor: "policy-kernel", GoalID: goal.ID, ProposalID: proposal.ID, Message: err.Error()}); recordErr != nil {
 					return recordErr
 				}
+				continue
+			}
+			// Bind the executor to this authorization so every capability it
+			// issues names the proposal and lease that justified it.
+			if bound, ok := e.Executor.(BoundExecutor); ok {
+				bound.Bind(goal.ID, proposal.ID, proposal.BasedOnRevision, leaseID)
+			}
+			executed, err := e.executeProposal(goal, proposal, leaseID)
+			if executed {
+				progress = true
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -176,6 +157,55 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 		return err
 	}
 	return fmt.Errorf("goal %q did not converge after %d rounds", goal.ID, maxRounds)
+}
+
+// executeProposal runs an authorized plan and reports whether it mutated
+// anything. The lease is released on every exit path, so a failed plan does not
+// strand its targets until expiry.
+func (e *Engine) executeProposal(goal Goal, proposal Proposal, leaseID string) (bool, error) {
+	defer e.Leases.Release(leaseID)
+
+	progress := false
+	for _, action := range proposal.Actions {
+		// Persist intent before dispatch. If completion persistence fails,
+		// recovery can query the node's idempotency ledger using this ID.
+		if err := e.record(Event{Type: EventActionDispatched, Actor: "coordinator", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: string(action.Kind)}); err != nil {
+			return progress, err
+		}
+		evidence, err := e.Executor.Execute(action)
+		if err != nil {
+			if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "node-executor", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: err.Error()}); recordErr != nil {
+				return progress, fmt.Errorf("execute action: %v; persist failure: %w", err, recordErr)
+			}
+			return progress, err
+		}
+		// Declare what readiness means for a new allocation before any
+		// probe runs, so readiness is measured rather than assumed.
+		e.registerProbeTarget(goal, action)
+		// Evidence, not the action, advances the world.
+		if err := e.World.Project(evidence); err != nil {
+			if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "projection", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: err.Error()}); recordErr != nil {
+				return progress, recordErr
+			}
+			return progress, fmt.Errorf("project evidence for action %q: %w", action.ID, err)
+		}
+		if err := e.record(Event{Type: EventActionCompleted, Actor: "node-executor", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: string(action.Kind), Evidence: &evidence}); err != nil {
+			return progress, err
+		}
+		progress = true
+	}
+	// Independent probes supply the evidence the executor is not permitted to
+	// assert, such as readiness.
+	if err := e.observe(goal, proposal); err != nil {
+		return progress, err
+	}
+	if err := verifyChecks(e.World.World(), proposal.ExpectedEvidence); err != nil {
+		if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "verifier", GoalID: goal.ID, ProposalID: proposal.ID, Message: err.Error()}); recordErr != nil {
+			return progress, recordErr
+		}
+		return progress, err
+	}
+	return progress, nil
 }
 
 // registerProbeTarget records how readiness should be measured for an
