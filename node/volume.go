@@ -44,6 +44,9 @@ type Volumes struct {
 	// snapshot cannot be mistaken for one and mounted.
 	snapshots string
 	state     string
+	// backups ships verified snapshots off-host. Without it a snapshot dies
+	// with the node that holds it.
+	backups BackupStore
 
 	mu      sync.Mutex
 	volumes map[string]VolumeRecord
@@ -139,6 +142,8 @@ func (v *Volumes) Execute(ctx context.Context, action control.Action) (control.E
 		return v.snapshot(ctx, action)
 	case control.ActionRestoreSnapshot:
 		return v.restore(ctx, action)
+	case control.ActionBackupSnapshot:
+		return v.backup(ctx, action)
 	default:
 		return control.Evidence{}, fmt.Errorf("volumes do not support action kind %q", action.Kind)
 	}
@@ -294,13 +299,64 @@ func (v *Volumes) snapshot(_ context.Context, action control.Action) (control.Ev
 	}), nil
 }
 
+// WithBackupStore attaches an off-host backup store.
+func (v *Volumes) WithBackupStore(store BackupStore) *Volumes {
+	v.backups = store
+	return v
+}
+
+// backup ships a verified snapshot off-host.
+//
+// Only a snapshot already taken and checksummed is shipped. Backing up a live
+// volume directly would put a possibly inconsistent copy off-host under a name
+// an operator would later trust.
+func (v *Volumes) backup(ctx context.Context, action control.Action) (control.Evidence, error) {
+	if v.backups == nil {
+		return control.Evidence{}, fmt.Errorf("node has no backup store configured")
+	}
+	v.mu.Lock()
+	record, ok := v.volumes[action.Volume.Name]
+	v.mu.Unlock()
+	if !ok {
+		return control.Evidence{}, fmt.Errorf("volume %q does not exist on this node", action.Volume.Name)
+	}
+	if action.Snapshot == "" {
+		return control.Evidence{}, fmt.Errorf("backup requires a snapshot id")
+	}
+
+	source := filepath.Join(v.snapshots, record.Name, action.Snapshot)
+	if _, err := os.Stat(source); err != nil {
+		return control.Evidence{}, fmt.Errorf(
+			"snapshot %q of volume %q is not present on this node", action.Snapshot, record.Name)
+	}
+	// Checksum before shipping, so a snapshot that rotted on local disk is not
+	// propagated to the store as though it were good.
+	checksum, err := checksumTree(source)
+	if err != nil {
+		return control.Evidence{}, err
+	}
+	if action.Volume.Checksum != "" && action.Volume.Checksum != checksum {
+		return control.Evidence{}, fmt.Errorf(
+			"snapshot %q of volume %q failed verification before backup: recorded %s, found %s",
+			action.Snapshot, record.Name, action.Volume.Checksum, checksum)
+	}
+
+	location, err := v.backups.Put(ctx, record.Name, action.Snapshot, source)
+	if err != nil {
+		return control.Evidence{}, fmt.Errorf("back up snapshot %q: %w", action.Snapshot, err)
+	}
+	return volumeEvidence(control.EvidenceVolumeBackedUp, record.Name, map[string]string{
+		"snapshot": action.Snapshot, "location": location, "checksum": checksum,
+	}), nil
+}
+
 // restore overwrites a volume from a snapshot, after verifying the snapshot is
 // intact.
 //
 // Verification happens before anything is overwritten. Restoring a corrupt
 // snapshot would destroy the only remaining copy of the data and replace it
 // with something unusable, which is worse than the failure being restored from.
-func (v *Volumes) restore(_ context.Context, action control.Action) (control.Evidence, error) {
+func (v *Volumes) restore(ctx context.Context, action control.Action) (control.Evidence, error) {
 	v.mu.Lock()
 	record, ok := v.volumes[action.Volume.Name]
 	v.mu.Unlock()
@@ -316,9 +372,20 @@ func (v *Volumes) restore(_ context.Context, action control.Action) (control.Evi
 	}
 
 	source := filepath.Join(v.snapshots, record.Name, action.Snapshot)
+	fetched := ""
 	if _, err := os.Stat(source); err != nil {
-		return control.Evidence{}, fmt.Errorf(
-			"snapshot %q of volume %q is not present on this node", action.Snapshot, record.Name)
+		// The local snapshot is gone. This is the host-loss case the backup
+		// store exists for, so fall back to it rather than failing.
+		if v.backups == nil {
+			return control.Evidence{}, fmt.Errorf(
+				"snapshot %q of volume %q is not present on this node", action.Snapshot, record.Name)
+		}
+		fetched = filepath.Join(v.snapshots, record.Name, action.Snapshot+".fetched")
+		if err := v.backups.Fetch(ctx, record.Name, action.Snapshot, fetched); err != nil {
+			return control.Evidence{}, err
+		}
+		defer os.RemoveAll(fetched)
+		source = fetched
 	}
 	checksum, err := checksumTree(source)
 	if err != nil {
@@ -365,9 +432,15 @@ func (v *Volumes) restore(_ context.Context, action control.Action) (control.Evi
 	}
 	_ = os.RemoveAll(previous)
 
-	return volumeEvidence(control.EvidenceVolumeRestored, record.Name, map[string]string{
-		"snapshot": action.Snapshot, "checksum": checksum,
-	}), nil
+	observed := map[string]string{"snapshot": action.Snapshot, "checksum": checksum}
+	if fetched != "" {
+		// Recording the source matters after an incident: an operator needs to
+		// know whether recovery came from local state or from off-host backup.
+		observed["source"] = "backup-store"
+	} else {
+		observed["source"] = "local-snapshot"
+	}
+	return volumeEvidence(control.EvidenceVolumeRestored, record.Name, observed), nil
 }
 
 // snapshotIDPattern keeps snapshot ids to safe path components, so an id can
