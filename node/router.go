@@ -108,6 +108,7 @@ type CompositeRuntime struct {
 	Routes     *Router
 	Networks   *Network
 	Secrets    *Secrets
+	Volumes    *Volumes
 }
 
 func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (control.Evidence, error) {
@@ -127,6 +128,12 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 			return control.Evidence{}, fmt.Errorf("node has no secret capability")
 		}
 		return c.Secrets.Execute(ctx, action)
+	case control.ActionCreateVolume, control.ActionAttachVolume,
+		control.ActionDetachVolume, control.ActionSnapshotVolume:
+		if c.Volumes == nil {
+			return control.Evidence{}, fmt.Errorf("node has no volume capability")
+		}
+		return c.Volumes.Execute(ctx, action)
 	case control.ActionDeleteAllocation:
 		if c.Containers == nil {
 			return control.Evidence{}, fmt.Errorf("node has no container capability")
@@ -175,6 +182,11 @@ func (c *CompositeRuntime) Close() error {
 	}
 	if c.Secrets != nil {
 		if closeErr := c.Secrets.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	if c.Volumes != nil {
+		if closeErr := c.Volumes.Close(); err == nil {
 			err = closeErr
 		}
 	}
