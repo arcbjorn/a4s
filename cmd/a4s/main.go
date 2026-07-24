@@ -64,6 +64,10 @@ func run(args []string) error {
 		return approve(args[1:])
 	case "history":
 		return history(args[1:])
+	case "backup":
+		return backup(args[1:])
+	case "restore":
+		return restore(args[1:])
 	case "submit":
 		return submit(args[1:])
 	case "status":
@@ -927,6 +931,9 @@ Usage:
   a4s approve --scopes
   a4s history --event-log /path [--goal ID] [--target ID] [--kind KIND]
               [--since 1h] [--limit N] [--json]
+  a4s backup --event-log /path --out /path/backup.log [--json]
+  a4s backup --verify /path/backup.log [--json]
+  a4s restore --from /path/backup.log --event-log /path [--json]
 
 Remote commands speak to a running server's operator API. Each request is
 signed with the operator key, so authority originates with a person rather
