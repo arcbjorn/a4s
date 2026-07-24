@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -229,9 +230,23 @@ func sameAllocations(a, b control.World) bool {
 		if !left.ReadyExpiresAt.Equal(right.ReadyExpiresAt) {
 			return false
 		}
+		// Compare secret versions explicitly; a map field makes the struct
+		// itself uncomparable.
+		if len(left.Secrets) != len(right.Secrets) {
+			return false
+		}
+		for name, version := range left.Secrets {
+			if right.Secrets[name] != version {
+				return false
+			}
+		}
+		// DeepEqual over the remaining fields rather than an explicit list, so
+		// a field added later is compared automatically instead of silently
+		// skipped.
 		leftCopy, rightCopy := *left, *right
 		leftCopy.ReadyExpiresAt, rightCopy.ReadyExpiresAt = time.Time{}, time.Time{}
-		if leftCopy != rightCopy {
+		leftCopy.Secrets, rightCopy.Secrets = nil, nil
+		if !reflect.DeepEqual(leftCopy, rightCopy) {
 			return false
 		}
 	}
