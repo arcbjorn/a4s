@@ -182,6 +182,35 @@ Node behavior:
 - Create an OCI container and snapshot with hardened defaults.
 - Return `allocation.created` evidence.
 
+### `attach_network`
+
+Required semantic fields: `id`, `kind`, `target`, `workload`, and `node`.
+
+Kernel rules:
+
+- Allocation exists and is still in `created` phase. Attaching after start would
+  leave the container running in the wrong namespace.
+- Workload equals the allocation's workload.
+
+Node behavior:
+
+- Invoke CNI `ADD` to create the allocation's namespace and address.
+- Return the existing attachment as an idempotent repeat rather than creating a
+  second namespace, which would strand the first.
+- Release the reserved address if the plugin fails, so a failed attach does not
+  leak one.
+- Reject an empty or malformed address rather than recording it.
+- Return `network.attached` evidence carrying the address and namespace.
+
+Each node owns a local allocation subnet and assigns addresses without
+coordinating with any other node. Cross-node traffic goes through service
+gateways rather than depending on cluster-wide address transparency, so
+assignment never needs consensus.
+
+Detachment is not a separately proposed action. It happens as part of
+`delete_allocation`, because a deleted allocation must never leave a namespace
+or address behind, and an agent could forget to propose the teardown.
+
 ### `start_allocation`
 
 Required semantic fields: `id`, `kind`, `target`, and `workload`.
@@ -189,6 +218,9 @@ Required semantic fields: `id`, `kind`, `target`, and `workload`.
 Kernel rules:
 
 - Allocation exists in `created` phase.
+- A workload with a port must already have an address. Starting first would
+  leave it either unreachable or, without a namespace, contending with its own
+  replicas for a host port.
 - Workload equals both the goal and allocation workload.
 - Proposal declares an `allocation_ready` check for the target.
 
@@ -272,7 +304,7 @@ gateway refuses the new one. No concrete gateway backend is implemented yet.
 
 | Agent ID | Granted actions |
 |---|---|
-| `placement-agent` | `pull_image`, `create_allocation`, `start_allocation` |
+| `placement-agent` | `pull_image`, `create_allocation`, `attach_network`, `start_allocation` |
 | `network-agent` | `publish_route` |
 | `rollout-agent` | `stop_allocation`, `delete_allocation` |
 
@@ -339,6 +371,8 @@ Implemented evidence kinds:
 | Kind | Produced by | Effect on the world |
 |---|---|---|
 | `image.present` | Executor | Marks the image present on the observed node |
+| `network.attached` | Network | Records the allocation's own address |
+| `network.detached` | Network | Clears the address on teardown |
 | `allocation.created` | Executor | Creates the allocation and charges node capacity once |
 | `allocation.running` | Executor or supervisor | Moves the allocation to `running`; never sets readiness |
 | `allocation.ready` | Prober | Sets readiness on an allocation already observed running |
