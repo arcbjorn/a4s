@@ -23,6 +23,7 @@ const (
 	EvidenceVolumeAdopted     = "volume.adopted"
 	EvidenceSnapshotsPruned   = "volume.snapshots_pruned"
 	EvidenceBackupVerified    = "volume.backup_verified"
+	EvidenceDatabaseBackedUp  = "database.backed_up"
 	EvidenceNetworkAttached   = "network.attached"
 	EvidenceNetworkDetached   = "network.detached"
 	EvidenceAllocationRunning = "allocation.running"
@@ -311,6 +312,28 @@ func projectInto(world *World, evidence Evidence) error {
 				volume.LastSnapshot = volume.SnapshotOrder[len(volume.SnapshotOrder)-1]
 			}
 		}
+
+	case EvidenceDatabaseBackedUp:
+		volume, ok := world.Volumes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
+		}
+		label := evidence.Observed["label"]
+		checksum := evidence.Observed["checksum"]
+		if label == "" || checksum == "" {
+			return fmt.Errorf("evidence %q must observe a backup label and checksum", evidence.Kind)
+		}
+		// A database backup is a consistent snapshot the engine produced, so it
+		// is a first-class snapshot the same way a filesystem one is. It becomes
+		// a recovery point and can be verified and pruned like any other.
+		if volume.Snapshots == nil {
+			volume.Snapshots = make(map[string]string)
+		}
+		if _, exists := volume.Snapshots[label]; !exists {
+			volume.SnapshotOrder = append(volume.SnapshotOrder, label)
+		}
+		volume.Snapshots[label] = checksum
+		volume.LastSnapshot = label
 
 	case EvidenceBackupVerified:
 		volume, ok := world.Volumes[evidence.Target]
