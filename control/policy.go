@@ -149,537 +149,627 @@ func requireEvidenceChecks(goal Goal, proposal Proposal) error {
 	return nil
 }
 
+// actionValidators maps each action kind to the function that checks it against
+// the goal and world. Splitting one validator per kind keeps the kernel's
+// authorization logic reviewable case by case: each function is the complete,
+// self-contained argument for why one action is safe.
+var actionValidators = map[ActionKind]func(Goal, World, Action) error{
+	ActionPullImage:        validatePullImage,
+	ActionCreateAllocation: validateCreateAllocation,
+	ActionCreateVolume:     validateCreateVolume,
+	ActionAttachVolume:     validateAttachVolume,
+	ActionDetachVolume:     validateDetachVolume,
+	ActionSnapshotVolume:   validateSnapshotVolume,
+	ActionQuiesceVolume:    validateQuiesceVolume,
+	ActionTransferVolume:   validateTransferVolume,
+	ActionAdoptVolume:      validateAdoptVolume,
+	ActionDatabaseBackup:   validateDatabaseBackup,
+	ActionVerifyBackup:     validateVerifyBackup,
+	ActionPruneSnapshots:   validatePruneSnapshots,
+	ActionBackupSnapshot:   validateBackupSnapshot,
+	ActionRestoreSnapshot:  validateRestoreSnapshot,
+	ActionMountSecret:      validateMountSecret,
+	ActionGrantTools:       validateGrantTools,
+	ActionDrainAllocation:  validateDrainAllocation,
+	ActionAttachNetwork:    validateAttachNetwork,
+	ActionStartAllocation:  validateStartAllocation,
+	ActionStopAllocation:   validateStopAllocation,
+	ActionDeleteAllocation: validateDeleteAllocation,
+	ActionPublishRoute:     validatePublishRoute,
+}
+
 func validateAction(goal Goal, world World, action Action) error {
-	switch action.Kind {
-	case ActionPullImage:
-		node, ok := world.Nodes[action.Node]
-		if !ok || !node.Healthy {
-			return fmt.Errorf("node %q is missing or unhealthy", action.Node)
-		}
-		if action.Image != goal.Workload.Image || !strings.Contains(action.Image, "@sha256:") {
-			return fmt.Errorf("image must match the goal's pinned digest")
-		}
-
-	case ActionCreateAllocation:
-		if _, exists := world.Allocations[action.Target]; exists {
-			return fmt.Errorf("allocation %q already exists", action.Target)
-		}
-		node, ok := world.Nodes[action.Node]
-		if !ok || !node.Healthy {
-			return fmt.Errorf("node %q is missing or unhealthy", action.Node)
-		}
-		if !nodeAllowed(goal.Constraints, *node) {
-			return fmt.Errorf("node %q violates placement constraints", action.Node)
-		}
-		if action.Workload != goal.Workload.Name {
-			return fmt.Errorf("workload differs from goal")
-		}
-		if action.Image != goal.Workload.Image || !node.Images[action.Image] {
-			return fmt.Errorf("pinned image is not present on node %q", action.Node)
-		}
-		if action.Resources != goal.Workload.Resources {
-			return fmt.Errorf("resources differ from goal")
-		}
-		if !node.Used.Add(action.Resources).Fits(node.Capacity) {
-			return fmt.Errorf("node %q lacks capacity", action.Node)
-		}
-		// A queue-backed agent workload may exceed the goal's replica count, but
-		// only up to the ceiling the queue declares. The kernel recomputes that
-		// bound itself rather than trusting the agent's arithmetic.
-		if action.Replica < 0 || action.Replica >= authorizedReplicas(goal, world) {
-			return fmt.Errorf("replica index is outside goal")
-		}
-		if err := validateAgentPlacement(goal, *node, action); err != nil {
-			return err
-		}
-
-	case ActionCreateVolume:
-		if action.Volume == nil {
-			return fmt.Errorf("create volume requires a volume reference")
-		}
-		if !workloadDeclaresVolume(goal, action.Volume.Name) {
-			return fmt.Errorf("volume %q is not declared by the goal", action.Volume.Name)
-		}
-		node, ok := world.Nodes[action.Node]
-		if !ok || !node.Healthy {
-			return fmt.Errorf("node %q is missing or unhealthy", action.Node)
-		}
-		if existing, exists := world.Volumes[action.Volume.Name]; exists && existing.Node != action.Node {
-			// Creating the same volume on a second node would silently produce
-			// two divergent copies of what the operator thinks is one volume.
-			return fmt.Errorf("volume %q already exists on node %q", action.Volume.Name, existing.Node)
-		}
-
-	case ActionAttachVolume:
-		if action.Volume == nil {
-			return fmt.Errorf("attach volume requires a volume reference")
-		}
-		allocation, ok := world.Allocations[action.Target]
-		if !ok {
-			return fmt.Errorf("allocation %q does not exist", action.Target)
-		}
-		if allocation.Phase != AllocationCreated {
-			return fmt.Errorf("volumes must be attached before allocation %q starts", action.Target)
-		}
-		volume, ok := world.Volumes[action.Volume.Name]
-		if !ok {
-			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
-		}
-		if !workloadDeclaresVolume(goal, action.Volume.Name) {
-			return fmt.Errorf("volume %q is not declared by the goal", action.Volume.Name)
-		}
-		// The single-writer rule. Attaching a volume that another allocation
-		// still owns is how two processes end up writing one filesystem.
-		if volume.Owner != "" && volume.Owner != action.Target {
-			return fmt.Errorf("volume %q is owned by allocation %q", action.Volume.Name, volume.Owner)
-		}
-		// A volume mid-move must not be attached. The data is in flight, and a
-		// writer on either node could diverge from what is being transferred.
-		if volume.Handoff != nil {
-			return fmt.Errorf("volume %q is being moved to node %q and cannot be attached",
-				action.Volume.Name, volume.Handoff.To)
-		}
-		// Local storage stays local. Attaching across nodes would mean the data
-		// is not where the workload is.
-		if volume.Node != allocation.Node {
-			return fmt.Errorf("volume %q lives on node %q but allocation %q is on %q",
-				action.Volume.Name, volume.Node, action.Target, allocation.Node)
-		}
-
-	case ActionDetachVolume:
-		if action.Volume == nil {
-			return fmt.Errorf("detach volume requires a volume reference")
-		}
-		volume, ok := world.Volumes[action.Volume.Name]
-		if !ok {
-			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
-		}
-		if volume.Owner != "" && volume.Owner != action.Target {
-			return fmt.Errorf("allocation %q does not own volume %q", action.Target, action.Volume.Name)
-		}
-		// Detaching from a running writer would pull storage out from under a
-		// live process. Stopping first is what makes the release safe.
-		if allocation, ok := world.Allocations[action.Target]; ok && allocation.Phase == AllocationRunning {
-			return fmt.Errorf("allocation %q must stop before releasing volume %q",
-				action.Target, action.Volume.Name)
-		}
-
-	case ActionSnapshotVolume:
-		if action.Volume == nil {
-			return fmt.Errorf("snapshot volume requires a volume reference")
-		}
-		volume, ok := world.Volumes[action.Volume.Name]
-		if !ok {
-			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
-		}
-		// A raw filesystem snapshot of a running database is inconsistent: its
-		// files change under the copy, and a restore of it may not start. A
-		// database must be backed up with database_backup instead.
-		if goal.Workload.Engine != "" {
-			return fmt.Errorf(
-				"volume %q backs a %s database; use database_backup for a consistent copy",
-				action.Volume.Name, goal.Workload.Engine)
-		}
-		// A snapshot taken from a live writer may be internally inconsistent,
-		// and an operator would later trust it for restore.
-		if volume.Owner != "" {
-			return fmt.Errorf("volume %q must be quiesced before snapshotting; it is attached to %q",
-				action.Volume.Name, volume.Owner)
-		}
-
-	case ActionQuiesceVolume:
-		if action.Volume == nil {
-			return fmt.Errorf("quiesce volume requires a volume reference")
-		}
-		volume, ok := world.Volumes[action.Volume.Name]
-		if !ok {
-			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
-		}
-		// Quiescing means the writer has stopped. Beginning a move under a live
-		// process would snapshot data that is still changing.
-		if volume.Owner != "" {
-			return fmt.Errorf("volume %q must be detached before a move; it is held by %q",
-				action.Volume.Name, volume.Owner)
-		}
-		target, ok := world.Nodes[action.Node]
-		if !ok || !target.Healthy {
-			return fmt.Errorf("handoff target %q is missing or unhealthy", action.Node)
-		}
-		if action.Node == volume.Node {
-			return fmt.Errorf("volume %q already lives on node %q", action.Volume.Name, action.Node)
-		}
-		// Moving data is irreversible in practice: the origin copy is expected
-		// to be reclaimed. It needs a separately authenticated decision.
-		if !hasApproval(world, goal.ID, "move-volume") {
-			return fmt.Errorf("moving volume %q requires move-volume approval", action.Volume.Name)
-		}
-
-	case ActionTransferVolume:
-		if action.Volume == nil {
-			return fmt.Errorf("transfer volume requires a volume reference")
-		}
-		volume, ok := world.Volumes[action.Volume.Name]
-		if !ok {
-			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
-		}
-		if volume.Handoff == nil {
-			return fmt.Errorf("volume %q has no handoff in progress", action.Volume.Name)
-		}
-		if volume.Handoff.Phase != HandoffSnapshotted {
-			return fmt.Errorf("volume %q must be snapshotted before transfer, not %q",
-				action.Volume.Name, volume.Handoff.Phase)
-		}
-		if action.Node != volume.Handoff.To {
-			return fmt.Errorf("transfer target %q is not the handoff target %q",
-				action.Node, volume.Handoff.To)
-		}
-
-	case ActionAdoptVolume:
-		if action.Volume == nil {
-			return fmt.Errorf("adopt volume requires a volume reference")
-		}
-		volume, ok := world.Volumes[action.Volume.Name]
-		if !ok {
-			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
-		}
-		if volume.Handoff == nil {
-			return fmt.Errorf("volume %q has no handoff in progress", action.Volume.Name)
-		}
-		// Ownership moves only after the target proved it holds the data.
-		if volume.Handoff.Phase != HandoffTransferred {
-			return fmt.Errorf("volume %q must be transferred before adoption, not %q",
-				action.Volume.Name, volume.Handoff.Phase)
-		}
-		if action.Node != volume.Handoff.To {
-			return fmt.Errorf("adoption node %q is not the handoff target %q",
-				action.Node, volume.Handoff.To)
-		}
-
-	case ActionDatabaseBackup:
-		if action.Volume == nil {
-			return fmt.Errorf("database backup requires a volume reference")
-		}
-		if action.Snapshot == "" {
-			return fmt.Errorf("database backup requires a backup label")
-		}
-		if goal.Workload.Engine == "" {
-			return fmt.Errorf("database backup is only for database workloads")
-		}
-		volume, ok := world.Volumes[action.Volume.Name]
-		if !ok {
-			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
-		}
-		// Unlike a filesystem snapshot, a database backup runs against the live
-		// database. The engine produces a consistent copy while serving, so it
-		// must be attached and running, not detached.
-		if volume.Owner == "" {
-			return fmt.Errorf("database volume %q must be attached to back it up", action.Volume.Name)
-		}
-
-	case ActionVerifyBackup:
-		if action.Volume == nil {
-			return fmt.Errorf("verify backup requires a volume reference")
-		}
-		if action.Snapshot == "" {
-			return fmt.Errorf("verify backup requires a snapshot id")
-		}
-		volume, ok := world.Volumes[action.Volume.Name]
-		if !ok {
-			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
-		}
-		// Only a recorded snapshot can be verified; there is nothing else whose
-		// recoverability is meaningful to check.
-		if _, known := volume.Snapshots[action.Snapshot]; !known {
-			return fmt.Errorf("snapshot %q of volume %q was never recorded",
-				action.Snapshot, action.Volume.Name)
-		}
-		// Verification is read-only: it restores into scratch space and
-		// discards. It needs no approval and can run against a live volume,
-		// which is what lets it happen on a schedule without disruption.
-
-	case ActionPruneSnapshots:
-		if action.Volume == nil {
-			return fmt.Errorf("prune snapshots requires a volume reference")
-		}
-		volume, ok := world.Volumes[action.Volume.Name]
-		if !ok {
-			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
-		}
-		// Keeping zero snapshots would leave no recovery point at all, which
-		// defeats the reason snapshots exist. Retention has a floor of one.
-		if action.Retain < 1 {
-			return fmt.Errorf("prune must retain at least one snapshot")
-		}
-		// Pruning during a move could remove the very snapshot being
-		// transferred, stranding the handoff.
-		if volume.Handoff != nil {
-			return fmt.Errorf("volume %q is being moved and cannot be pruned", action.Volume.Name)
-		}
-
-	case ActionBackupSnapshot:
-		if action.Volume == nil {
-			return fmt.Errorf("backup snapshot requires a volume reference")
-		}
-		if action.Snapshot == "" {
-			return fmt.Errorf("backup snapshot requires a snapshot id")
-		}
-		volume, ok := world.Volumes[action.Volume.Name]
-		if !ok {
-			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
-		}
-		// Only a verified snapshot may be shipped. Backing up unverified
-		// content would put something off-host that nobody has checked.
-		if _, known := volume.Snapshots[action.Snapshot]; !known {
-			return fmt.Errorf("snapshot %q of volume %q was never recorded",
-				action.Snapshot, action.Volume.Name)
-		}
-
-	case ActionRestoreSnapshot:
-		if action.Volume == nil {
-			return fmt.Errorf("restore snapshot requires a volume reference")
-		}
-		if action.Snapshot == "" {
-			return fmt.Errorf("restore snapshot requires a snapshot id")
-		}
-		volume, ok := world.Volumes[action.Volume.Name]
-		if !ok {
-			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
-		}
-		// Only a snapshot this cluster took and verified may be restored. An
-		// operator cannot name arbitrary content and have it written over data.
-		//
-		// A snapshot recorded as backed up remains restorable even when the
-		// node's local copy is gone, which is exactly the host-loss case.
-		if _, known := volume.Snapshots[action.Snapshot]; !known {
-			return fmt.Errorf("snapshot %q of volume %q was never recorded",
-				action.Snapshot, action.Volume.Name)
-		}
-		// Restoring over a live writer would replace the filesystem underneath
-		// a running process.
-		if volume.Owner != "" {
-			return fmt.Errorf("volume %q must be detached before restore; it is attached to %q",
-				action.Volume.Name, volume.Owner)
-		}
-		// Restore overwrites durable data irreversibly. Like destruction, it
-		// needs a separately authenticated decision rather than an agent's.
-		if !hasApproval(world, goal.ID, "restore-volume") {
-			return fmt.Errorf("restoring volume %q requires restore-volume approval", action.Volume.Name)
-		}
-
-	case ActionMountSecret:
-		allocation, ok := world.Allocations[action.Target]
-		if !ok {
-			return fmt.Errorf("allocation %q does not exist", action.Target)
-		}
-		if allocation.Phase != AllocationCreated {
-			return fmt.Errorf("secrets must be mounted before allocation %q starts", action.Target)
-		}
-		if action.Secret == nil {
-			return fmt.Errorf("mount secret requires a secret reference")
-		}
-		// The reference must be one the goal actually declared. Otherwise an
-		// agent could mount material the operator never authorized for this
-		// workload.
-		if !goalDeclaresSecret(goal, *action.Secret) {
-			return fmt.Errorf("secret %q is not declared by the goal", action.Secret.Name)
-		}
-
-	case ActionGrantTools:
-		allocation, ok := world.Allocations[action.Target]
-		if !ok {
-			return fmt.Errorf("allocation %q does not exist", action.Target)
-		}
-		// The envelope is installed before the agent runs. Granting a tool to a
-		// started agent would widen a blast radius the kernel already authorized,
-		// which is the escalation this ordering exists to prevent.
-		if allocation.Phase != AllocationCreated {
-			return fmt.Errorf("tools must be granted before allocation %q starts", action.Target)
-		}
-		if goal.Workload.Runtime == nil {
-			return fmt.Errorf("tool grants are only for agent workloads")
-		}
-		// Every granted tool must be one the goal declared. Otherwise an agent
-		// could receive a capability the operator never authorized, which is the
-		// tool-grant equivalent of mounting an undeclared secret.
-		for _, grant := range action.Tools {
-			if !goalDeclaresTool(goal, grant) {
-				return fmt.Errorf("tool %q is not declared by the goal", grant.Name)
-			}
-		}
-		// A mutating tool lets an agent change state outside a4s, where no
-		// compensation or event log reaches. That needs a separately
-		// authenticated decision rather than an agent's judgement.
-		if actionGrantsMutatingTool(action) && !hasApproval(world, goal.ID, "agent-mutating-tools") {
-			return fmt.Errorf("granting mutating tools to %q requires agent-mutating-tools approval",
-				action.Target)
-		}
-
-	case ActionDrainAllocation:
-		allocation, ok := world.Allocations[action.Target]
-		if !ok {
-			return fmt.Errorf("allocation %q does not exist", action.Target)
-		}
-		if allocation.Phase != AllocationRunning {
-			return fmt.Errorf("allocation %q is not running", action.Target)
-		}
-		if goal.Workload.Runtime == nil {
-			return fmt.Errorf("drain is only for agent workloads")
-		}
-		if action.Workload != allocation.Workload {
-			return fmt.Errorf("workload differs from allocation")
-		}
-
-	case ActionAttachNetwork:
-		allocation, ok := world.Allocations[action.Target]
-		if !ok {
-			return fmt.Errorf("allocation %q does not exist", action.Target)
-		}
-		if allocation.Phase != AllocationCreated {
-			return fmt.Errorf("allocation %q must be attached before it starts", action.Target)
-		}
-		if action.Workload != allocation.Workload {
-			return fmt.Errorf("workload differs from allocation")
-		}
-
-	case ActionStartAllocation:
-		allocation, ok := world.Allocations[action.Target]
-		if !ok || allocation.Phase != AllocationCreated {
-			return fmt.Errorf("allocation %q is not created", action.Target)
-		}
-		if action.Workload != goal.Workload.Name || allocation.Workload != action.Workload {
-			return fmt.Errorf("workload differs from goal")
-		}
-		// Every declared volume must be attached at the current generation. A
-		// stale generation means this allocation was fenced while it was
-		// unreachable and must not resume writing.
-		for _, ref := range goal.Workload.Volumes {
-			volume, ok := world.Volumes[ref.Name]
-			if !ok {
-				return fmt.Errorf("allocation %q needs volume %q, which does not exist", action.Target, ref.Name)
-			}
-			attached, held := allocation.Volumes[ref.Name]
-			if !held {
-				return fmt.Errorf("allocation %q is missing volume %q", action.Target, ref.Name)
-			}
-			if attached != volume.Generation {
-				return fmt.Errorf("allocation %q holds a fenced generation of volume %q", action.Target, ref.Name)
-			}
-			if volume.Owner != action.Target {
-				return fmt.Errorf("volume %q is no longer owned by allocation %q", ref.Name, action.Target)
-			}
-		}
-		// Every declared secret must be mounted before the workload starts, or
-		// it would run without credentials it was promised.
-		for _, ref := range goal.Workload.Secrets {
-			if allocation.Secrets[ref.Name] != ref.Version {
-				return fmt.Errorf("allocation %q is missing secret %q version %q",
-					action.Target, ref.Name, ref.Version)
-			}
-		}
-		// A workload with a port needs its own address before it starts.
-		// Starting first would leave it either unreachable or, without a
-		// namespace, contending with its own replicas for a host port.
-		if goal.Workload.Port > 0 && allocation.Address == "" {
-			return fmt.Errorf("allocation %q has no network address", action.Target)
-		}
-		// An agent workload that declared tools must hold its envelope before it
-		// runs. Starting without it would leave the runtime to decide its own
-		// capabilities, which is precisely what the envelope removes.
-		if runtime := goal.Workload.Runtime; runtime != nil {
-			if len(runtime.Tools) > 0 && len(allocation.Tools) == 0 {
-				return fmt.Errorf("agent allocation %q has no tool grant", action.Target)
-			}
-			if allocation.Budget.IsZero() {
-				return fmt.Errorf("agent allocation %q holds no budget", action.Target)
-			}
-			// Starting an agent that already spent its ceiling would burn the
-			// budget again to reach the same exhausted state.
-			if allocation.Exhausted() {
-				return fmt.Errorf("agent allocation %q has exhausted its budget", action.Target)
-			}
-		}
-
-	case ActionStopAllocation:
-		allocation, ok := world.Allocations[action.Target]
-		if !ok {
-			return fmt.Errorf("allocation %q does not exist", action.Target)
-		}
-		if allocation.Phase != AllocationRunning {
-			return fmt.Errorf("allocation %q is not running", action.Target)
-		}
-		if action.Workload != allocation.Workload {
-			return fmt.Errorf("workload differs from allocation")
-		}
-		// An agent instance holds task context that a stateless replica does
-		// not. Stopping it mid-task destroys work rather than shifting load, so
-		// the instance must first be drained and observed holding nothing.
-		//
-		// An exhausted agent is exempt: it has hit a declared ceiling and cannot
-		// make progress on its task, so waiting for it to finish would wait
-		// forever.
-		if goal.Workload.Runtime != nil && allocation.Task != "" && !allocation.Exhausted() {
-			if !allocation.Draining {
-				return fmt.Errorf("agent allocation %q must be drained before it stops", action.Target)
-			}
-			return fmt.Errorf("agent allocation %q is still working on task %q",
-				action.Target, allocation.Task)
-		}
-		// The kernel enforces the availability floor independently. An agent
-		// that respects its own budget is convenient; an agent that cannot
-		// exceed it is a safety property.
-		if allocation.ReadyAt(world.Now()) {
-			floor := disruptionFloor(goal)
-			if remaining := servingAllocations(goal, world) - 1; remaining < floor {
-				return fmt.Errorf("stopping %q would leave %d ready replicas, below the availability floor of %d",
-					action.Target, remaining, floor)
-			}
-		}
-
-	case ActionDeleteAllocation:
-		allocation, ok := world.Allocations[action.Target]
-		if !ok {
-			return fmt.Errorf("allocation %q does not exist", action.Target)
-		}
-		// Deleting a running allocation would destroy a workload without the
-		// operator ever observing it stop. Stop is a required prior step.
-		if allocation.Phase == AllocationRunning {
-			return fmt.Errorf("allocation %q must be stopped before deletion", action.Target)
-		}
-		if action.Workload != allocation.Workload {
-			return fmt.Errorf("workload differs from allocation")
-		}
-		// Deleting an allocation that still owns a volume would orphan the
-		// storage, leaving data no workload can reach and no operator expects.
-		if len(allocation.Volumes) > 0 {
-			return fmt.Errorf("allocation %q must release its volumes before deletion", action.Target)
-		}
-		// Destroying durable data is the one action that cannot be undone by
-		// reconciliation, so it requires a separately authenticated approval
-		// rather than an agent's judgement.
-		if allocation.Stateful && !hasApproval(world, goal.ID, "destroy-stateful") {
-			return fmt.Errorf("deleting stateful allocation %q requires destroy-stateful approval", action.Target)
-		}
-
-	case ActionPublishRoute:
-		if goal.Route == nil {
-			return fmt.Errorf("goal does not request a route")
-		}
-		if action.Target != goal.Route.Host || action.Port != goal.Route.Port || action.Exposure != goal.Route.Exposure {
-			return fmt.Errorf("route differs from goal")
-		}
-		if action.Workload != goal.Workload.Name {
-			return fmt.Errorf("workload differs from goal")
-		}
-		if action.Exposure == "public" && !hasApproval(world, goal.ID, "public-route") {
-			return fmt.Errorf("public route requires public-route approval")
-		}
-		if matchingReadyAllocations(goal, world) < goal.Workload.Replicas {
-			return fmt.Errorf("workload is not ready")
-		}
-
-	default:
+	validator, ok := actionValidators[action.Kind]
+	if !ok {
 		return fmt.Errorf("unknown action kind %q", action.Kind)
 	}
+	return validator(goal, world, action)
+}
+
+func validatePullImage(goal Goal, world World, action Action) error {
+	node, ok := world.Nodes[action.Node]
+	if !ok || !node.Healthy {
+		return fmt.Errorf("node %q is missing or unhealthy", action.Node)
+	}
+	if action.Image != goal.Workload.Image || !strings.Contains(action.Image, "@sha256:") {
+		return fmt.Errorf("image must match the goal's pinned digest")
+	}
+	return nil
+}
+
+func validateCreateAllocation(goal Goal, world World, action Action) error {
+	if _, exists := world.Allocations[action.Target]; exists {
+		return fmt.Errorf("allocation %q already exists", action.Target)
+	}
+	node, ok := world.Nodes[action.Node]
+	if !ok || !node.Healthy {
+		return fmt.Errorf("node %q is missing or unhealthy", action.Node)
+	}
+	if !nodeAllowed(goal.Constraints, *node) {
+		return fmt.Errorf("node %q violates placement constraints", action.Node)
+	}
+	if action.Workload != goal.Workload.Name {
+		return fmt.Errorf("workload differs from goal")
+	}
+	if action.Image != goal.Workload.Image || !node.Images[action.Image] {
+		return fmt.Errorf("pinned image is not present on node %q", action.Node)
+	}
+	if action.Resources != goal.Workload.Resources {
+		return fmt.Errorf("resources differ from goal")
+	}
+	if !node.Used.Add(action.Resources).Fits(node.Capacity) {
+		return fmt.Errorf("node %q lacks capacity", action.Node)
+	}
+	// A queue-backed agent workload may exceed the goal's replica count, but
+	// only up to the ceiling the queue declares. The kernel recomputes that
+	// bound itself rather than trusting the agent's arithmetic.
+	if action.Replica < 0 || action.Replica >= authorizedReplicas(goal, world) {
+		return fmt.Errorf("replica index is outside goal")
+	}
+	return validateAgentPlacement(goal, *node, action)
+}
+
+func validateCreateVolume(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("create volume requires a volume reference")
+	}
+	if !workloadDeclaresVolume(goal, action.Volume.Name) {
+		return fmt.Errorf("volume %q is not declared by the goal", action.Volume.Name)
+	}
+	node, ok := world.Nodes[action.Node]
+	if !ok || !node.Healthy {
+		return fmt.Errorf("node %q is missing or unhealthy", action.Node)
+	}
+	if existing, exists := world.Volumes[action.Volume.Name]; exists && existing.Node != action.Node {
+		// Creating the same volume on a second node would silently produce
+		// two divergent copies of what the operator thinks is one volume.
+		return fmt.Errorf("volume %q already exists on node %q", action.Volume.Name, existing.Node)
+	}
+
+	return nil
+}
+
+func validateAttachVolume(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("attach volume requires a volume reference")
+	}
+	allocation, ok := world.Allocations[action.Target]
+	if !ok {
+		return fmt.Errorf("allocation %q does not exist", action.Target)
+	}
+	if allocation.Phase != AllocationCreated {
+		return fmt.Errorf("volumes must be attached before allocation %q starts", action.Target)
+	}
+	volume, ok := world.Volumes[action.Volume.Name]
+	if !ok {
+		return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+	}
+	if !workloadDeclaresVolume(goal, action.Volume.Name) {
+		return fmt.Errorf("volume %q is not declared by the goal", action.Volume.Name)
+	}
+	// The single-writer rule. Attaching a volume that another allocation
+	// still owns is how two processes end up writing one filesystem.
+	if volume.Owner != "" && volume.Owner != action.Target {
+		return fmt.Errorf("volume %q is owned by allocation %q", action.Volume.Name, volume.Owner)
+	}
+	// A volume mid-move must not be attached. The data is in flight, and a
+	// writer on either node could diverge from what is being transferred.
+	if volume.Handoff != nil {
+		return fmt.Errorf("volume %q is being moved to node %q and cannot be attached",
+			action.Volume.Name, volume.Handoff.To)
+	}
+	// Local storage stays local. Attaching across nodes would mean the data
+	// is not where the workload is.
+	if volume.Node != allocation.Node {
+		return fmt.Errorf("volume %q lives on node %q but allocation %q is on %q",
+			action.Volume.Name, volume.Node, action.Target, allocation.Node)
+	}
+
+	return nil
+}
+
+func validateDetachVolume(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("detach volume requires a volume reference")
+	}
+	volume, ok := world.Volumes[action.Volume.Name]
+	if !ok {
+		return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+	}
+	if volume.Owner != "" && volume.Owner != action.Target {
+		return fmt.Errorf("allocation %q does not own volume %q", action.Target, action.Volume.Name)
+	}
+	// Detaching from a running writer would pull storage out from under a
+	// live process. Stopping first is what makes the release safe.
+	if allocation, ok := world.Allocations[action.Target]; ok && allocation.Phase == AllocationRunning {
+		return fmt.Errorf("allocation %q must stop before releasing volume %q",
+			action.Target, action.Volume.Name)
+	}
+
+	return nil
+}
+
+func validateSnapshotVolume(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("snapshot volume requires a volume reference")
+	}
+	volume, ok := world.Volumes[action.Volume.Name]
+	if !ok {
+		return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+	}
+	// A raw filesystem snapshot of a running database is inconsistent: its
+	// files change under the copy, and a restore of it may not start. A
+	// database must be backed up with database_backup instead.
+	if goal.Workload.Engine != "" {
+		return fmt.Errorf(
+			"volume %q backs a %s database; use database_backup for a consistent copy",
+			action.Volume.Name, goal.Workload.Engine)
+	}
+	// A snapshot taken from a live writer may be internally inconsistent,
+	// and an operator would later trust it for restore.
+	if volume.Owner != "" {
+		return fmt.Errorf("volume %q must be quiesced before snapshotting; it is attached to %q",
+			action.Volume.Name, volume.Owner)
+	}
+
+	return nil
+}
+
+func validateQuiesceVolume(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("quiesce volume requires a volume reference")
+	}
+	volume, ok := world.Volumes[action.Volume.Name]
+	if !ok {
+		return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+	}
+	// Quiescing means the writer has stopped. Beginning a move under a live
+	// process would snapshot data that is still changing.
+	if volume.Owner != "" {
+		return fmt.Errorf("volume %q must be detached before a move; it is held by %q",
+			action.Volume.Name, volume.Owner)
+	}
+	target, ok := world.Nodes[action.Node]
+	if !ok || !target.Healthy {
+		return fmt.Errorf("handoff target %q is missing or unhealthy", action.Node)
+	}
+	if action.Node == volume.Node {
+		return fmt.Errorf("volume %q already lives on node %q", action.Volume.Name, action.Node)
+	}
+	// Moving data is irreversible in practice: the origin copy is expected
+	// to be reclaimed. It needs a separately authenticated decision.
+	if !hasApproval(world, goal.ID, "move-volume") {
+		return fmt.Errorf("moving volume %q requires move-volume approval", action.Volume.Name)
+	}
+
+	return nil
+}
+
+func validateTransferVolume(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("transfer volume requires a volume reference")
+	}
+	volume, ok := world.Volumes[action.Volume.Name]
+	if !ok {
+		return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+	}
+	if volume.Handoff == nil {
+		return fmt.Errorf("volume %q has no handoff in progress", action.Volume.Name)
+	}
+	if volume.Handoff.Phase != HandoffSnapshotted {
+		return fmt.Errorf("volume %q must be snapshotted before transfer, not %q",
+			action.Volume.Name, volume.Handoff.Phase)
+	}
+	if action.Node != volume.Handoff.To {
+		return fmt.Errorf("transfer target %q is not the handoff target %q",
+			action.Node, volume.Handoff.To)
+	}
+
+	return nil
+}
+
+func validateAdoptVolume(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("adopt volume requires a volume reference")
+	}
+	volume, ok := world.Volumes[action.Volume.Name]
+	if !ok {
+		return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+	}
+	if volume.Handoff == nil {
+		return fmt.Errorf("volume %q has no handoff in progress", action.Volume.Name)
+	}
+	// Ownership moves only after the target proved it holds the data.
+	if volume.Handoff.Phase != HandoffTransferred {
+		return fmt.Errorf("volume %q must be transferred before adoption, not %q",
+			action.Volume.Name, volume.Handoff.Phase)
+	}
+	if action.Node != volume.Handoff.To {
+		return fmt.Errorf("adoption node %q is not the handoff target %q",
+			action.Node, volume.Handoff.To)
+	}
+
+	return nil
+}
+
+func validateDatabaseBackup(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("database backup requires a volume reference")
+	}
+	if action.Snapshot == "" {
+		return fmt.Errorf("database backup requires a backup label")
+	}
+	if goal.Workload.Engine == "" {
+		return fmt.Errorf("database backup is only for database workloads")
+	}
+	volume, ok := world.Volumes[action.Volume.Name]
+	if !ok {
+		return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+	}
+	// Unlike a filesystem snapshot, a database backup runs against the live
+	// database. The engine produces a consistent copy while serving, so it
+	// must be attached and running, not detached.
+	if volume.Owner == "" {
+		return fmt.Errorf("database volume %q must be attached to back it up", action.Volume.Name)
+	}
+
+	return nil
+}
+
+func validateVerifyBackup(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("verify backup requires a volume reference")
+	}
+	if action.Snapshot == "" {
+		return fmt.Errorf("verify backup requires a snapshot id")
+	}
+	volume, ok := world.Volumes[action.Volume.Name]
+	if !ok {
+		return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+	}
+	// Only a recorded snapshot can be verified; there is nothing else whose
+	// recoverability is meaningful to check.
+	if _, known := volume.Snapshots[action.Snapshot]; !known {
+		return fmt.Errorf("snapshot %q of volume %q was never recorded",
+			action.Snapshot, action.Volume.Name)
+	}
+	// Verification is read-only: it restores into scratch space and
+	// discards. It needs no approval and can run against a live volume,
+	// which is what lets it happen on a schedule without disruption.
+
+	return nil
+}
+
+func validatePruneSnapshots(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("prune snapshots requires a volume reference")
+	}
+	volume, ok := world.Volumes[action.Volume.Name]
+	if !ok {
+		return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+	}
+	// Keeping zero snapshots would leave no recovery point at all, which
+	// defeats the reason snapshots exist. Retention has a floor of one.
+	if action.Retain < 1 {
+		return fmt.Errorf("prune must retain at least one snapshot")
+	}
+	// Pruning during a move could remove the very snapshot being
+	// transferred, stranding the handoff.
+	if volume.Handoff != nil {
+		return fmt.Errorf("volume %q is being moved and cannot be pruned", action.Volume.Name)
+	}
+
+	return nil
+}
+
+func validateBackupSnapshot(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("backup snapshot requires a volume reference")
+	}
+	if action.Snapshot == "" {
+		return fmt.Errorf("backup snapshot requires a snapshot id")
+	}
+	volume, ok := world.Volumes[action.Volume.Name]
+	if !ok {
+		return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+	}
+	// Only a verified snapshot may be shipped. Backing up unverified
+	// content would put something off-host that nobody has checked.
+	if _, known := volume.Snapshots[action.Snapshot]; !known {
+		return fmt.Errorf("snapshot %q of volume %q was never recorded",
+			action.Snapshot, action.Volume.Name)
+	}
+
+	return nil
+}
+
+func validateRestoreSnapshot(goal Goal, world World, action Action) error {
+	if action.Volume == nil {
+		return fmt.Errorf("restore snapshot requires a volume reference")
+	}
+	if action.Snapshot == "" {
+		return fmt.Errorf("restore snapshot requires a snapshot id")
+	}
+	volume, ok := world.Volumes[action.Volume.Name]
+	if !ok {
+		return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+	}
+	// Only a snapshot this cluster took and verified may be restored. An
+	// operator cannot name arbitrary content and have it written over data.
+	//
+	// A snapshot recorded as backed up remains restorable even when the
+	// node's local copy is gone, which is exactly the host-loss case.
+	if _, known := volume.Snapshots[action.Snapshot]; !known {
+		return fmt.Errorf("snapshot %q of volume %q was never recorded",
+			action.Snapshot, action.Volume.Name)
+	}
+	// Restoring over a live writer would replace the filesystem underneath
+	// a running process.
+	if volume.Owner != "" {
+		return fmt.Errorf("volume %q must be detached before restore; it is attached to %q",
+			action.Volume.Name, volume.Owner)
+	}
+	// Restore overwrites durable data irreversibly. Like destruction, it
+	// needs a separately authenticated decision rather than an agent's.
+	if !hasApproval(world, goal.ID, "restore-volume") {
+		return fmt.Errorf("restoring volume %q requires restore-volume approval", action.Volume.Name)
+	}
+
+	return nil
+}
+
+func validateMountSecret(goal Goal, world World, action Action) error {
+	allocation, ok := world.Allocations[action.Target]
+	if !ok {
+		return fmt.Errorf("allocation %q does not exist", action.Target)
+	}
+	if allocation.Phase != AllocationCreated {
+		return fmt.Errorf("secrets must be mounted before allocation %q starts", action.Target)
+	}
+	if action.Secret == nil {
+		return fmt.Errorf("mount secret requires a secret reference")
+	}
+	// The reference must be one the goal actually declared. Otherwise an
+	// agent could mount material the operator never authorized for this
+	// workload.
+	if !goalDeclaresSecret(goal, *action.Secret) {
+		return fmt.Errorf("secret %q is not declared by the goal", action.Secret.Name)
+	}
+
+	return nil
+}
+
+func validateGrantTools(goal Goal, world World, action Action) error {
+	allocation, ok := world.Allocations[action.Target]
+	if !ok {
+		return fmt.Errorf("allocation %q does not exist", action.Target)
+	}
+	// The envelope is installed before the agent runs. Granting a tool to a
+	// started agent would widen a blast radius the kernel already authorized,
+	// which is the escalation this ordering exists to prevent.
+	if allocation.Phase != AllocationCreated {
+		return fmt.Errorf("tools must be granted before allocation %q starts", action.Target)
+	}
+	if goal.Workload.Runtime == nil {
+		return fmt.Errorf("tool grants are only for agent workloads")
+	}
+	// Every granted tool must be one the goal declared. Otherwise an agent
+	// could receive a capability the operator never authorized, which is the
+	// tool-grant equivalent of mounting an undeclared secret.
+	for _, grant := range action.Tools {
+		if !goalDeclaresTool(goal, grant) {
+			return fmt.Errorf("tool %q is not declared by the goal", grant.Name)
+		}
+	}
+	// A mutating tool lets an agent change state outside a4s, where no
+	// compensation or event log reaches. That needs a separately
+	// authenticated decision rather than an agent's judgement.
+	if actionGrantsMutatingTool(action) && !hasApproval(world, goal.ID, "agent-mutating-tools") {
+		return fmt.Errorf("granting mutating tools to %q requires agent-mutating-tools approval",
+			action.Target)
+	}
+
+	return nil
+}
+
+func validateDrainAllocation(goal Goal, world World, action Action) error {
+	allocation, ok := world.Allocations[action.Target]
+	if !ok {
+		return fmt.Errorf("allocation %q does not exist", action.Target)
+	}
+	if allocation.Phase != AllocationRunning {
+		return fmt.Errorf("allocation %q is not running", action.Target)
+	}
+	if goal.Workload.Runtime == nil {
+		return fmt.Errorf("drain is only for agent workloads")
+	}
+	if action.Workload != allocation.Workload {
+		return fmt.Errorf("workload differs from allocation")
+	}
+
+	return nil
+}
+
+func validateAttachNetwork(goal Goal, world World, action Action) error {
+	allocation, ok := world.Allocations[action.Target]
+	if !ok {
+		return fmt.Errorf("allocation %q does not exist", action.Target)
+	}
+	if allocation.Phase != AllocationCreated {
+		return fmt.Errorf("allocation %q must be attached before it starts", action.Target)
+	}
+	if action.Workload != allocation.Workload {
+		return fmt.Errorf("workload differs from allocation")
+	}
+
+	return nil
+}
+
+func validateStartAllocation(goal Goal, world World, action Action) error {
+	allocation, ok := world.Allocations[action.Target]
+	if !ok || allocation.Phase != AllocationCreated {
+		return fmt.Errorf("allocation %q is not created", action.Target)
+	}
+	if action.Workload != goal.Workload.Name || allocation.Workload != action.Workload {
+		return fmt.Errorf("workload differs from goal")
+	}
+	// Every declared volume must be attached at the current generation. A
+	// stale generation means this allocation was fenced while it was
+	// unreachable and must not resume writing.
+	for _, ref := range goal.Workload.Volumes {
+		volume, ok := world.Volumes[ref.Name]
+		if !ok {
+			return fmt.Errorf("allocation %q needs volume %q, which does not exist", action.Target, ref.Name)
+		}
+		attached, held := allocation.Volumes[ref.Name]
+		if !held {
+			return fmt.Errorf("allocation %q is missing volume %q", action.Target, ref.Name)
+		}
+		if attached != volume.Generation {
+			return fmt.Errorf("allocation %q holds a fenced generation of volume %q", action.Target, ref.Name)
+		}
+		if volume.Owner != action.Target {
+			return fmt.Errorf("volume %q is no longer owned by allocation %q", ref.Name, action.Target)
+		}
+	}
+	// Every declared secret must be mounted before the workload starts, or
+	// it would run without credentials it was promised.
+	for _, ref := range goal.Workload.Secrets {
+		if allocation.Secrets[ref.Name] != ref.Version {
+			return fmt.Errorf("allocation %q is missing secret %q version %q",
+				action.Target, ref.Name, ref.Version)
+		}
+	}
+	// A workload with a port needs its own address before it starts.
+	// Starting first would leave it either unreachable or, without a
+	// namespace, contending with its own replicas for a host port.
+	if goal.Workload.Port > 0 && allocation.Address == "" {
+		return fmt.Errorf("allocation %q has no network address", action.Target)
+	}
+	// An agent workload that declared tools must hold its envelope before it
+	// runs. Starting without it would leave the runtime to decide its own
+	// capabilities, which is precisely what the envelope removes.
+	if runtime := goal.Workload.Runtime; runtime != nil {
+		if len(runtime.Tools) > 0 && len(allocation.Tools) == 0 {
+			return fmt.Errorf("agent allocation %q has no tool grant", action.Target)
+		}
+		if allocation.Budget.IsZero() {
+			return fmt.Errorf("agent allocation %q holds no budget", action.Target)
+		}
+		// Starting an agent that already spent its ceiling would burn the
+		// budget again to reach the same exhausted state.
+		if allocation.Exhausted() {
+			return fmt.Errorf("agent allocation %q has exhausted its budget", action.Target)
+		}
+	}
+
+	return nil
+}
+
+func validateStopAllocation(goal Goal, world World, action Action) error {
+	allocation, ok := world.Allocations[action.Target]
+	if !ok {
+		return fmt.Errorf("allocation %q does not exist", action.Target)
+	}
+	if allocation.Phase != AllocationRunning {
+		return fmt.Errorf("allocation %q is not running", action.Target)
+	}
+	if action.Workload != allocation.Workload {
+		return fmt.Errorf("workload differs from allocation")
+	}
+	// An agent instance holds task context that a stateless replica does
+	// not. Stopping it mid-task destroys work rather than shifting load, so
+	// the instance must first be drained and observed holding nothing.
+	//
+	// An exhausted agent is exempt: it has hit a declared ceiling and cannot
+	// make progress on its task, so waiting for it to finish would wait
+	// forever.
+	if goal.Workload.Runtime != nil && allocation.Task != "" && !allocation.Exhausted() {
+		if !allocation.Draining {
+			return fmt.Errorf("agent allocation %q must be drained before it stops", action.Target)
+		}
+		return fmt.Errorf("agent allocation %q is still working on task %q",
+			action.Target, allocation.Task)
+	}
+	// The kernel enforces the availability floor independently. An agent
+	// that respects its own budget is convenient; an agent that cannot
+	// exceed it is a safety property.
+	if allocation.ReadyAt(world.Now()) {
+		floor := disruptionFloor(goal)
+		if remaining := servingAllocations(goal, world) - 1; remaining < floor {
+			return fmt.Errorf("stopping %q would leave %d ready replicas, below the availability floor of %d",
+				action.Target, remaining, floor)
+		}
+	}
+
+	return nil
+}
+
+func validateDeleteAllocation(goal Goal, world World, action Action) error {
+	allocation, ok := world.Allocations[action.Target]
+	if !ok {
+		return fmt.Errorf("allocation %q does not exist", action.Target)
+	}
+	// Deleting a running allocation would destroy a workload without the
+	// operator ever observing it stop. Stop is a required prior step.
+	if allocation.Phase == AllocationRunning {
+		return fmt.Errorf("allocation %q must be stopped before deletion", action.Target)
+	}
+	if action.Workload != allocation.Workload {
+		return fmt.Errorf("workload differs from allocation")
+	}
+	// Deleting an allocation that still owns a volume would orphan the
+	// storage, leaving data no workload can reach and no operator expects.
+	if len(allocation.Volumes) > 0 {
+		return fmt.Errorf("allocation %q must release its volumes before deletion", action.Target)
+	}
+	// Destroying durable data is the one action that cannot be undone by
+	// reconciliation, so it requires a separately authenticated approval
+	// rather than an agent's judgement.
+	if allocation.Stateful && !hasApproval(world, goal.ID, "destroy-stateful") {
+		return fmt.Errorf("deleting stateful allocation %q requires destroy-stateful approval", action.Target)
+	}
+
+	return nil
+}
+
+func validatePublishRoute(goal Goal, world World, action Action) error {
+	if goal.Route == nil {
+		return fmt.Errorf("goal does not request a route")
+	}
+	if action.Target != goal.Route.Host || action.Port != goal.Route.Port || action.Exposure != goal.Route.Exposure {
+		return fmt.Errorf("route differs from goal")
+	}
+	if action.Workload != goal.Workload.Name {
+		return fmt.Errorf("workload differs from goal")
+	}
+	if action.Exposure == "public" && !hasApproval(world, goal.ID, "public-route") {
+		return fmt.Errorf("public route requires public-route approval")
+	}
+	if matchingReadyAllocations(goal, world) < goal.Workload.Replicas {
+		return fmt.Errorf("workload is not ready")
+	}
+
 	return nil
 }
 
