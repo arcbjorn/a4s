@@ -142,6 +142,39 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			},
 		}, nil
 
+	case ActionQuiesceVolume:
+		if action.Volume == nil {
+			return Evidence{}, fmt.Errorf("quiesce volume requires a volume reference")
+		}
+		return Evidence{
+			Kind: EvidenceVolumeQuiesced, Target: action.Volume.Name,
+			Observed: map[string]string{"to": action.Node},
+		}, nil
+
+	case ActionTransferVolume:
+		if action.Volume == nil {
+			return Evidence{}, fmt.Errorf("transfer volume requires a volume reference")
+		}
+		volume, ok := e.world.Volumes[action.Volume.Name]
+		if !ok || volume.Handoff == nil {
+			return Evidence{}, fmt.Errorf("volume %q has no handoff in progress", action.Volume.Name)
+		}
+		return Evidence{
+			Kind: EvidenceVolumeTransferred, Target: action.Volume.Name,
+			Observed: map[string]string{
+				"node": action.Node, "checksum": volume.Handoff.Checksum,
+			},
+		}, nil
+
+	case ActionAdoptVolume:
+		if action.Volume == nil {
+			return Evidence{}, fmt.Errorf("adopt volume requires a volume reference")
+		}
+		return Evidence{
+			Kind: EvidenceVolumeAdopted, Target: action.Volume.Name,
+			Observed: map[string]string{"node": action.Node},
+		}, nil
+
 	case ActionBackupSnapshot:
 		if action.Volume == nil || action.Snapshot == "" {
 			return Evidence{}, fmt.Errorf("backup snapshot requires a volume reference and snapshot id")
@@ -313,6 +346,34 @@ func simulateAction(world *World, action Action) error {
 			}
 			volume.Snapshots["simulated"] = "simulated"
 			volume.LastSnapshot = "simulated"
+		}
+
+	case ActionQuiesceVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("quiesce volume requires a volume reference")
+		}
+		if volume, ok := world.Volumes[action.Volume.Name]; ok {
+			volume.Handoff = &VolumeHandoff{
+				From: volume.Node, To: action.Node, Phase: HandoffQuiesced,
+			}
+		}
+
+	case ActionTransferVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("transfer volume requires a volume reference")
+		}
+		if volume, ok := world.Volumes[action.Volume.Name]; ok && volume.Handoff != nil {
+			volume.Handoff.Phase = HandoffTransferred
+		}
+
+	case ActionAdoptVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("adopt volume requires a volume reference")
+		}
+		if volume, ok := world.Volumes[action.Volume.Name]; ok && volume.Handoff != nil {
+			volume.Node = volume.Handoff.To
+			volume.Generation++
+			volume.Handoff = nil
 		}
 
 	case ActionBackupSnapshot:
