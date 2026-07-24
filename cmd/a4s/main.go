@@ -15,6 +15,7 @@ import (
 	"github.com/arcbjorn/a4s/control"
 	"github.com/arcbjorn/a4s/eventlog"
 	a4snode "github.com/arcbjorn/a4s/node"
+	"github.com/arcbjorn/a4s/server"
 )
 
 const version = "0.2.0-dev"
@@ -38,6 +39,8 @@ func run(args []string) error {
 		return simulate(args[1:])
 	case "node":
 		return runNode(args[1:])
+	case "server":
+		return runServer(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -47,6 +50,56 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// runServer starts the control plane against a durable event log and reports
+// the world it recovered. Recovery is the normal startup path, so the same code
+// runs whether the log is empty or holds a full history.
+func runServer(args []string) error {
+	flags := flag.NewFlagSet("server", flag.ContinueOnError)
+	eventLog := flags.String("event-log", "", "absolute path to the durable event log")
+	file := flags.String("file", "", "optional scenario supplying node inventory and approvals")
+	statusOnly := flags.Bool("status", false, "report recovered state and exit")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *eventLog == "" {
+		return fmt.Errorf("event-log is required")
+	}
+
+	base := control.World{}
+	var goal *control.Goal
+	if *file != "" {
+		scenario, err := loadScenario(*file)
+		if err != nil {
+			return err
+		}
+		base = scenario.World
+		goal = &scenario.Goal
+	}
+
+	instance, err := server.Open(server.Config{EventLog: *eventLog, Base: base},
+		control.RolloutAgent{}, control.PlacementAgent{}, control.NetworkAgent{})
+	if err != nil {
+		return err
+	}
+	defer instance.Close()
+
+	if goal != nil {
+		if err := instance.Submit(*goal); err != nil {
+			return err
+		}
+	}
+	status := instance.Status()
+	fmt.Printf("recovered revision %d from %d events: %d nodes, %d allocations, %d routes, %d goals\n",
+		status.Revision, status.Events, status.Nodes, status.Allocations, status.Routes, status.Goals)
+	if *statusOnly {
+		return nil
+	}
+	// Reconciliation requires a connected node executor, which needs the
+	// authenticated transport that is not implemented yet. Refusing here is
+	// clearer than pretending to serve.
+	return fmt.Errorf("no node transport is configured; run with --status until node enrollment exists")
 }
 
 func runNode(args []string) error {
@@ -231,5 +284,6 @@ Usage:
   a4s validate --file scenario.json
   a4s simulate --file scenario.json [--json] [--event-log /path] [--max-rounds N]
   a4s node --node-id ID --key-id ID --public-key /path [runtime flags]
+  a4s server --event-log /path [--file scenario.json] [--status]
   a4s version`)
 }
