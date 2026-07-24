@@ -202,6 +202,42 @@ No executor returns readiness. The memory executor reports `allocation.running`
 exactly as the real node does; an independent prober supplies
 `allocation.ready`. See "Evidence and projection" below.
 
+### `stop_allocation`
+
+Required semantic fields: `id`, `kind`, `target`, and `workload`.
+
+Kernel rules:
+
+- Allocation exists and is in the `running` phase.
+- Workload equals the allocation's workload.
+
+Node behavior:
+
+- Signal the task, wait up to the kill deadline, then kill it.
+- Report the observed exit code and whether a kill was required.
+- Clear local running intent, so the supervisor stops restarting it.
+- An already-absent task is reported as `already_gone` rather than an error.
+
+### `delete_allocation`
+
+Required semantic fields: `id`, `kind`, `target`, and `workload`.
+
+Kernel rules:
+
+- Allocation exists and is not running. Stop is a required prior step, so a
+  workload is never destroyed without the operator observing it stop.
+- Workload equals the allocation's workload.
+- Stateful allocations are refused until the volume ownership protocol exists.
+
+Node behavior:
+
+- Refuse to delete a container a4s does not own.
+- Remove the container and its snapshot.
+- Succeed when the container is already absent, so a replayed delete is safe.
+- Forget local desired state for the allocation.
+
+Deletion releases the node capacity that creation charged.
+
 ### `publish_route`
 
 Required semantic fields: `id`, `kind`, `target`, `workload`, `port`, and
@@ -215,8 +251,11 @@ Kernel rules:
 - Public exposure has a granted `public-route` approval.
 - Proposal declares a `route_reachable` check for the host.
 
-Only the memory executor implements this action. There is no node gateway
-backend yet.
+The node's router owns this action, separately from the container runtime, so
+publishing a route and starting a container are distinct capabilities with
+distinct blast radius. The router hands the gateway a complete route snapshot
+rather than an incremental edit, and restores the previous snapshot if the
+gateway refuses the new one. No concrete gateway backend is implemented yet.
 
 ## Current capability grants
 
@@ -227,6 +266,11 @@ backend yet.
 
 An agent cannot acquire another action by returning it in its descriptor or
 proposal.
+
+No agent is currently granted `stop_allocation` or `delete_allocation`. The
+kernel validates and the node executes them, but the agent that will propose
+them is the future rollout agent. Granting a destructive capability before the
+agent that needs it exists would widen authority for no reason.
 
 ## Reconciliation sequence
 
@@ -284,9 +328,18 @@ Implemented evidence kinds:
 |---|---|---|
 | `image.present` | Executor | Marks the image present on the observed node |
 | `allocation.created` | Executor | Creates the allocation and charges node capacity once |
-| `allocation.running` | Executor | Moves the allocation to `running`; never sets readiness |
+| `allocation.running` | Executor or supervisor | Moves the allocation to `running`; never sets readiness |
 | `allocation.ready` | Prober | Sets readiness on an allocation already observed running |
-| `route.reachable` | Prober or gateway | Records the route |
+| `allocation.stopped` | Executor | Moves to `stopped` and clears readiness |
+| `allocation.failed` | Supervisor | Records exit code and restart count; clears readiness |
+| `allocation.deleted` | Executor | Removes the allocation and releases its capacity once |
+| `route.reachable` | Router or gateway | Records the route |
+| `route.removed` | Router | Removes the route |
+
+Readiness evidence carries `observed_at` and `expires_at`. An expired readiness
+observation stops satisfying a goal, because a service that was healthy when
+measured is not necessarily healthy now. State-change evidence such as
+`allocation.created` does not expire.
 
 The separation between `allocation.running` and `allocation.ready` is a
 security boundary, not a naming detail. The component that started a container
@@ -383,7 +436,7 @@ Success:
 {
   "envelope_id": "envelope-123",
   "result": {
-    "envelope_digest": "<hex sha256 of the signed envelope bytes>",
+    "envelope_digest": "<hex sha256 of the authorized work>",
     "evidence": {
       "kind": "allocation.running",
       "target": "web-0",
@@ -412,9 +465,15 @@ The only condition that still terminates the reader is an undecodable frame,
 because a malformed frame desynchronizes the stream and the reader cannot
 determine where the next envelope begins.
 
-Repeating the same idempotency key and envelope returns the stored result
-without invoking the runtime. Reusing the key with a different envelope digest
-is rejected.
+Repeating the same idempotency key for the same work returns the stored result
+without invoking the runtime. Reusing the key for different work is rejected.
+
+The ledger compares a digest of the *authorized work* — node, goal, proposal,
+idempotency key, and action — not of the whole envelope. A controller that
+retries after a timeout issues a fresh envelope with new issue and expiry times
+and a new envelope ID, but it is requesting the same work. Comparing whole
+envelopes would reject that honest retry while providing no additional
+protection, since the signature already covers the envelope.
 
 ## Versioning policy
 
