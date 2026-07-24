@@ -250,3 +250,88 @@ func describeAllocations(world control.World) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// The server must be able to explain its own history, since the log it holds is
+// the authoritative record of why anything exists.
+func TestServerExplainsFromDurableHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	server := openServer(t, path)
+	defer server.Close()
+
+	if err := server.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	executor := control.NewMemoryExecutor(baseWorld())
+	if err := server.Reconcile("web-public", executorOver{executor},
+		control.NewMeasuredProber(executor, map[string]control.ProbeTarget{
+			"web-0": {Allocation: "web-0", Kind: control.ProbeProcess},
+		})); err != nil {
+		t.Fatal(err)
+	}
+
+	explanation := server.Explain("web-0")
+	if !explanation.Found || explanation.Status != control.StateServing {
+		t.Fatalf("server could not explain its own allocation: %+v", explanation)
+	}
+	if len(explanation.Goals) != 1 || explanation.Goals[0] != "web-public" {
+		t.Fatalf("explanation did not attribute the allocation: %+v", explanation.Goals)
+	}
+}
+
+// Diagnosis must work against the server's recovered state, which is the case
+// an operator actually hits after a restart.
+func TestServerDiagnosesConvergedGoal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	server := openServer(t, path)
+	defer server.Close()
+
+	if err := server.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	executor := control.NewMemoryExecutor(baseWorld())
+	if err := server.Reconcile("web-public", executorOver{executor},
+		control.NewMeasuredProber(executor, map[string]control.ProbeTarget{
+			"web-0": {Allocation: "web-0", Kind: control.ProbeProcess},
+		})); err != nil {
+		t.Fatal(err)
+	}
+
+	if diagnosis := server.Diagnose("web-public", nil); !diagnosis.Converged {
+		t.Fatalf("a converged goal was diagnosed as failing: %s", diagnosis)
+	}
+}
+
+// Planning against the server's real projection must report nothing to do once
+// the goal is satisfied, and must not disturb the recovered world.
+func TestServerPlanIsReadOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	server := openServer(t, path)
+	defer server.Close()
+
+	if err := server.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	before := server.Status()
+
+	plan, err := server.Plan("web-public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Steps) == 0 {
+		t.Fatal("server planned no work for an unsatisfied goal")
+	}
+	after := server.Status()
+	if before != after {
+		t.Fatalf("planning changed server state:\nbefore: %+v\nafter:  %+v", before, after)
+	}
+}
+
+func TestServerRefusesPlanForUnknownGoal(t *testing.T) {
+	server := openServer(t, filepath.Join(t.TempDir(), "events.jsonl"))
+	defer server.Close()
+
+	if _, err := server.Plan("never-submitted"); err == nil ||
+		!strings.Contains(err.Error(), "never accepted") {
+		t.Fatalf("expected an unknown-goal error, got %v", err)
+	}
+}
