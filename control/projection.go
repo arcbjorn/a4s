@@ -9,6 +9,10 @@ const (
 	EvidenceImagePresent      = "image.present"
 	EvidenceAllocationCreated = "allocation.created"
 	EvidenceSecretMounted     = "secret.mounted"
+	EvidenceVolumeCreated     = "volume.created"
+	EvidenceVolumeAttached    = "volume.attached"
+	EvidenceVolumeDetached    = "volume.detached"
+	EvidenceVolumeSnapshotted = "volume.snapshotted"
 	EvidenceNetworkAttached   = "network.attached"
 	EvidenceNetworkDetached   = "network.detached"
 	EvidenceAllocationRunning = "allocation.running"
@@ -81,6 +85,83 @@ func projectInto(world *World, evidence Evidence) error {
 			Phase: AllocationCreated,
 		}
 		node.Used = node.Used.Add(resources)
+
+	case EvidenceVolumeCreated:
+		if evidence.Target == "" {
+			return fmt.Errorf("evidence %q must name a volume", evidence.Kind)
+		}
+		node := evidence.Observed["node"]
+		if _, ok := world.Nodes[node]; !ok {
+			return fmt.Errorf("evidence %q names unknown node %q", evidence.Kind, node)
+		}
+		// Re-creating an existing volume must not reset its ownership or
+		// generation, which would unfence a writer that has been superseded.
+		if _, exists := world.Volumes[evidence.Target]; exists {
+			return nil
+		}
+		world.Volumes[evidence.Target] = &Volume{
+			Name: evidence.Target, Node: node, SizeMB: observedInt(evidence, "size_mb"),
+		}
+
+	case EvidenceVolumeAttached:
+		volume, ok := world.Volumes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
+		}
+		owner := evidence.Observed["allocation"]
+		if owner == "" {
+			return fmt.Errorf("evidence %q must observe an allocation", evidence.Kind)
+		}
+		allocation, ok := world.Allocations[owner]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, owner)
+		}
+		// Attaching to the current owner is an idempotent repeat. Attaching to
+		// a different one while the volume is still held would create a second
+		// writer, which is the failure this whole subsystem exists to prevent.
+		if volume.Owner != "" && volume.Owner != owner {
+			return fmt.Errorf("volume %q is owned by allocation %q", evidence.Target, volume.Owner)
+		}
+		if volume.Owner != owner {
+			volume.Owner = owner
+			volume.Generation++
+		}
+		if allocation.Volumes == nil {
+			allocation.Volumes = make(map[string]uint64)
+		}
+		allocation.Volumes[evidence.Target] = volume.Generation
+
+	case EvidenceVolumeDetached:
+		volume, ok := world.Volumes[evidence.Target]
+		if !ok {
+			// Detaching an absent volume is the expected result of a replayed
+			// teardown.
+			return nil
+		}
+		owner := evidence.Observed["allocation"]
+		// Only the current owner may release. A stale detach from a fenced
+		// writer must not free a volume the new owner is already using.
+		if volume.Owner != "" && owner != "" && volume.Owner != owner {
+			return nil
+		}
+		if allocation, ok := world.Allocations[volume.Owner]; ok {
+			delete(allocation.Volumes, evidence.Target)
+		}
+		volume.Owner = ""
+		// The generation advances on release as well, so a writer that was
+		// detached while unreachable cannot resume against the same generation.
+		volume.Generation++
+
+	case EvidenceVolumeSnapshotted:
+		volume, ok := world.Volumes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
+		}
+		snapshot := evidence.Observed["snapshot"]
+		if snapshot == "" {
+			return fmt.Errorf("evidence %q must observe a snapshot id", evidence.Kind)
+		}
+		volume.LastSnapshot = snapshot
 
 	case EvidenceSecretMounted:
 		allocation, ok := world.Allocations[evidence.Target]
