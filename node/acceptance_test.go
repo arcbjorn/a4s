@@ -87,11 +87,27 @@ func newAcceptanceRig(t *testing.T) *acceptanceRig {
 		t.Fatal(err)
 	}
 	gateway := &recordingGateway{}
+	memoryNetwork, err := NewMemoryNetwork("10.42.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	network := NewNetwork(memoryNetwork)
+	containers := NewContainerRuntime(backend)
+	// Containers join the namespace the network created for them, exactly as
+	// they do on a real node.
+	containers.Namespaces = func(allocation string) string {
+		attachment, err := network.Attachment(context.Background(), allocation)
+		if err != nil {
+			return ""
+		}
+		return attachment.Namespace
+	}
 	dispatcher := &Dispatcher{
 		NodeID: "base", Keys: map[string]ed25519.PublicKey{"control-1": publicKey},
 		Runtime: &CompositeRuntime{
-			Containers: NewContainerRuntime(backend),
+			Containers: containers,
 			Routes:     NewRouter(gateway),
+			Networks:   network,
 		},
 		Ledger: ledger, Desired: desired, Now: time.Now,
 	}
