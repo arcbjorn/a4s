@@ -28,6 +28,44 @@ type WorkloadSpec struct {
 	Stateful   bool      `json:"stateful,omitempty"`
 	// Secrets names material this workload needs. Only references appear here.
 	Secrets []SecretRef `json:"secrets,omitempty"`
+	// Volumes names durable storage this workload needs. A workload declaring
+	// volumes is stateful, which changes what the kernel will authorize.
+	Volumes []VolumeRef `json:"volumes,omitempty"`
+}
+
+// VolumeRef names durable storage a workload requires.
+type VolumeRef struct {
+	// Name identifies the volume within the cluster.
+	Name string `json:"name"`
+	// MountPath is where the workload expects to find it.
+	MountPath string `json:"mount_path"`
+	// ReadOnly mounts without write access, which is safe to share.
+	ReadOnly bool `json:"read_only,omitempty"`
+}
+
+// Volume is durable storage with an owner and a home.
+//
+// A volume is an explicit object rather than an implicit side effect of a
+// container, because the thing that must not be lost has to be nameable
+// independently of the process using it.
+type Volume struct {
+	Name string `json:"name"`
+	// Node is where the data physically lives. Local storage stays local: a
+	// volume does not follow a workload to another node without an explicit,
+	// evidenced handoff.
+	Node string `json:"node"`
+	// Owner is the allocation currently permitted to write. Empty means the
+	// volume is unattached and available.
+	Owner string `json:"owner,omitempty"`
+	// Generation increments on every ownership change. A node holding an older
+	// generation is fenced: it may no longer write, even if it still believes
+	// it owns the volume. This is what makes a partition safe.
+	Generation uint64 `json:"generation"`
+	// SizeMB is the provisioned size.
+	SizeMB int `json:"size_mb,omitempty"`
+	// LastSnapshot records the most recent verified snapshot, which is what
+	// makes a destructive action recoverable.
+	LastSnapshot string `json:"last_snapshot,omitempty"`
 }
 
 // SecretRef names secret material without carrying it.
@@ -94,6 +132,7 @@ type World struct {
 	Nodes       map[string]*Node       `json:"nodes"`
 	Allocations map[string]*Allocation `json:"allocations,omitempty"`
 	Routes      map[string]*Route      `json:"routes,omitempty"`
+	Volumes     map[string]*Volume     `json:"volumes,omitempty"`
 	Approvals   map[string]*Approval   `json:"approvals,omitempty"`
 	// KnownGood records, per workload, the last image digest observed serving.
 	// A rollout can only roll back to a version this cluster actually saw
@@ -139,6 +178,10 @@ type Allocation struct {
 	Phase     AllocationPhase `json:"phase"`
 	Ready     bool            `json:"ready"`
 	Stateful  bool            `json:"stateful,omitempty"`
+	// Volumes records the volumes attached to this allocation, with the
+	// generation each was attached at. A generation mismatch means this
+	// allocation has been fenced and must not write.
+	Volumes map[string]uint64 `json:"volumes,omitempty"`
 	// Secrets records the secret versions mounted for this allocation. Versions
 	// only: the world projection never holds secret material.
 	Secrets map[string]string `json:"secrets,omitempty"`
@@ -206,6 +249,10 @@ const (
 	ActionCreateAllocation ActionKind = "create_allocation"
 	ActionAttachNetwork    ActionKind = "attach_network"
 	ActionMountSecret      ActionKind = "mount_secret"
+	ActionCreateVolume     ActionKind = "create_volume"
+	ActionAttachVolume     ActionKind = "attach_volume"
+	ActionDetachVolume     ActionKind = "detach_volume"
+	ActionSnapshotVolume   ActionKind = "snapshot_volume"
 	ActionStartAllocation  ActionKind = "start_allocation"
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
@@ -223,6 +270,8 @@ type Action struct {
 	Resources Resources  `json:"resources,omitempty"`
 	Port      int        `json:"port,omitempty"`
 	Exposure  string     `json:"exposure,omitempty"`
+	// Volume names the volume this action operates on.
+	Volume *VolumeRef `json:"volume,omitempty"`
 	// Secret names the reference to mount. An action carries the reference, not
 	// the material, so a proposal remains safe to log in full.
 	Secret    *SecretRef `json:"secret,omitempty"`
