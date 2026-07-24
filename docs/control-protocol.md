@@ -467,7 +467,7 @@ gateway refuses the new one. No concrete gateway backend is implemented yet.
 | `placement-agent` | `pull_image`, `create_allocation`, `create_volume`, `attach_volume`, `mount_secret`, `attach_network`, `start_allocation` |
 | `network-agent` | `publish_route` |
 | `rollout-agent` | `stop_allocation`, `delete_allocation`, `detach_volume` |
-| `storage-agent` | `snapshot_volume`, `backup_snapshot`, `restore_snapshot`, `quiesce_volume`, `transfer_volume`, `adopt_volume`, `prune_snapshots`, `verify_backup` |
+| `storage-agent` | `snapshot_volume`, `database_backup`, `backup_snapshot`, `restore_snapshot`, `quiesce_volume`, `transfer_volume`, `adopt_volume`, `prune_snapshots`, `verify_backup` |
 
 An agent cannot acquire another action by returning it in its descriptor or
 proposal.
@@ -546,6 +546,7 @@ Implemented evidence kinds:
 | `volume.adopted` | Volumes | Ownership moved and the generation advanced |
 | `volume.snapshots_pruned` | Volumes | Records which snapshots were removed |
 | `volume.backup_verified` | Volumes | Records whether a backup was proven recoverable |
+| `database.backed_up` | Databases | Records a consistent engine backup as a recovery point |
 | `secret.mounted` | Secrets | Records the mounted secret version, never the material |
 | `network.attached` | Network | Records the allocation's own address |
 | `network.detached` | Network | Clears the address on teardown |
@@ -890,3 +891,36 @@ Rules:
 
 The origin stays authoritative until adoption. A transfer that fails leaves the
 volume where it was, with the move's snapshot still usable as a local backup.
+
+## Database workloads
+
+A database is not a generic container. Its files are inconsistent when copied
+while it runs, and it is ready only when it accepts connections, not when its
+port binds. A workload declaring an `engine` is treated accordingly.
+
+Constraints, enforced at validation:
+
+- The engine must be one the agents can back up consistently (currently
+  `postgres`).
+- It must declare a volume for its data.
+- It must have exactly one replica; two writers on one data directory is
+  corruption.
+
+### `database_backup`
+
+A raw `snapshot_volume` of a database is refused. The kernel directs the
+operator to `database_backup`, which invokes the engine's own tool
+(pg_basebackup for Postgres) against the live database. Unlike a filesystem
+snapshot, this runs while the database serves and requires the volume to be
+attached and running, because the backup comes from the database rather than
+from its files at rest.
+
+The result is a first-class recovery point: it lands in the volume's snapshot
+area and can be verified, pruned, and restored like any other snapshot.
+
+### Database readiness
+
+A database workload gets a `database` probe rather than a TCP one. The engine
+opens a connection and runs a trivial query; a database still replaying its
+write-ahead log binds the port but rejects that query, so only the connection
+proves it is serving.
