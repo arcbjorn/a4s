@@ -13,6 +13,7 @@ const (
 	EvidenceVolumeAttached    = "volume.attached"
 	EvidenceVolumeDetached    = "volume.detached"
 	EvidenceVolumeSnapshotted = "volume.snapshotted"
+	EvidenceVolumeRestored    = "volume.restored"
 	EvidenceNetworkAttached   = "network.attached"
 	EvidenceNetworkDetached   = "network.detached"
 	EvidenceAllocationRunning = "allocation.running"
@@ -158,10 +159,37 @@ func projectInto(world *World, evidence Evidence) error {
 			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
 		}
 		snapshot := evidence.Observed["snapshot"]
+		checksum := evidence.Observed["checksum"]
+		if snapshot == "" || checksum == "" {
+			// A snapshot without a checksum cannot be verified at restore time,
+			// which makes it a guess rather than a backup.
+			return fmt.Errorf("evidence %q must observe a snapshot id and checksum", evidence.Kind)
+		}
+		if volume.Snapshots == nil {
+			volume.Snapshots = make(map[string]string)
+		}
+		if existing, taken := volume.Snapshots[snapshot]; taken && existing != checksum {
+			// Two different contents under one snapshot id means one of them is
+			// not what the operator thinks it is.
+			return fmt.Errorf("snapshot %q of volume %q already exists with a different checksum",
+				snapshot, evidence.Target)
+		}
+		volume.Snapshots[snapshot] = checksum
+		volume.LastSnapshot = snapshot
+
+	case EvidenceVolumeRestored:
+		volume, ok := world.Volumes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
+		}
+		snapshot := evidence.Observed["snapshot"]
 		if snapshot == "" {
 			return fmt.Errorf("evidence %q must observe a snapshot id", evidence.Kind)
 		}
-		volume.LastSnapshot = snapshot
+		if _, known := volume.Snapshots[snapshot]; !known {
+			return fmt.Errorf("volume %q was restored from unknown snapshot %q", evidence.Target, snapshot)
+		}
+		volume.RestoredFrom = snapshot
 
 	case EvidenceSecretMounted:
 		allocation, ok := world.Allocations[evidence.Target]
