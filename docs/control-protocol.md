@@ -247,6 +247,27 @@ the restored copy and verifies it again before swapping it in. Restoring a
 corrupt snapshot would destroy the only remaining copy and replace it with
 something unusable, which is worse than the failure being restored from.
 
+### `backup_snapshot`
+
+A snapshot that exists only on its volume's own node does not survive the loss
+of that node, which is the failure backups exist for. `backup_snapshot` ships a
+verified snapshot to a store outside the node.
+
+Rules:
+
+- Only a snapshot already recorded and checksummed is shipped. The node
+  re-verifies before sending, so a snapshot that rotted on local disk is not
+  propagated as though it were good.
+- The store must not live inside the volume root. A backup on the same disk as
+  its data is lost with that disk, so the configuration is refused rather than
+  discovered during an incident.
+- A backup is as immutable as the snapshot it holds.
+
+When a restore names a snapshot whose local copy is gone, the node fetches it
+from the backup store and verifies it exactly as it would a local one. Restore
+evidence records which source was used, because after an incident an operator
+needs to know whether recovery came from local state or off-host backup.
+
 ### `mount_secret`
 
 Required semantic fields: `id`, `kind`, `target`, `workload`, `node`, and
@@ -402,9 +423,14 @@ gateway refuses the new one. No concrete gateway backend is implemented yet.
 | `placement-agent` | `pull_image`, `create_allocation`, `create_volume`, `attach_volume`, `mount_secret`, `attach_network`, `start_allocation` |
 | `network-agent` | `publish_route` |
 | `rollout-agent` | `stop_allocation`, `delete_allocation`, `detach_volume` |
+| `storage-agent` | `snapshot_volume`, `backup_snapshot`, `restore_snapshot` |
 
 An agent cannot acquire another action by returning it in its descriptor or
 proposal.
+
+The storage agent may protect and recover data but may not place or start
+workloads. Backup authority and execution authority stay in separate capability
+sets, so an agent that can restore data cannot also run something against it.
 
 The rollout agent may retire an allocation but may not create one. Replacement
 is placement's job, which keeps destruction and creation in separate capability
@@ -469,7 +495,8 @@ Implemented evidence kinds:
 | `volume.created` | Volumes | Records a durable volume and its home node |
 | `volume.attached` | Volumes | Assigns ownership and advances the generation |
 | `volume.detached` | Volumes | Releases ownership and advances the generation |
-| `volume.snapshotted` | Volumes | Records a verified snapshot id |
+| `volume.snapshotted` | Volumes | Records a verified snapshot id and checksum |
+| `volume.backed_up` | Volumes | Records that a snapshot reached off-host storage |
 | `secret.mounted` | Secrets | Records the mounted secret version, never the material |
 | `network.attached` | Network | Records the allocation's own address |
 | `network.detached` | Network | Clears the address on teardown |
