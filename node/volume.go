@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/arcbjorn/a4s/control"
@@ -150,6 +151,8 @@ func (v *Volumes) Execute(ctx context.Context, action control.Action) (control.E
 		return v.transfer(ctx, action)
 	case control.ActionAdoptVolume:
 		return v.adopt(ctx, action)
+	case control.ActionPruneSnapshots:
+		return v.prune(action)
 	default:
 		return control.Evidence{}, fmt.Errorf("volumes do not support action kind %q", action.Kind)
 	}
@@ -432,6 +435,119 @@ func (v *Volumes) adopt(ctx context.Context, action control.Action) (control.Evi
 	return volumeEvidence(control.EvidenceVolumeAdopted, name, map[string]string{
 		"node": action.Node, "snapshot": action.Snapshot, "checksum": checksum,
 	}), nil
+}
+
+// prune removes snapshots beyond the retention count, keeping the most recent.
+//
+// The node applies retention from what is on disk rather than trusting a list
+// from the controller, and enforces its own floor: it keeps the most recent
+// `retain` and never removes the last snapshot standing. Deleting a snapshot is
+// irreversible, so the node errs toward keeping too many rather than too few.
+func (v *Volumes) prune(action control.Action) (control.Evidence, error) {
+	v.mu.Lock()
+	record, ok := v.volumes[action.Volume.Name]
+	v.mu.Unlock()
+	if !ok {
+		return control.Evidence{}, fmt.Errorf("volume %q does not exist on this node", action.Volume.Name)
+	}
+	dir := filepath.Join(v.snapshots, record.Name)
+	present, err := listSnapshotDirs(dir)
+	if err != nil {
+		return control.Evidence{}, err
+	}
+
+	retain := action.Retain
+	if retain < 1 {
+		// The node's own floor. Even a controller asking to keep zero must not
+		// produce a volume with no recovery point.
+		retain = 1
+	}
+	// Protect the most recent `retain` snapshots, taking recency from directory
+	// modification time so the node does not depend on the controller's order.
+	protected, err := recentSnapshots(dir, present, retain)
+	if err != nil {
+		return control.Evidence{}, err
+	}
+
+	var removed []string
+	for _, id := range present {
+		if protected[id] {
+			continue
+		}
+		// Never remove the last snapshot on disk, whatever retention says. A
+		// volume with no recovery point is the state pruning must never produce.
+		if len(present)-len(removed) <= 1 {
+			break
+		}
+		if action.DryRun {
+			removed = append(removed, id)
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, id)); err != nil {
+			return control.Evidence{}, fmt.Errorf("remove snapshot %q: %w", id, err)
+		}
+		removed = append(removed, id)
+	}
+	sort.Strings(removed)
+	return volumeEvidence(control.EvidenceSnapshotsPruned, record.Name, map[string]string{
+		"removed": strings.Join(removed, "\n"),
+		"dry_run": fmt.Sprintf("%t", action.DryRun),
+	}), nil
+}
+
+// listSnapshotDirs returns the snapshot ids present on disk, ignoring staging
+// directories left by an interrupted snapshot or fetch.
+func listSnapshotDirs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read snapshot directory: %w", err)
+	}
+	var ids []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasSuffix(name, ".partial") || strings.HasSuffix(name, ".fetched") {
+			continue
+		}
+		ids = append(ids, name)
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+// recentSnapshots returns the `retain` most recently modified snapshots, which
+// the node protects from pruning independently of the controller's ordering.
+func recentSnapshots(dir string, ids []string, retain int) (map[string]bool, error) {
+	type dated struct {
+		id      string
+		modTime int64
+	}
+	entries := make([]dated, 0, len(ids))
+	for _, id := range ids {
+		info, err := os.Stat(filepath.Join(dir, id))
+		if err != nil {
+			return nil, fmt.Errorf("stat snapshot %q: %w", id, err)
+		}
+		entries = append(entries, dated{id: id, modTime: info.ModTime().UnixNano()})
+	}
+	// Newest first, with id as a tiebreaker so the result is deterministic when
+	// two snapshots share a modification time.
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].modTime != entries[j].modTime {
+			return entries[i].modTime > entries[j].modTime
+		}
+		return entries[i].id > entries[j].id
+	})
+	protected := make(map[string]bool)
+	for i := 0; i < len(entries) && i < retain; i++ {
+		protected[entries[i].id] = true
+	}
+	return protected, nil
 }
 
 // copyTreeReplacing writes source over destination through a staging swap, so a
