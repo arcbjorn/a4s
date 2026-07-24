@@ -7,6 +7,16 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Volume snapshots: checksummed, immutable copies of a quiesced volume, staged
+  and renamed so an interrupted run never leaves a partial tree under a name
+  that looks complete.
+- `restore_snapshot`, which verifies the recorded checksum before overwriting
+  anything and stages the restored copy before swapping it in.
+- A `storage-agent` grant covering snapshot and restore but not placement or
+  execution, keeping backup authority separate from execution authority.
+- Restore requires a granted `restore-volume` approval, and only a snapshot this
+  cluster took and verified may be restored.
+
 - Volumes: explicit durable objects with node affinity, single-writer ownership,
   and a generation counter that fences a writer superseded while unreachable.
 - `create_volume`, `attach_volume`, `detach_volume`, and `snapshot_volume`
