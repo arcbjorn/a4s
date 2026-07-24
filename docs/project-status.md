@@ -72,6 +72,19 @@ contract.
 - Rollout agent retiring drifted allocations one at a time, with the kernel
   independently enforcing the availability floor.
 
+### Operator introspection
+
+- Causal explanation of any allocation or route from durable history: the goal
+  that requested it, the agent that proposed it, the kernel authorization, and
+  the evidence that proved the result.
+- Dry-run planning that reuses the kernel's own simulation, so a plan cannot
+  drift from what execution would do. Steps contingent on unmeasured readiness
+  are marked rather than promised.
+- Deterministic diagnosis of a non-converging goal, with a suggested next step.
+  The diagnoser reads events and writes text; it holds no grants and cannot
+  mutate anything, which is why a model-backed implementation can replace it
+  without widening authority.
+
 ### Event persistence
 
 - Newline-delimited event records.
@@ -135,8 +148,8 @@ security system.
 
 ### Developer tooling
 
-- `validate`, `simulate`, `node`, `server`, `keygen`, `version`, and `help` CLI
-  commands.
+- `validate`, `simulate`, `node`, `server`, `keygen`, `plan`, `explain`,
+  `diagnose`, `version`, and `help` CLI commands.
 - Race-tested unit and contract tests.
 - Linux amd64 cross-build verification.
 - Generic web-service example with an explicit public-route approval.
