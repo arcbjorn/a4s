@@ -94,6 +94,21 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			},
 		}, nil
 
+	case ActionAttachNetwork:
+		allocation, ok := e.world.Allocations[action.Target]
+		if !ok {
+			return Evidence{}, fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		// The in-memory data plane hands out distinct addresses so replicas do
+		// not appear to share one, exactly as a real IPAM would.
+		return Evidence{
+			Kind: EvidenceNetworkAttached, Target: action.Target,
+			Observed: map[string]string{
+				"node":    allocation.Node,
+				"address": fmt.Sprintf("10.42.%d.%d", allocation.Replica/256+1, allocation.Replica%256+2),
+			},
+		}, nil
+
 	case ActionStartAllocation:
 		allocation, ok := e.world.Allocations[action.Target]
 		if !ok {
@@ -159,6 +174,15 @@ func simulateAction(world *World, action Action) error {
 			Phase: AllocationCreated,
 		}
 		node.Used = node.Used.Add(action.Resources)
+
+	case ActionAttachNetwork:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		// Simulation only needs to know an address exists, not which one. The
+		// real address comes from CNI and arrives as evidence.
+		allocation.Address = "simulated"
 
 	case ActionStartAllocation:
 		allocation, ok := world.Allocations[action.Target]
