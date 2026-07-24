@@ -41,6 +41,7 @@ func DefaultPolicy() Policy {
 			// in separate capability sets.
 			"storage-agent": {
 				ActionSnapshotVolume:  true,
+				ActionBackupSnapshot:  true,
 				ActionRestoreSnapshot: true,
 			},
 		},
@@ -245,6 +246,24 @@ func validateAction(goal Goal, world World, action Action) error {
 				action.Volume.Name, volume.Owner)
 		}
 
+	case ActionBackupSnapshot:
+		if action.Volume == nil {
+			return fmt.Errorf("backup snapshot requires a volume reference")
+		}
+		if action.Snapshot == "" {
+			return fmt.Errorf("backup snapshot requires a snapshot id")
+		}
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		// Only a verified snapshot may be shipped. Backing up unverified
+		// content would put something off-host that nobody has checked.
+		if _, known := volume.Snapshots[action.Snapshot]; !known {
+			return fmt.Errorf("snapshot %q of volume %q was never recorded",
+				action.Snapshot, action.Volume.Name)
+		}
+
 	case ActionRestoreSnapshot:
 		if action.Volume == nil {
 			return fmt.Errorf("restore snapshot requires a volume reference")
@@ -258,6 +277,9 @@ func validateAction(goal Goal, world World, action Action) error {
 		}
 		// Only a snapshot this cluster took and verified may be restored. An
 		// operator cannot name arbitrary content and have it written over data.
+		//
+		// A snapshot recorded as backed up remains restorable even when the
+		// node's local copy is gone, which is exactly the host-loss case.
 		if _, known := volume.Snapshots[action.Snapshot]; !known {
 			return fmt.Errorf("snapshot %q of volume %q was never recorded",
 				action.Snapshot, action.Volume.Name)
@@ -489,6 +511,12 @@ func cloneWorld(world World) World {
 			copyVolume.Snapshots = make(map[string]string, len(volume.Snapshots))
 			for id, checksum := range volume.Snapshots {
 				copyVolume.Snapshots[id] = checksum
+			}
+		}
+		if volume.Backups != nil {
+			copyVolume.Backups = make(map[string]string, len(volume.Backups))
+			for id, location := range volume.Backups {
+				copyVolume.Backups[id] = location
 			}
 		}
 		clone.Volumes[name] = &copyVolume
