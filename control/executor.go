@@ -1,0 +1,144 @@
+package control
+
+import "fmt"
+
+// Executor mutates the data plane and reports what it observed. It is not the
+// source of truth for world state: the engine advances the world by projecting
+// returned evidence, never by trusting an executor's internal view.
+type Executor interface {
+	Execute(Action) (Evidence, error)
+}
+
+// WorldSource supplies the materialized world projection. In the spike it is
+// backed by in-memory projection of evidence; the server will rebuild it from
+// the durable event log.
+type WorldSource interface {
+	World() World
+}
+
+// MemoryExecutor is the deterministic data plane used by the spike. The real
+// node executor maps the same typed actions to containerd, CNI, volumes, and a
+// gateway without changing the agent/kernel contract.
+//
+// It deliberately reports only what a real executor could observe. Readiness in
+// particular is not asserted here: the executor reports allocation.running, and
+// a separate probe must produce allocation.ready evidence.
+type MemoryExecutor struct {
+	world World
+}
+
+func NewMemoryExecutor(world World) *MemoryExecutor {
+	world.normalize()
+	return &MemoryExecutor{world: cloneWorld(world)}
+}
+
+func (e *MemoryExecutor) World() World {
+	return cloneWorld(e.world)
+}
+
+// Project advances the executor's view of the world from evidence. The engine
+// owns this call; the executor never advances the world from its own actions.
+func (e *MemoryExecutor) Project(evidence Evidence) error {
+	next, err := Project(e.world, evidence)
+	if err != nil {
+		return err
+	}
+	e.world = next
+	return nil
+}
+
+func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
+	switch action.Kind {
+	case ActionPullImage:
+		if _, ok := e.world.Nodes[action.Node]; !ok {
+			return Evidence{}, fmt.Errorf("node %q does not exist", action.Node)
+		}
+		return Evidence{
+			Kind: EvidenceImagePresent, Target: action.Image,
+			Observed: map[string]string{"node": action.Node, "image": action.Image},
+		}, nil
+
+	case ActionCreateAllocation:
+		if _, ok := e.world.Nodes[action.Node]; !ok {
+			return Evidence{}, fmt.Errorf("node %q does not exist", action.Node)
+		}
+		return Evidence{
+			Kind: EvidenceAllocationCreated, Target: action.Target,
+			Observed: map[string]string{
+				"node": action.Node, "workload": action.Workload,
+				"image": action.Image, "replica": fmt.Sprint(action.Replica),
+				"cpu_millis": fmt.Sprint(action.Resources.CPUMillis),
+				"memory_mb":  fmt.Sprint(action.Resources.MemoryMB),
+			},
+		}, nil
+
+	case ActionStartAllocation:
+		allocation, ok := e.world.Allocations[action.Target]
+		if !ok {
+			return Evidence{}, fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		return Evidence{
+			Kind: EvidenceAllocationRunning, Target: action.Target,
+			Observed: map[string]string{"node": allocation.Node, "phase": string(AllocationRunning)},
+		}, nil
+
+	case ActionPublishRoute:
+		return Evidence{
+			Kind: EvidenceRouteReachable, Target: action.Target,
+			Observed: map[string]string{
+				"workload": action.Workload, "exposure": action.Exposure,
+				"port": fmt.Sprint(action.Port),
+			},
+		}, nil
+
+	default:
+		return Evidence{}, fmt.Errorf("unsupported action %q", action.Kind)
+	}
+}
+
+// simulateAction advances a cloned world during kernel authorization. It models
+// the intended effect of an action so the whole plan can be checked before the
+// first mutation. It is not an execution path and never touches a host.
+func simulateAction(world *World, action Action) error {
+	switch action.Kind {
+	case ActionPullImage:
+		node, ok := world.Nodes[action.Node]
+		if !ok {
+			return fmt.Errorf("node %q does not exist", action.Node)
+		}
+		node.Images[action.Image] = true
+
+	case ActionCreateAllocation:
+		node, ok := world.Nodes[action.Node]
+		if !ok {
+			return fmt.Errorf("node %q does not exist", action.Node)
+		}
+		world.Allocations[action.Target] = &Allocation{
+			ID: action.Target, Workload: action.Workload, Replica: action.Replica,
+			Node: action.Node, Image: action.Image, Resources: action.Resources,
+			Phase: AllocationCreated,
+		}
+		node.Used = node.Used.Add(action.Resources)
+
+	case ActionStartAllocation:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		// Simulation assumes the optimistic outcome so that dependent actions
+		// in the same proposal can be checked. Real readiness still requires
+		// probe evidence before the goal is considered achieved.
+		allocation.Phase = AllocationRunning
+		allocation.Ready = true
+
+	case ActionPublishRoute:
+		world.Routes[action.Target] = &Route{
+			Host: action.Target, Workload: action.Workload,
+			Port: action.Port, Exposure: action.Exposure,
+		}
+
+	default:
+		return fmt.Errorf("unsupported action %q", action.Kind)
+	}
+	return nil
+}
