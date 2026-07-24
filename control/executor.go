@@ -16,6 +16,14 @@ type WorldSource interface {
 	World() World
 }
 
+// BoundExecutor is implemented by executors that issue capabilities on behalf
+// of an authorized proposal. The engine tells such an executor which
+// authorization the following actions belong to, so the capability it issues
+// carries that provenance and cannot be reused for unrelated work.
+type BoundExecutor interface {
+	Bind(goalID, proposalID string, revision uint64, leaseID string)
+}
+
 // MemoryExecutor is the deterministic data plane used by the spike. The real
 // node executor maps the same typed actions to containerd, CNI, volumes, and a
 // gateway without changing the agent/kernel contract.
@@ -34,6 +42,20 @@ func NewMemoryExecutor(world World) *MemoryExecutor {
 
 func (e *MemoryExecutor) World() World {
 	return cloneWorld(e.world)
+}
+
+// ObserveReadiness implements ReadinessObserver for the in-memory data plane.
+// It reports readiness only for an allocation the simulated world shows as
+// running, which mirrors what a real process probe can determine.
+func (e *MemoryExecutor) ObserveReadiness(target ProbeTarget) (bool, map[string]string, error) {
+	allocation, ok := e.world.Allocations[target.Allocation]
+	if !ok {
+		return false, nil, fmt.Errorf("allocation %q does not exist", target.Allocation)
+	}
+	return allocation.Phase == AllocationRunning, map[string]string{
+		"phase":    string(allocation.Phase),
+		"observer": "memory-executor",
+	}, nil
 }
 
 // Project advances the executor's view of the world from evidence. The engine
@@ -80,6 +102,24 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 		return Evidence{
 			Kind: EvidenceAllocationRunning, Target: action.Target,
 			Observed: map[string]string{"node": allocation.Node, "phase": string(AllocationRunning)},
+		}, nil
+
+	case ActionStopAllocation:
+		if _, ok := e.world.Allocations[action.Target]; !ok {
+			return Evidence{}, fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		return Evidence{
+			Kind: EvidenceAllocationStopped, Target: action.Target,
+			Observed: map[string]string{"phase": string(AllocationStopped)},
+		}, nil
+
+	case ActionDeleteAllocation:
+		if _, ok := e.world.Allocations[action.Target]; !ok {
+			return Evidence{}, fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		return Evidence{
+			Kind: EvidenceAllocationDeleted, Target: action.Target,
+			Observed: map[string]string{"deleted": "true"},
 		}, nil
 
 	case ActionPublishRoute:
@@ -130,6 +170,24 @@ func simulateAction(world *World, action Action) error {
 		// probe evidence before the goal is considered achieved.
 		allocation.Phase = AllocationRunning
 		allocation.Ready = true
+
+	case ActionStopAllocation:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		allocation.Phase = AllocationStopped
+		allocation.Ready = false
+
+	case ActionDeleteAllocation:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		if node, ok := world.Nodes[allocation.Node]; ok {
+			node.Used = node.Used.Subtract(allocation.Resources)
+		}
+		delete(world.Allocations, action.Target)
 
 	case ActionPublishRoute:
 		world.Routes[action.Target] = &Route{
