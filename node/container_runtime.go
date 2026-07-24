@@ -25,10 +25,22 @@ type ContainerSpec struct {
 	LogPath         string
 	NoNewPrivileges bool
 	Capabilities    []string
+	// SecretMounts are host paths bound read-only into the container. Material
+	// stays on the node's tmpfs; the container sees a file, never a value that
+	// passed through the control plane.
+	SecretMounts []SecretMountSpec
 	// Namespace is the CNI-created network namespace the container must join.
 	// Empty means the container keeps the runtime default, which is only
 	// appropriate for a workload that serves no port.
 	Namespace string
+}
+
+// SecretMountSpec binds one secret file into a container.
+type SecretMountSpec struct {
+	// Source is the node-side tmpfs path holding the material.
+	Source string
+	// Destination is where the workload expects to read it.
+	Destination string
 }
 
 type BackendTask struct {
@@ -70,6 +82,9 @@ type BackendState struct {
 
 type ContainerRuntime struct {
 	backend ContainerBackend
+	// SecretMountsFor resolves an allocation's secret mounts, so a container
+	// receives the credentials that were mounted for it.
+	SecretMountsFor func(string) []SecretMountSpec
 	// Namespaces resolves an allocation's network namespace. It is set when the
 	// node has a network capability, so a container joins the namespace CNI
 	// created for it rather than sharing the host network.
@@ -78,6 +93,14 @@ type ContainerRuntime struct {
 
 func NewContainerRuntime(backend ContainerBackend) *ContainerRuntime {
 	return &ContainerRuntime{backend: backend}
+}
+
+// secretMounts resolves the secret mounts for an allocation, if any.
+func (r *ContainerRuntime) secretMounts(allocation string) []SecretMountSpec {
+	if r == nil || r.SecretMountsFor == nil {
+		return nil
+	}
+	return r.SecretMountsFor(allocation)
 }
 
 // Namespace resolves the network namespace for an allocation, if one exists.
@@ -122,6 +145,7 @@ func (r *ContainerRuntime) Execute(ctx context.Context, action control.Action) (
 			return control.Evidence{}, fmt.Errorf("create allocation requires positive resource limits")
 		}
 		created, err := r.backend.Create(ctx, ContainerSpec{
+			SecretMounts:    r.secretMounts(action.Target),
 			Namespace:       r.Namespace(action.Target),
 			ID:              action.Target,
 			Workload:        action.Workload,
