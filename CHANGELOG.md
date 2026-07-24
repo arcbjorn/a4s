@@ -7,6 +7,11 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Node-side volume transfer: the origin ships a verified snapshot through the
+  shared store, the target fetches it and proves receipt by reproducing the
+  checksum, and adoption materializes the data on the target. The origin keeps
+  every byte until adoption, so a stalled move leaves the data where it was.
+
 - Cross-node volume handoff following the prescribed sequence: quiesce, verified
   snapshot, transfer, and explicit adoption. Each phase is entered only on
   evidence from the previous one, and none can be skipped.
