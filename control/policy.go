@@ -17,6 +17,7 @@ func DefaultPolicy() Policy {
 			"placement-agent": {
 				ActionPullImage:        true,
 				ActionCreateAllocation: true,
+				ActionAttachNetwork:    true,
 				ActionStartAllocation:  true,
 			},
 			"network-agent": {
@@ -151,6 +152,18 @@ func validateAction(goal Goal, world World, action Action) error {
 			return fmt.Errorf("replica index is outside goal")
 		}
 
+	case ActionAttachNetwork:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		if allocation.Phase != AllocationCreated {
+			return fmt.Errorf("allocation %q must be attached before it starts", action.Target)
+		}
+		if action.Workload != allocation.Workload {
+			return fmt.Errorf("workload differs from allocation")
+		}
+
 	case ActionStartAllocation:
 		allocation, ok := world.Allocations[action.Target]
 		if !ok || allocation.Phase != AllocationCreated {
@@ -158,6 +171,12 @@ func validateAction(goal Goal, world World, action Action) error {
 		}
 		if action.Workload != goal.Workload.Name || allocation.Workload != action.Workload {
 			return fmt.Errorf("workload differs from goal")
+		}
+		// A workload with a port needs its own address before it starts.
+		// Starting first would leave it either unreachable or, without a
+		// namespace, contending with its own replicas for a host port.
+		if goal.Workload.Port > 0 && allocation.Address == "" {
+			return fmt.Errorf("allocation %q has no network address", action.Target)
 		}
 
 	case ActionStopAllocation:
