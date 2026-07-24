@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	containerd "github.com/containerd/containerd/v2/client"
@@ -163,6 +164,136 @@ func (b *containerdBackend) Start(ctx context.Context, id, logName string) (Back
 		return BackendTask{}, err
 	}
 	return BackendTask{PID: task.Pid()}, nil
+}
+
+func (b *containerdBackend) Stop(ctx context.Context, id string, deadline time.Duration) (BackendStop, error) {
+	container, err := b.client.LoadContainer(ctx, id)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return BackendStop{AlreadyGone: true}, nil
+		}
+		return BackendStop{}, err
+	}
+	task, err := container.Task(ctx, nil)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return BackendStop{AlreadyGone: true}, nil
+		}
+		return BackendStop{}, err
+	}
+	exitCh, err := task.Wait(ctx)
+	if err != nil {
+		return BackendStop{}, err
+	}
+	if err := task.Kill(ctx, syscall.SIGTERM); err != nil && !errdefs.IsNotFound(err) {
+		return BackendStop{}, err
+	}
+
+	killed := false
+	var status containerd.ExitStatus
+	select {
+	case status = <-exitCh:
+	case <-time.After(deadline):
+		// The task ignored the graceful signal, so escalate. The kill deadline
+		// bounds how long a stop may block the control loop.
+		killed = true
+		if err := task.Kill(ctx, syscall.SIGKILL); err != nil && !errdefs.IsNotFound(err) {
+			return BackendStop{}, err
+		}
+		select {
+		case status = <-exitCh:
+		case <-ctx.Done():
+			return BackendStop{}, ctx.Err()
+		}
+	case <-ctx.Done():
+		return BackendStop{}, ctx.Err()
+	}
+	if err := status.Error(); err != nil {
+		return BackendStop{}, err
+	}
+	if _, err := task.Delete(ctx); err != nil && !errdefs.IsNotFound(err) {
+		return BackendStop{}, err
+	}
+	return BackendStop{ExitCode: status.ExitCode(), Killed: killed}, nil
+}
+
+func (b *containerdBackend) Delete(ctx context.Context, id string) (bool, error) {
+	container, err := b.client.LoadContainer(ctx, id)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			// A replayed delete must succeed rather than fail on absence.
+			return false, nil
+		}
+		return false, err
+	}
+	labels, err := container.Labels(ctx)
+	if err != nil {
+		return false, err
+	}
+	// Never delete a container a4s does not own.
+	if labels["a4s.io/managed"] != "true" {
+		return false, fmt.Errorf("container %q is not an a4s allocation", id)
+	}
+	if task, taskErr := container.Task(ctx, nil); taskErr == nil {
+		status, statusErr := task.Status(ctx)
+		if statusErr != nil {
+			return false, statusErr
+		}
+		if status.Status == containerd.Running {
+			return false, fmt.Errorf("container %q is still running", id)
+		}
+		if _, err := task.Delete(ctx); err != nil && !errdefs.IsNotFound(err) {
+			return false, err
+		}
+	} else if !errdefs.IsNotFound(taskErr) {
+		return false, taskErr
+	}
+	if err := container.Delete(ctx, containerd.WithSnapshotCleanup); err != nil && !errdefs.IsNotFound(err) {
+		return false, err
+	}
+	return true, nil
+}
+
+func (b *containerdBackend) Inspect(ctx context.Context, id string) (BackendState, error) {
+	container, err := b.client.LoadContainer(ctx, id)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return BackendState{}, nil
+		}
+		return BackendState{}, err
+	}
+	task, err := container.Task(ctx, nil)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return BackendState{Exists: true}, nil
+		}
+		return BackendState{}, err
+	}
+	status, err := task.Status(ctx)
+	if err != nil {
+		return BackendState{}, err
+	}
+	return BackendState{
+		Exists:   true,
+		Running:  status.Status == containerd.Running,
+		PID:      task.Pid(),
+		ExitCode: status.ExitStatus,
+	}, nil
+}
+
+// ListManaged returns the IDs of every a4s-managed container on this node. It
+// is the basis for orphan discovery: anything present here but absent from
+// desired state was left behind by a crash.
+func (b *containerdBackend) ListManaged(ctx context.Context) ([]string, error) {
+	containers, err := b.client.Containers(ctx, "labels.\"a4s.io/managed\"==true")
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(containers))
+	for _, container := range containers {
+		ids = append(ids, container.ID())
+	}
+	return ids, nil
 }
 
 func (b *containerdBackend) Close() error {
