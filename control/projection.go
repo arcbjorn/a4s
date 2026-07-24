@@ -14,6 +14,7 @@ const (
 	EvidenceVolumeDetached    = "volume.detached"
 	EvidenceVolumeSnapshotted = "volume.snapshotted"
 	EvidenceVolumeRestored    = "volume.restored"
+	EvidenceVolumeBackedUp    = "volume.backed_up"
 	EvidenceNetworkAttached   = "network.attached"
 	EvidenceNetworkDetached   = "network.detached"
 	EvidenceAllocationRunning = "allocation.running"
@@ -176,6 +177,29 @@ func projectInto(world *World, evidence Evidence) error {
 		}
 		volume.Snapshots[snapshot] = checksum
 		volume.LastSnapshot = snapshot
+
+	case EvidenceVolumeBackedUp:
+		volume, ok := world.Volumes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
+		}
+		snapshot := evidence.Observed["snapshot"]
+		location := evidence.Observed["location"]
+		checksum := evidence.Observed["checksum"]
+		if snapshot == "" || location == "" {
+			return fmt.Errorf("evidence %q must observe a snapshot id and location", evidence.Kind)
+		}
+		// A backup of content that does not match the snapshot it claims to be
+		// would restore something other than what was verified.
+		if recorded, known := volume.Snapshots[snapshot]; !known {
+			return fmt.Errorf("volume %q has no snapshot %q to back up", evidence.Target, snapshot)
+		} else if checksum != "" && checksum != recorded {
+			return fmt.Errorf("backup of snapshot %q does not match its recorded checksum", snapshot)
+		}
+		if volume.Backups == nil {
+			volume.Backups = make(map[string]string)
+		}
+		volume.Backups[snapshot] = location
 
 	case EvidenceVolumeRestored:
 		volume, ok := world.Volumes[evidence.Target]
