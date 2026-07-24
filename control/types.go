@@ -119,8 +119,12 @@ type Allocation struct {
 	Phase     AllocationPhase `json:"phase"`
 	Ready     bool            `json:"ready"`
 	Stateful  bool            `json:"stateful,omitempty"`
-	ExitCode  int             `json:"exit_code,omitempty"`
-	Restarts  int             `json:"restarts,omitempty"`
+	// Address is the allocation's own IP, assigned by CNI. Each allocation has
+	// its own network namespace, so replicas of one workload can run on the
+	// same node without contending for a host port.
+	Address  string `json:"address,omitempty"`
+	ExitCode int    `json:"exit_code,omitempty"`
+	Restarts int    `json:"restarts,omitempty"`
 	// ReadyExpiresAt is when the readiness observation stops being trustworthy.
 	// Zero means readiness was never observed with an expiry.
 	ReadyExpiresAt time.Time `json:"ready_expires_at,omitempty"`
@@ -177,6 +181,7 @@ type ActionKind string
 const (
 	ActionPullImage        ActionKind = "pull_image"
 	ActionCreateAllocation ActionKind = "create_allocation"
+	ActionAttachNetwork    ActionKind = "attach_network"
 	ActionStartAllocation  ActionKind = "start_allocation"
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
