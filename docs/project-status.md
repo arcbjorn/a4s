@@ -82,6 +82,8 @@ contract.
   recover.
 - Off-host backup with fallback restore, so a volume survives the loss of the
   node holding it.
+- Snapshot retention with dry-run pruning that protects the last-known-good and
+  backed-up snapshots and never removes the last recovery point.
 - Cross-node handoff gated step by step on evidence, with the origin remaining
   authoritative until the target proves it holds the data, and the node actually
   moving the bytes through the shared store.
