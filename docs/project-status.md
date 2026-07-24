@@ -77,6 +77,9 @@ contract.
   redaction proven by scanning every serialized artifact.
 - Volumes with generation-fenced single-writer ownership, durable on the node so
   a restart cannot produce a second writer.
+- Checksummed snapshots and restore that verifies before overwriting, so a
+  corrupt backup is refused rather than written over the data it should
+  recover.
 - Target leases acquired before the first mutation and released on every exit
   path, so two proposals cannot interleave on one allocation. Leases expire so
   an abandoned holder cannot block a target indefinitely.
@@ -195,9 +198,11 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
   resolve across nodes.
 - nftables policy compilation from typed network intent.
 - Public ingress or TLS automation.
-- Volume snapshots, off-host backup, and ownership handoff between nodes.
-  Volumes, single-writer fencing, and node-local mounts are implemented;
-  moving a volume to another node is not.
+- Off-host backup and ownership handoff between nodes. Node-local snapshots and
+  verified restore are implemented; copying a snapshot off the host and moving a
+  volume to another node are not.
+- Scheduled restore tests. Restore is verified when it runs, but nothing
+  exercises it on a schedule.
 - Secret rotation without a workload restart, and a Vault-backed broker. The
   file broker and the mount path are implemented; rotation currently means
   changing the goal's version, which replaces the allocation.
