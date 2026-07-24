@@ -74,6 +74,11 @@ type Volume struct {
 	// restore names one of these, so an operator cannot restore something this
 	// cluster never took and verified.
 	Snapshots map[string]string `json:"snapshots,omitempty"`
+	// SnapshotOrder lists snapshot ids oldest first. Pruning needs an order,
+	// and taking it from a map would be non-deterministic. The list is the
+	// authority on which snapshots exist; a checksum in Snapshots without an
+	// entry here is a bug.
+	SnapshotOrder []string `json:"snapshot_order,omitempty"`
 	// RestoredFrom records the snapshot this volume was last restored from,
 	// which is what an operator needs to know after a recovery.
 	RestoredFrom string `json:"restored_from,omitempty"`
@@ -308,6 +313,7 @@ const (
 	ActionQuiesceVolume    ActionKind = "quiesce_volume"
 	ActionTransferVolume   ActionKind = "transfer_volume"
 	ActionAdoptVolume      ActionKind = "adopt_volume"
+	ActionPruneSnapshots   ActionKind = "prune_snapshots"
 	ActionStartAllocation  ActionKind = "start_allocation"
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
@@ -329,6 +335,10 @@ type Action struct {
 	Volume *VolumeRef `json:"volume,omitempty"`
 	// Snapshot names the snapshot to restore from.
 	Snapshot string `json:"snapshot,omitempty"`
+	// Retain is how many recent snapshots a prune keeps.
+	Retain int `json:"retain,omitempty"`
+	// DryRun asks a prune to report what it would remove without removing it.
+	DryRun bool `json:"dry_run,omitempty"`
 	// Secret names the reference to mount. An action carries the reference, not
 	// the material, so a proposal remains safe to log in full.
 	Secret    *SecretRef `json:"secret,omitempty"`
