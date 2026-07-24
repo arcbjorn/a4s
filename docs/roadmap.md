@@ -29,12 +29,19 @@ Complete:
 - Containerd pull/create/start adapter and contract tests.
 - Linux cross-build.
 
+Also complete since the original plan:
+
+- Stop and delete actions with capacity release.
+- Real process, TCP, and HTTP readiness observation with expiry.
+- Durable world projection rebuilt from recorded evidence.
+- Node desired-state supervision with a crash-loop budget.
+- Controller-to-node protocol and an end-to-end acceptance suite.
+- Action replay across node-process restart, proven in test.
+
 Remaining exit work:
 
 - Run against a real disposable Linux containerd.
-- Prove exact action replay across node-process restart.
-- Add independent running and HTTP readiness observations.
-- Document measured failure behavior.
+- Document measured failure behavior on real hardware.
 
 Exit criterion: a real digest-pinned stateless container reaches independently
 verified readiness, and duplicate signed actions after node restart do not
