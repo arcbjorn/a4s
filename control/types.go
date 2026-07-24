@@ -36,6 +36,138 @@ type WorkloadSpec struct {
 	// runs, and it is ready only when it accepts connections. Declaring the
 	// engine is what lets the kernel and agents treat it correctly.
 	Engine string `json:"engine,omitempty"`
+	// Runtime describes an agent workload when this workload is one. An agent is
+	// not a generic container: its cost is tokens rather than cpu-seconds, it is
+	// ready only when it can reach a model provider with budget remaining, and it
+	// acts on the world through granted tools rather than through its network.
+	// Declaring the runtime is what lets the kernel and agents treat it
+	// correctly.
+	//
+	// This is a workload kind, not a control-plane Agent. A control agent
+	// proposes plans and holds ActionKind grants; an agent workload is scheduled
+	// cargo that holds tool grants and never proposes anything. The two never
+	// share an authority path.
+	Runtime *AgentRuntime `json:"runtime,omitempty"`
+}
+
+// AgentRuntime declares how an agent workload runs and what it may spend.
+//
+// Unlike Engine, which is a bare string, this is structured: an engine's
+// behavior is implied by its name, but an agent's budget ceiling, tool grants,
+// and provider are per-workload policy inputs the kernel has to enforce. They
+// have to be declared fields rather than implied by a runtime name.
+type AgentRuntime struct {
+	// Name identifies the agent runtime image contract the workload implements.
+	// The runtime is responsible for the model loop; a4s is responsible for
+	// bounding it.
+	Name string `json:"name"`
+	// Provider names the model provider this agent needs to reach. It is a
+	// scheduling input: a node without egress to this provider cannot run this
+	// workload, the same way a node without a pinned image cannot.
+	Provider string `json:"provider"`
+	// Model pins the model this agent runs. Like an image digest, an unpinned
+	// model means the workload silently changes behavior when a provider moves
+	// its alias, so it is required rather than defaulted.
+	Model string `json:"model"`
+	// Budget bounds what one agent instance may consume before it is stopped.
+	// This is the agent equivalent of a resource limit: without it, a looping
+	// agent's cost is unbounded in a way a cpu limit does not constrain.
+	Budget Budget `json:"budget"`
+	// Tools lists the capabilities this agent may invoke. This is the agent's
+	// blast radius and the reason the kernel can authorize an agent workload up
+	// front despite not knowing what it will decide to do: the grant envelope is
+	// checked before the agent starts, and the agent cannot widen it at runtime.
+	Tools []ToolGrant `json:"tools,omitempty"`
+	// Queue names the work queue this agent pulls tasks from. Empty means the
+	// agent runs a single task per allocation rather than serving a queue.
+	Queue string `json:"queue,omitempty"`
+}
+
+// Budget bounds an agent workload's consumption.
+//
+// These are a resource dimension distinct from Resources. A cpu limit bounds how
+// fast an agent burns money; it does not bound how much. An agent that spends
+// its context on a provider call is idle by cgroup accounting and expensive in
+// every way that matters, so the kernel schedules against both.
+type Budget struct {
+	// Tokens is the ceiling on total tokens one instance may consume.
+	Tokens int `json:"tokens"`
+	// CostMillis is the ceiling in thousandths of a currency unit. Tokens alone
+	// do not bound cost when models differ in price by an order of magnitude.
+	CostMillis int `json:"cost_millis"`
+	// WallSeconds bounds how long one task may run. An agent blocked on a slow
+	// tool consumes neither tokens nor cost while still holding its allocation.
+	WallSeconds int `json:"wall_seconds"`
+	// ToolCalls bounds how many tool invocations one task may make. This is the
+	// loop breaker: an agent thrashing between two tools can stay under every
+	// other ceiling indefinitely.
+	ToolCalls int `json:"tool_calls"`
+}
+
+// Fits reports whether this budget is within the given ceiling.
+func (b Budget) Fits(ceiling Budget) bool {
+	return b.Tokens <= ceiling.Tokens && b.CostMillis <= ceiling.CostMillis &&
+		b.WallSeconds <= ceiling.WallSeconds && b.ToolCalls <= ceiling.ToolCalls
+}
+
+// Add accumulates budget, which is how per-instance ceilings sum into what a
+// node has committed.
+func (b Budget) Add(other Budget) Budget {
+	return Budget{
+		Tokens:      b.Tokens + other.Tokens,
+		CostMillis:  b.CostMillis + other.CostMillis,
+		WallSeconds: b.WallSeconds + other.WallSeconds,
+		ToolCalls:   b.ToolCalls + other.ToolCalls,
+	}
+}
+
+// Subtract releases budget, clamping at zero. Like Resources.Subtract, this must
+// never go negative even if evidence arrives out of order or is replayed.
+func (b Budget) Subtract(other Budget) Budget {
+	result := Budget{
+		Tokens:      b.Tokens - other.Tokens,
+		CostMillis:  b.CostMillis - other.CostMillis,
+		WallSeconds: b.WallSeconds - other.WallSeconds,
+		ToolCalls:   b.ToolCalls - other.ToolCalls,
+	}
+	if result.Tokens < 0 {
+		result.Tokens = 0
+	}
+	if result.CostMillis < 0 {
+		result.CostMillis = 0
+	}
+	if result.WallSeconds < 0 {
+		result.WallSeconds = 0
+	}
+	if result.ToolCalls < 0 {
+		result.ToolCalls = 0
+	}
+	return result
+}
+
+// IsZero reports whether no budget is declared at all.
+func (b Budget) IsZero() bool {
+	return b == Budget{}
+}
+
+// ToolGrant is one capability an agent workload may invoke.
+//
+// A tool grant is deliberately not an ActionKind. Control agents propose typed
+// infrastructure actions the kernel executes; agent workloads call tools that
+// act outside a4s entirely. Sharing one vocabulary would make it possible to
+// grant a workload an infrastructure mutation, which is exactly the authority
+// path that must not exist.
+type ToolGrant struct {
+	// Name identifies the tool to the runtime.
+	Name string `json:"name"`
+	// Scope narrows what the tool may touch, such as a repository, a bucket
+	// prefix, or a read-only qualifier. A tool without a scope is granted
+	// whatever the runtime's credential allows, so the kernel requires one.
+	Scope string `json:"scope"`
+	// Mutating marks a tool that changes state outside a4s. Mutating grants are
+	// what make an agent's blast radius real, so they are approved separately
+	// from read-only ones.
+	Mutating bool `json:"mutating,omitempty"`
 }
 
 // VolumeRef names durable storage a workload requires.
@@ -168,6 +300,7 @@ type World struct {
 	Allocations map[string]*Allocation `json:"allocations,omitempty"`
 	Routes      map[string]*Route      `json:"routes,omitempty"`
 	Volumes     map[string]*Volume     `json:"volumes,omitempty"`
+	Queues      map[string]*Queue      `json:"queues,omitempty"`
 	Approvals   map[string]*Approval   `json:"approvals,omitempty"`
 	// KnownGood records, per workload, the last image digest observed serving.
 	// A rollout can only roll back to a version this cluster actually saw
@@ -201,6 +334,17 @@ type Node struct {
 	Used     Resources         `json:"used"`
 	Images   map[string]bool   `json:"images,omitempty"`
 	Healthy  bool              `json:"healthy"`
+	// Providers records which model providers this node can currently reach, as
+	// an observed fact rather than a configured intent. Provider egress is a
+	// scheduling constraint for agent workloads in the same way a pinned image
+	// is: an agent placed where its provider is unreachable cannot become ready.
+	Providers map[string]bool `json:"providers,omitempty"`
+	// BudgetCapacity is the total agent budget this node may have committed at
+	// once, and BudgetUsed is what running agent allocations already hold.
+	// Bounding this per node keeps one node's agents from consuming a whole
+	// cluster's spend before any other node schedules one.
+	BudgetCapacity Budget `json:"budget_capacity,omitempty"`
+	BudgetUsed     Budget `json:"budget_used,omitempty"`
 }
 
 type Allocation struct {
@@ -229,6 +373,41 @@ type Allocation struct {
 	// ReadyExpiresAt is when the readiness observation stops being trustworthy.
 	// Zero means readiness was never observed with an expiry.
 	ReadyExpiresAt time.Time `json:"ready_expires_at,omitempty"`
+	// Budget is the ceiling this agent allocation holds against its node, and
+	// Spent is what it has consumed so far. Both are empty for ordinary
+	// workloads. Spent comes from runtime evidence, never from the agent.
+	Budget Budget `json:"budget,omitempty"`
+	Spent  Budget `json:"spent,omitempty"`
+	// Draining marks an agent allocation that has been told to stop accepting
+	// work and finish what it holds. An agent instance accumulates task context
+	// that a stateless replica does not, so stopping it mid-task destroys work
+	// rather than merely shifting load.
+	Draining bool `json:"draining,omitempty"`
+	// Task names the queue task this agent instance currently holds, which is
+	// what makes a drain observable: the instance is drained when this is empty.
+	Task string `json:"task,omitempty"`
+	// Tools records the envelope granted to this agent allocation. The world
+	// projection holds capability names and scopes, never the credentials the
+	// node resolves them to.
+	Tools []ToolGrant `json:"tools,omitempty"`
+}
+
+// Exhausted reports whether this allocation has consumed its budget.
+//
+// An exhausted agent is not failed: it stopped because it hit a ceiling that was
+// declared for it. Distinguishing the two matters, because restarting an
+// exhausted agent just burns the same budget again.
+func (a *Allocation) Exhausted() bool {
+	if a == nil || a.Budget.IsZero() {
+		return false
+	}
+	return !a.Spent.Fits(a.Budget)
+}
+
+// Drained reports whether a draining allocation has finished its work and is
+// safe to stop without destroying task context.
+func (a *Allocation) Drained() bool {
+	return a != nil && a.Draining && a.Task == ""
 }
 
 // ReadyAt reports whether the allocation is ready and that readiness has not
@@ -254,6 +433,51 @@ type Route struct {
 	Workload string `json:"workload"`
 	Port     int    `json:"port"`
 	Exposure string `json:"exposure"`
+}
+
+// Queue is pending work agent instances pull from.
+//
+// A queue exists so that agent replicas can be scaled against observed demand
+// rather than a fixed count. It is an explicit object for the same reason a
+// Volume is: the thing that determines how many workers are needed has to be
+// nameable independently of the workers themselves.
+type Queue struct {
+	// Name identifies the queue within the cluster.
+	Name string `json:"name"`
+	// Workload is the agent workload authorized to pull from it. A queue serves
+	// one workload, so a scaling decision has an unambiguous subject.
+	Workload string `json:"workload"`
+	// Depth is the number of tasks waiting, from queue evidence rather than from
+	// any agent's report of its own backlog.
+	Depth int `json:"depth"`
+	// InFlight is the number of tasks currently held by agent instances.
+	InFlight int `json:"in_flight"`
+	// MaxWorkers caps how far queue depth may scale this workload. Demand-driven
+	// scaling without a ceiling is how a queue spike becomes a spend incident.
+	MaxWorkers int `json:"max_workers"`
+	// ObservedAt is when depth was last measured. Scaling on a stale depth would
+	// keep adding workers for work that has already drained.
+	ObservedAt time.Time `json:"observed_at,omitempty"`
+}
+
+// DesiredWorkers is how many agent instances the observed depth justifies,
+// bounded by MaxWorkers.
+//
+// In-flight tasks are already held by a worker, so only waiting depth calls for
+// another one. Counting both would double-count every task at the moment it is
+// picked up and oscillate the replica count.
+func (q *Queue) DesiredWorkers(running int) int {
+	if q == nil {
+		return running
+	}
+	desired := running + q.Depth
+	if desired > q.MaxWorkers {
+		desired = q.MaxWorkers
+	}
+	if desired < 0 {
+		return 0
+	}
+	return desired
 }
 
 // HandoffPhase is how far a volume move has progressed.
@@ -331,6 +555,15 @@ const (
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
 	ActionPublishRoute     ActionKind = "publish_route"
+	// ActionGrantTools installs an agent allocation's tool envelope before it
+	// starts. Granting is a separate authorized step rather than a field read at
+	// start time, so the blast radius appears in the event log as its own
+	// decision.
+	ActionGrantTools ActionKind = "grant_tools"
+	// ActionDrainAllocation tells an agent instance to stop accepting work and
+	// finish what it holds. It is the agent equivalent of quiescing a volume:
+	// the step that makes the following stop non-destructive.
+	ActionDrainAllocation ActionKind = "drain_allocation"
 )
 
 type Action struct {
@@ -356,8 +589,14 @@ type Action struct {
 	DryRun bool `json:"dry_run,omitempty"`
 	// Secret names the reference to mount. An action carries the reference, not
 	// the material, so a proposal remains safe to log in full.
-	Secret    *SecretRef `json:"secret,omitempty"`
-	DependsOn []string   `json:"depends_on,omitempty"`
+	Secret *SecretRef `json:"secret,omitempty"`
+	// Tools is the grant envelope a grant_tools action installs. Like a secret
+	// reference, these are capability names and scopes, never credentials.
+	Tools []ToolGrant `json:"tools,omitempty"`
+	// Budget is the ceiling a create_allocation action reserves for an agent
+	// instance. It is empty for ordinary workloads.
+	Budget    Budget   `json:"budget,omitempty"`
+	DependsOn []string `json:"depends_on,omitempty"`
 }
 
 // Check declares evidence a proposal must produce before it is considered
@@ -366,6 +605,13 @@ type Action struct {
 const (
 	CheckAllocationReady = "allocation_ready"
 	CheckRouteReachable  = "route_reachable"
+	// CheckAgentReady is readiness for an agent workload. An agent is ready when
+	// it has reached its provider with budget remaining, which a TCP accept does
+	// not establish: an agent runtime can be listening and unable to work.
+	CheckAgentReady = "agent_ready"
+	// CheckAllocationDrained is proof an agent instance finished its task and
+	// holds no work, which is what makes stopping it safe.
+	CheckAllocationDrained = "allocation_drained"
 )
 
 type Check struct {
