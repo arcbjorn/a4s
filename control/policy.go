@@ -18,6 +18,7 @@ func DefaultPolicy() Policy {
 				ActionPullImage:        true,
 				ActionCreateAllocation: true,
 				ActionAttachNetwork:    true,
+				ActionMountSecret:      true,
 				ActionStartAllocation:  true,
 			},
 			"network-agent": {
@@ -152,6 +153,24 @@ func validateAction(goal Goal, world World, action Action) error {
 			return fmt.Errorf("replica index is outside goal")
 		}
 
+	case ActionMountSecret:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		if allocation.Phase != AllocationCreated {
+			return fmt.Errorf("secrets must be mounted before allocation %q starts", action.Target)
+		}
+		if action.Secret == nil {
+			return fmt.Errorf("mount secret requires a secret reference")
+		}
+		// The reference must be one the goal actually declared. Otherwise an
+		// agent could mount material the operator never authorized for this
+		// workload.
+		if !goalDeclaresSecret(goal, *action.Secret) {
+			return fmt.Errorf("secret %q is not declared by the goal", action.Secret.Name)
+		}
+
 	case ActionAttachNetwork:
 		allocation, ok := world.Allocations[action.Target]
 		if !ok {
@@ -171,6 +190,14 @@ func validateAction(goal Goal, world World, action Action) error {
 		}
 		if action.Workload != goal.Workload.Name || allocation.Workload != action.Workload {
 			return fmt.Errorf("workload differs from goal")
+		}
+		// Every declared secret must be mounted before the workload starts, or
+		// it would run without credentials it was promised.
+		for _, ref := range goal.Workload.Secrets {
+			if allocation.Secrets[ref.Name] != ref.Version {
+				return fmt.Errorf("allocation %q is missing secret %q version %q",
+					action.Target, ref.Name, ref.Version)
+			}
 		}
 		// A workload with a port needs its own address before it starts.
 		// Starting first would leave it either unreachable or, without a
@@ -289,6 +316,12 @@ func cloneWorld(world World) World {
 	}
 	for id, allocation := range world.Allocations {
 		copyAllocation := *allocation
+		if allocation.Secrets != nil {
+			copyAllocation.Secrets = make(map[string]string, len(allocation.Secrets))
+			for name, version := range allocation.Secrets {
+				copyAllocation.Secrets[name] = version
+			}
+		}
 		clone.Allocations[id] = &copyAllocation
 	}
 	for host, route := range world.Routes {
@@ -342,4 +375,14 @@ func matchingReadyAllocations(goal Goal, world World) int {
 		}
 	}
 	return ready
+}
+
+// goalDeclaresSecret reports whether the goal authorized this exact reference.
+func goalDeclaresSecret(goal Goal, ref SecretRef) bool {
+	for _, declared := range goal.Workload.Secrets {
+		if declared == ref {
+			return true
+		}
+	}
+	return false
 }
