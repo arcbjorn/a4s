@@ -24,8 +24,11 @@ type DesiredAllocation struct {
 	Resources control.Resources `json:"resources"`
 	// Running is the last server-authorized intent for this allocation. A node
 	// restarts a crashed task only while this is true.
-	Running  bool                `json:"running"`
-	Probe    control.ProbeTarget `json:"probe"`
+	Running bool                `json:"running"`
+	Probe   control.ProbeTarget `json:"probe"`
+	// Volumes records the storage the server authorized for this allocation,
+	// so a restarted node mounts exactly what it was told to.
+	Volumes  []control.VolumeRef `json:"volumes,omitempty"`
 	Restarts int                 `json:"restarts"`
 	// UpdatedAt records when intent last changed, for operator diagnosis.
 	UpdatedAt time.Time `json:"updated_at"`
@@ -161,6 +164,25 @@ func (s *DesiredState) SetRunning(id string, running bool) error {
 		return nil
 	}
 	entry.Running = running
+	entry.UpdatedAt = time.Now().UTC()
+	s.entries[id] = entry
+	return s.persist()
+}
+
+// AddVolume records that the server authorized a volume for an allocation.
+func (s *DesiredState) AddVolume(id string, ref control.VolumeRef) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.entries[id]
+	if !ok {
+		return nil
+	}
+	for _, existing := range entry.Volumes {
+		if existing.Name == ref.Name {
+			return nil
+		}
+	}
+	entry.Volumes = append(entry.Volumes, ref)
 	entry.UpdatedAt = time.Now().UTC()
 	s.entries[id] = entry
 	return s.persist()
