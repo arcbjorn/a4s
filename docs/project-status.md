@@ -25,9 +25,10 @@ durable event log. The end-to-end acceptance suite drives a real control engine
 against a real node dispatcher over the real protocol, with only containerd
 faked.
 
-A server package and `a4s server` command now hold durable history and rebuild
-the world projection on every start. What remains missing is an authenticated
-network transport and node enrollment. The implemented transport is a byte-stream protocol currently
+A server package and `a4s server` command hold durable history and rebuild the
+world projection on every start, and nodes enroll over a real network transport
+by proving possession of their identity key. What remains is channel encryption
+beneath the transport and the data-plane work: CNI, gateways, storage, secrets. The implemented transport is a byte-stream protocol currently
 carried over a pipe; moving it onto the tailnet does not change the control
 contract.
 
@@ -134,7 +135,8 @@ security system.
 
 ### Developer tooling
 
-- `validate`, `simulate`, `node`, `server`, `version`, and `help` CLI commands.
+- `validate`, `simulate`, `node`, `server`, `keygen`, `version`, and `help` CLI
+  commands.
 - Race-tested unit and contract tests.
 - Linux amd64 cross-build verification.
 - Generic web-service example with an explicit public-route approval.
@@ -156,12 +158,13 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 
 - External goal API. The server package and `a4s server` command exist, but
   goals are supplied from a scenario file rather than an authenticated API.
-- Node enrollment, mutual authentication, and encrypted network transport. The
-  implemented transport is a byte-stream protocol carried over a pipe.
+- Channel encryption. Enrollment authenticates who the peer is; it does not
+  protect the channel. The transport is intended to run over an already
+  encrypted tailnet, and needs TLS beneath it on an untrusted network.
 - Controller key custody and key rotation.
-- Canary rollout and compensating-action execution. Rolling replacement and the
-  disruption budget are implemented; automatic rollback to a prior digest on a
-  failed rollout is not.
+- Canary rollout and compensating-action execution. Rolling replacement, the
+  disruption budget, and known-good rollback detection are implemented;
+  applying the rollback is deliberately an operator decision.
 - Garbage collection of unreferenced images and snapshots.
 - CNI, allocation network namespaces, DNS, or nftables. The router applies
   gateway route snapshots but no gateway backend is implemented.
