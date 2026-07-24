@@ -907,4 +907,13 @@ func (v *Volumes) Owner(name string) (string, uint64, bool) {
 	return record.Owner, record.Generation, true
 }
 
+// record returns a copy of a volume's record for read-only use by other
+// capabilities on the node, such as the database manager.
+func (v *Volumes) record(name string) (VolumeRecord, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	record, ok := v.volumes[name]
+	return record, ok
+}
+
 func (v *Volumes) Close() error { return nil }
