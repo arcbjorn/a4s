@@ -89,6 +89,9 @@ func (w *World) normalize() {
 	if w.Approvals == nil {
 		w.Approvals = make(map[string]*Approval)
 	}
+	if w.KnownGood == nil {
+		w.KnownGood = make(map[string]string)
+	}
 	for _, node := range w.Nodes {
 		if node.Labels == nil {
 			node.Labels = make(map[string]string)
