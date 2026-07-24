@@ -27,6 +27,9 @@ type Engine struct {
 	Events   []Event
 	Sink     EventSink
 	now      func() time.Time
+	// probeTargets is populated from the goal so readiness is measured against
+	// the port the workload actually declares.
+	probeTargets map[string]ProbeTarget
 }
 
 // memoryProjector is the default projection used when an engine is built
@@ -40,10 +43,29 @@ func (p memoryProjector) Project(e Evidence) error { return p.executor.Project(e
 // spike's MemoryExecutor is also its own projection; a real deployment supplies
 // a projection rebuilt from the event log via WithWorld.
 func NewEngine(executor *MemoryExecutor, agents ...Agent) *Engine {
-	return &Engine{
+	engine := &Engine{
 		Kernel: Kernel{Policy: DefaultPolicy()}, Agents: agents,
 		Executor: executor, World: memoryProjector{executor: executor},
-		Probers: []Prober{OptimisticProber{}}, now: time.Now,
+		now: time.Now,
+	}
+	// The simulation still measures readiness through the probe path rather
+	// than assuming it, so the control loop exercises the same contract a real
+	// node probe will use.
+	prober := NewMeasuredProber(executor, map[string]ProbeTarget{})
+	prober.Now = func() time.Time { return engine.now() }
+	engine.Probers = []Prober{prober}
+	engine.probeTargets = prober.Targets
+	return engine
+}
+
+// NewEngineWith builds an engine over any executor and projection. This is the
+// production wiring: a remote executor that issues signed capabilities to a
+// node, and a world rebuilt from the durable event log.
+func NewEngineWith(executor Executor, world Projector, agents ...Agent) *Engine {
+	return &Engine{
+		Kernel: Kernel{Policy: DefaultPolicy()}, Agents: agents,
+		Executor: executor, World: world, probeTargets: map[string]ProbeTarget{},
+		now: time.Now,
 	}
 }
 
@@ -98,6 +120,11 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 			if err := e.record(Event{Type: EventProposalApproved, Actor: "policy-kernel", GoalID: goal.ID, ProposalID: proposal.ID, Message: "all actions authorized against a simulated world"}); err != nil {
 				return err
 			}
+			// Bind the executor to this authorization so every capability it
+			// issues names the proposal that justified it.
+			if bound, ok := e.Executor.(BoundExecutor); ok {
+				bound.Bind(goal.ID, proposal.ID, proposal.BasedOnRevision, proposal.ID)
+			}
 			for _, action := range proposal.Actions {
 				// Persist intent before dispatch. If completion persistence fails,
 				// recovery can query the node's idempotency ledger using this ID.
@@ -111,6 +138,9 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 					}
 					return err
 				}
+				// Declare what readiness means for a new allocation before any
+				// probe runs, so readiness is measured rather than assumed.
+				e.registerProbeTarget(goal, action)
 				// Evidence, not the action, advances the world.
 				if err := e.World.Project(evidence); err != nil {
 					if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "projection", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: err.Error()}); recordErr != nil {
@@ -148,6 +178,21 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 	return fmt.Errorf("goal %q did not converge after %d rounds", goal.ID, maxRounds)
 }
 
+// registerProbeTarget records how readiness should be measured for an
+// allocation. The goal's declared port is what a TCP or HTTP probe connects to.
+func (e *Engine) registerProbeTarget(goal Goal, action Action) {
+	if e.probeTargets == nil || action.Kind != ActionCreateAllocation {
+		return
+	}
+	kind := ProbeProcess
+	if goal.Workload.Port > 0 {
+		kind = ProbeTCP
+	}
+	e.probeTargets[action.Target] = ProbeTarget{
+		Allocation: action.Target, Kind: kind, Port: goal.Workload.Port,
+	}
+}
+
 // observe collects fresh probe evidence for the proposal's declared checks and
 // projects it. Probe failure is not fatal: the verifier decides whether the
 // resulting world satisfies the checks.
@@ -176,8 +221,7 @@ func verifyChecks(world World, checks []Check) error {
 	for _, check := range checks {
 		switch check.Kind {
 		case CheckAllocationReady:
-			allocation := world.Allocations[check.Target]
-			observed := allocation != nil && allocation.Ready
+			observed := world.Allocations[check.Target].ReadyAt(world.Now())
 			if fmt.Sprint(observed) != check.Want {
 				return fmt.Errorf("check %s for %s: observed %t, want %s", check.Kind, check.Target, observed, check.Want)
 			}
