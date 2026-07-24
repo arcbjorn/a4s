@@ -94,6 +94,23 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			},
 		}, nil
 
+	case ActionMountSecret:
+		if _, ok := e.world.Allocations[action.Target]; !ok {
+			return Evidence{}, fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		if action.Secret == nil {
+			return Evidence{}, fmt.Errorf("mount secret requires a secret reference")
+		}
+		// Evidence reports the version and where it landed, never the material.
+		return Evidence{
+			Kind: EvidenceSecretMounted, Target: action.Target,
+			Observed: map[string]string{
+				"secret":     action.Secret.Name,
+				"version":    action.Secret.Version,
+				"mount_path": action.Secret.MountPath,
+			},
+		}, nil
+
 	case ActionAttachNetwork:
 		allocation, ok := e.world.Allocations[action.Target]
 		if !ok {
@@ -174,6 +191,19 @@ func simulateAction(world *World, action Action) error {
 			Phase: AllocationCreated,
 		}
 		node.Used = node.Used.Add(action.Resources)
+
+	case ActionMountSecret:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		if action.Secret == nil {
+			return fmt.Errorf("mount secret requires a secret reference")
+		}
+		if allocation.Secrets == nil {
+			allocation.Secrets = make(map[string]string)
+		}
+		allocation.Secrets[action.Secret.Name] = action.Secret.Version
 
 	case ActionAttachNetwork:
 		allocation, ok := world.Allocations[action.Target]
