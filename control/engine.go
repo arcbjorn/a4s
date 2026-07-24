@@ -180,12 +180,12 @@ func (e *Engine) executeProposal(goal Goal, proposal Proposal, leaseID string) (
 	for _, action := range proposal.Actions {
 		// Persist intent before dispatch. If completion persistence fails,
 		// recovery can query the node's idempotency ledger using this ID.
-		if err := e.record(Event{Type: EventActionDispatched, Actor: "coordinator", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: string(action.Kind)}); err != nil {
+		if err := e.record(Event{Type: EventActionDispatched, Actor: "coordinator", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Target: action.Target, Kind: string(action.Kind), Message: string(action.Kind)}); err != nil {
 			return progress, err
 		}
 		evidence, err := e.Executor.Execute(action)
 		if err != nil {
-			if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "node-executor", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: err.Error()}); recordErr != nil {
+			if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "node-executor", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Target: action.Target, Kind: string(action.Kind), Message: err.Error()}); recordErr != nil {
 				return progress, fmt.Errorf("execute action: %v; persist failure: %w", err, recordErr)
 			}
 			return progress, err
@@ -195,12 +195,12 @@ func (e *Engine) executeProposal(goal Goal, proposal Proposal, leaseID string) (
 		e.registerProbeTarget(goal, action)
 		// Evidence, not the action, advances the world.
 		if err := e.World.Project(evidence); err != nil {
-			if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "projection", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: err.Error()}); recordErr != nil {
+			if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "projection", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Target: action.Target, Kind: string(action.Kind), Message: err.Error()}); recordErr != nil {
 				return progress, recordErr
 			}
 			return progress, fmt.Errorf("project evidence for action %q: %w", action.ID, err)
 		}
-		if err := e.record(Event{Type: EventActionCompleted, Actor: "node-executor", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Message: string(action.Kind), Evidence: &evidence}); err != nil {
+		if err := e.record(Event{Type: EventActionCompleted, Actor: "node-executor", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Target: action.Target, Kind: string(action.Kind), Message: string(action.Kind), Evidence: &evidence}); err != nil {
 			return progress, err
 		}
 		progress = true
@@ -249,7 +249,8 @@ func (e *Engine) observe(goal Goal, proposal Proposal) error {
 			}
 			if err := e.record(Event{
 				Type: EventObservationRecorded, Actor: "prober", GoalID: goal.ID,
-				ProposalID: proposal.ID, Message: evidence.Kind, Evidence: &evidence,
+				ProposalID: proposal.ID, Target: check.Target, Kind: evidence.Kind,
+				Message: evidence.Kind, Evidence: &evidence,
 			}); err != nil {
 				return err
 			}
