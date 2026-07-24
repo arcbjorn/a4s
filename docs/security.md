@@ -156,9 +156,31 @@ schemas. Each a4s adapter exposes a smaller contract.
   component that started a workload cannot declare it healthy.
 - Unknown evidence kinds are rejected rather than ignored.
 
-The remaining gap is that `OptimisticProber` assumes readiness rather than
-measuring it, and probe evidence is not yet independently signed or expired.
-Both must be closed before production.
+- Readiness observations expire. An allocation whose readiness measurement has
+  aged out stops counting toward a goal, so a dead workload cannot keep looking
+  healthy on the strength of an old probe.
+- A probe that cannot complete produces no evidence rather than a false
+  negative. "Could not measure" and "measured as unhealthy" stay distinct.
+- The node stamps its own identity and observation time onto evidence a runtime
+  adapter produces.
+
+The remaining gap is that probe evidence is not yet signed by a node identity
+distinct from the controller signing key, so a compromised node can still lie
+about what it observed. That must be closed before production.
+
+### Node autonomy limits
+
+The node keeps a durable record of server-authorized intent so workloads survive
+a control-plane outage. That autonomy is deliberately narrow:
+
+- The node restarts only allocations the server already authorized to run.
+- It never creates a workload, changes an image, or alters resources on its own.
+- An allocation the server stopped is not restarted, so the data plane cannot
+  override control-plane intent.
+- Restarts are bounded by a crash-loop budget, so a broken workload becomes
+  visible instead of being hidden behind an endless restart loop.
+- Orphaned containers are reported, never deleted automatically, because
+  deletion is an authorized action rather than a cleanup detail.
 
 ### Replay and crash behavior
 
