@@ -22,6 +22,9 @@ func DefaultPolicy() Policy {
 				ActionCreateVolume:     true,
 				ActionAttachVolume:     true,
 				ActionStartAllocation:  true,
+				// Installing an agent's tool envelope is part of preparing an
+				// allocation to run, alongside mounting its secrets.
+				ActionGrantTools: true,
 			},
 			"network-agent": {
 				ActionPublishRoute: true,
@@ -32,6 +35,9 @@ func DefaultPolicy() Policy {
 			"rollout-agent": {
 				ActionStopAllocation:   true,
 				ActionDeleteAllocation: true,
+				// Draining is how a rollout retires an agent instance without
+				// destroying the task it holds.
+				ActionDrainAllocation: true,
 				// Releasing a volume is part of retiring an allocation, but the
 				// rollout agent may not create, snapshot, or restore one.
 				ActionDetachVolume: true,
@@ -103,20 +109,29 @@ func (k Kernel) Authorize(actor AgentDescriptor, goal Goal, world World, proposa
 		}
 		completed[action.ID] = true
 	}
-	if err := requireEvidenceChecks(proposal); err != nil {
+	if err := requireEvidenceChecks(goal, proposal); err != nil {
 		return err
 	}
 	return nil
 }
 
-func requireEvidenceChecks(proposal Proposal) error {
+func requireEvidenceChecks(goal Goal, proposal Proposal) error {
 	for _, action := range proposal.Actions {
 		var requiredKind string
 		switch action.Kind {
 		case ActionStartAllocation:
-			requiredKind = CheckAllocationReady
+			// An agent is ready when it has reached its provider with budget
+			// remaining. A TCP accept would not establish that: an agent runtime
+			// can be listening and unable to do any work at all.
+			if goal.Workload.Runtime != nil {
+				requiredKind = CheckAgentReady
+			} else {
+				requiredKind = CheckAllocationReady
+			}
 		case ActionPublishRoute:
 			requiredKind = CheckRouteReachable
+		case ActionDrainAllocation:
+			requiredKind = CheckAllocationDrained
 		default:
 			continue
 		}
@@ -168,8 +183,14 @@ func validateAction(goal Goal, world World, action Action) error {
 		if !node.Used.Add(action.Resources).Fits(node.Capacity) {
 			return fmt.Errorf("node %q lacks capacity", action.Node)
 		}
-		if action.Replica < 0 || action.Replica >= goal.Workload.Replicas {
+		// A queue-backed agent workload may exceed the goal's replica count, but
+		// only up to the ceiling the queue declares. The kernel recomputes that
+		// bound itself rather than trusting the agent's arithmetic.
+		if action.Replica < 0 || action.Replica >= authorizedReplicas(goal, world) {
 			return fmt.Errorf("replica index is outside goal")
+		}
+		if err := validateAgentPlacement(goal, *node, action); err != nil {
+			return err
 		}
 
 	case ActionCreateVolume:
@@ -463,6 +484,51 @@ func validateAction(goal Goal, world World, action Action) error {
 			return fmt.Errorf("secret %q is not declared by the goal", action.Secret.Name)
 		}
 
+	case ActionGrantTools:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		// The envelope is installed before the agent runs. Granting a tool to a
+		// started agent would widen a blast radius the kernel already authorized,
+		// which is the escalation this ordering exists to prevent.
+		if allocation.Phase != AllocationCreated {
+			return fmt.Errorf("tools must be granted before allocation %q starts", action.Target)
+		}
+		if goal.Workload.Runtime == nil {
+			return fmt.Errorf("tool grants are only for agent workloads")
+		}
+		// Every granted tool must be one the goal declared. Otherwise an agent
+		// could receive a capability the operator never authorized, which is the
+		// tool-grant equivalent of mounting an undeclared secret.
+		for _, grant := range action.Tools {
+			if !goalDeclaresTool(goal, grant) {
+				return fmt.Errorf("tool %q is not declared by the goal", grant.Name)
+			}
+		}
+		// A mutating tool lets an agent change state outside a4s, where no
+		// compensation or event log reaches. That needs a separately
+		// authenticated decision rather than an agent's judgement.
+		if actionGrantsMutatingTool(action) && !hasApproval(world, goal.ID, "agent-mutating-tools") {
+			return fmt.Errorf("granting mutating tools to %q requires agent-mutating-tools approval",
+				action.Target)
+		}
+
+	case ActionDrainAllocation:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		if allocation.Phase != AllocationRunning {
+			return fmt.Errorf("allocation %q is not running", action.Target)
+		}
+		if goal.Workload.Runtime == nil {
+			return fmt.Errorf("drain is only for agent workloads")
+		}
+		if action.Workload != allocation.Workload {
+			return fmt.Errorf("workload differs from allocation")
+		}
+
 	case ActionAttachNetwork:
 		allocation, ok := world.Allocations[action.Target]
 		if !ok {
@@ -516,6 +582,22 @@ func validateAction(goal Goal, world World, action Action) error {
 		if goal.Workload.Port > 0 && allocation.Address == "" {
 			return fmt.Errorf("allocation %q has no network address", action.Target)
 		}
+		// An agent workload that declared tools must hold its envelope before it
+		// runs. Starting without it would leave the runtime to decide its own
+		// capabilities, which is precisely what the envelope removes.
+		if runtime := goal.Workload.Runtime; runtime != nil {
+			if len(runtime.Tools) > 0 && len(allocation.Tools) == 0 {
+				return fmt.Errorf("agent allocation %q has no tool grant", action.Target)
+			}
+			if allocation.Budget.IsZero() {
+				return fmt.Errorf("agent allocation %q holds no budget", action.Target)
+			}
+			// Starting an agent that already spent its ceiling would burn the
+			// budget again to reach the same exhausted state.
+			if allocation.Exhausted() {
+				return fmt.Errorf("agent allocation %q has exhausted its budget", action.Target)
+			}
+		}
 
 	case ActionStopAllocation:
 		allocation, ok := world.Allocations[action.Target]
@@ -527,6 +609,20 @@ func validateAction(goal Goal, world World, action Action) error {
 		}
 		if action.Workload != allocation.Workload {
 			return fmt.Errorf("workload differs from allocation")
+		}
+		// An agent instance holds task context that a stateless replica does
+		// not. Stopping it mid-task destroys work rather than shifting load, so
+		// the instance must first be drained and observed holding nothing.
+		//
+		// An exhausted agent is exempt: it has hit a declared ceiling and cannot
+		// make progress on its task, so waiting for it to finish would wait
+		// forever.
+		if goal.Workload.Runtime != nil && allocation.Task != "" && !allocation.Exhausted() {
+			if !allocation.Draining {
+				return fmt.Errorf("agent allocation %q must be drained before it stops", action.Target)
+			}
+			return fmt.Errorf("agent allocation %q is still working on task %q",
+				action.Target, allocation.Task)
 		}
 		// The kernel enforces the availability floor independently. An agent
 		// that respects its own budget is convenient; an agent that cannot
@@ -616,6 +712,7 @@ func cloneWorld(world World) World {
 		Allocations: make(map[string]*Allocation, len(world.Allocations)),
 		Routes:      make(map[string]*Route, len(world.Routes)),
 		Volumes:     make(map[string]*Volume, len(world.Volumes)),
+		Queues:      make(map[string]*Queue, len(world.Queues)),
 		Approvals:   make(map[string]*Approval, len(world.Approvals)),
 		KnownGood:   make(map[string]string, len(world.KnownGood)),
 	}
@@ -632,7 +729,15 @@ func cloneWorld(world World) World {
 		for image, present := range node.Images {
 			copyNode.Images[image] = present
 		}
+		copyNode.Providers = make(map[string]bool, len(node.Providers))
+		for provider, reachable := range node.Providers {
+			copyNode.Providers[provider] = reachable
+		}
 		clone.Nodes[id] = &copyNode
+	}
+	for name, queue := range world.Queues {
+		copyQueue := *queue
+		clone.Queues[name] = &copyQueue
 	}
 	for id, allocation := range world.Allocations {
 		copyAllocation := *allocation
@@ -647,6 +752,9 @@ func cloneWorld(world World) World {
 			for name, version := range allocation.Secrets {
 				copyAllocation.Secrets[name] = version
 			}
+		}
+		if allocation.Tools != nil {
+			copyAllocation.Tools = append([]ToolGrant(nil), allocation.Tools...)
 		}
 		clone.Allocations[id] = &copyAllocation
 	}
@@ -720,6 +828,12 @@ func matchingReadyAllocations(goal Goal, world World) int {
 		if node != nil && allocation.ReadyAt(now) && allocation.Workload == goal.Workload.Name &&
 			allocation.Image == goal.Workload.Image && allocation.Resources == goal.Workload.Resources &&
 			nodeAllowed(goal.Constraints, *node) {
+			// A draining or exhausted agent is not serving capacity. Counting it
+			// would let a goal look satisfied by instances that are on their way
+			// out or can no longer afford to do anything.
+			if allocation.Draining || allocation.Exhausted() {
+				continue
+			}
 			ready++
 		}
 	}
@@ -734,6 +848,88 @@ func goalDeclaresSecret(goal Goal, ref SecretRef) bool {
 		}
 	}
 	return false
+}
+
+// authorizedReplicas is the highest replica count the kernel will permit.
+//
+// For an ordinary workload this is the goal's declared count. A queue-backed
+// agent workload may scale above it on observed demand, but never above the
+// queue's MaxWorkers: that ceiling is what keeps a queue spike from becoming an
+// unbounded spend incident, so the kernel enforces it independently of whatever
+// the placement agent calculated.
+func authorizedReplicas(goal Goal, world World) int {
+	runtime := goal.Workload.Runtime
+	if runtime == nil || runtime.Queue == "" {
+		return goal.Workload.Replicas
+	}
+	queue, ok := world.Queues[runtime.Queue]
+	if !ok || queue.Workload != goal.Workload.Name {
+		return goal.Workload.Replicas
+	}
+	if queue.MaxWorkers > goal.Workload.Replicas {
+		return queue.MaxWorkers
+	}
+	return goal.Workload.Replicas
+}
+
+// goalDeclaresTool reports whether the goal authorized this exact grant.
+//
+// The comparison is exact, including scope and the mutating flag. A grant that
+// matched by name alone would let a read-only declaration be installed as a
+// mutating capability.
+func goalDeclaresTool(goal Goal, grant ToolGrant) bool {
+	if goal.Workload.Runtime == nil {
+		return false
+	}
+	for _, declared := range goal.Workload.Runtime.Tools {
+		if declared == grant {
+			return true
+		}
+	}
+	return false
+}
+
+// actionGrantsMutatingTool reports whether an envelope contains any capability
+// that changes state outside a4s.
+func actionGrantsMutatingTool(action Action) bool {
+	for _, grant := range action.Tools {
+		if grant.Mutating {
+			return true
+		}
+	}
+	return false
+}
+
+// validateAgentPlacement enforces the feasibility inputs unique to an agent.
+//
+// Placement for an ordinary workload is a question of cpu, memory, labels, and
+// image presence. An agent adds two facts that are just as hard: it cannot work
+// without egress to its provider, and its budget is a resource the node commits
+// the same way it commits memory.
+func validateAgentPlacement(goal Goal, node Node, action Action) error {
+	runtime := goal.Workload.Runtime
+	if runtime == nil {
+		// An ordinary workload must not reserve agent budget. Allowing it would
+		// let any workload consume a node's agent capacity without being subject
+		// to any of the ceilings that capacity exists to enforce.
+		if !action.Budget.IsZero() {
+			return fmt.Errorf("only agent workloads may reserve budget")
+		}
+		return nil
+	}
+	if action.Budget != runtime.Budget {
+		return fmt.Errorf("allocation budget differs from goal")
+	}
+	// An agent placed where its provider is unreachable cannot become ready. It
+	// is the same class of infeasibility as a missing image, so it is refused at
+	// placement rather than discovered at probe time.
+	if !node.Providers[runtime.Provider] {
+		return fmt.Errorf("node %q cannot reach provider %q", node.ID, runtime.Provider)
+	}
+	if !node.BudgetUsed.Add(action.Budget).Fits(node.BudgetCapacity) {
+		return fmt.Errorf("node %q lacks agent budget capacity", node.ID)
+	}
+	return nil
 }
 
 // workloadDeclaresVolume reports whether the goal authorized this volume.

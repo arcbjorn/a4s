@@ -87,14 +87,21 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 		if _, ok := e.world.Nodes[action.Node]; !ok {
 			return Evidence{}, fmt.Errorf("node %q does not exist", action.Node)
 		}
+		observed := map[string]string{
+			"node": action.Node, "workload": action.Workload,
+			"image": action.Image, "replica": fmt.Sprint(action.Replica),
+			"cpu_millis": fmt.Sprint(action.Resources.CPUMillis),
+			"memory_mb":  fmt.Sprint(action.Resources.MemoryMB),
+		}
+		if !action.Budget.IsZero() {
+			observed["tokens"] = fmt.Sprint(action.Budget.Tokens)
+			observed["cost_millis"] = fmt.Sprint(action.Budget.CostMillis)
+			observed["wall_seconds"] = fmt.Sprint(action.Budget.WallSeconds)
+			observed["tool_calls"] = fmt.Sprint(action.Budget.ToolCalls)
+		}
 		return Evidence{
 			Kind: EvidenceAllocationCreated, Target: action.Target,
-			Observed: map[string]string{
-				"node": action.Node, "workload": action.Workload,
-				"image": action.Image, "replica": fmt.Sprint(action.Replica),
-				"cpu_millis": fmt.Sprint(action.Resources.CPUMillis),
-				"memory_mb":  fmt.Sprint(action.Resources.MemoryMB),
-			},
+			Observed: observed,
 		}, nil
 
 	case ActionCreateVolume:
@@ -303,6 +310,30 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			Observed: map[string]string{"deleted": "true"},
 		}, nil
 
+	case ActionGrantTools:
+		if _, ok := e.world.Allocations[action.Target]; !ok {
+			return Evidence{}, fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		// The evidence reports how many capabilities were installed, not which.
+		// The authoritative envelope is the one the kernel authorized in the
+		// action; echoing names back would invite trusting the node's copy.
+		return Evidence{
+			Kind: EvidenceToolsGranted, Target: action.Target,
+			Observed: map[string]string{"count": fmt.Sprint(len(action.Tools))},
+		}, nil
+
+	case ActionDrainAllocation:
+		if _, ok := e.world.Allocations[action.Target]; !ok {
+			return Evidence{}, fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		// The in-memory executor has no real agent to wait for, so the drain
+		// completes immediately. A real node reports draining first and drained
+		// only once the instance releases its task.
+		return Evidence{
+			Kind: EvidenceAllocationDrained, Target: action.Target,
+			Observed: map[string]string{"drained": "true"},
+		}, nil
+
 	case ActionPublishRoute:
 		return Evidence{
 			Kind: EvidenceRouteReachable, Target: action.Target,
@@ -337,9 +368,10 @@ func simulateAction(world *World, action Action) error {
 		world.Allocations[action.Target] = &Allocation{
 			ID: action.Target, Workload: action.Workload, Replica: action.Replica,
 			Node: action.Node, Image: action.Image, Resources: action.Resources,
-			Phase: AllocationCreated,
+			Phase: AllocationCreated, Budget: action.Budget,
 		}
 		node.Used = node.Used.Add(action.Resources)
+		node.BudgetUsed = node.BudgetUsed.Add(action.Budget)
 
 	case ActionCreateVolume:
 		if action.Volume == nil {
@@ -524,8 +556,27 @@ func simulateAction(world *World, action Action) error {
 		}
 		if node, ok := world.Nodes[allocation.Node]; ok {
 			node.Used = node.Used.Subtract(allocation.Resources)
+			node.BudgetUsed = node.BudgetUsed.Subtract(allocation.Budget)
 		}
 		delete(world.Allocations, action.Target)
+
+	case ActionGrantTools:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		allocation.Tools = append([]ToolGrant(nil), action.Tools...)
+
+	case ActionDrainAllocation:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		// Simulation assumes the drain completes so a dependent stop can be
+		// checked in the same proposal. Whether the instance actually released
+		// its task still requires drained evidence before the stop executes.
+		allocation.Draining = true
+		allocation.Task = ""
 
 	case ActionPublishRoute:
 		world.Routes[action.Target] = &Route{
