@@ -82,6 +82,12 @@ type Volume struct {
 	// RestoredFrom records the snapshot this volume was last restored from,
 	// which is what an operator needs to know after a recovery.
 	RestoredFrom string `json:"restored_from,omitempty"`
+	// VerifiedAt is when a backup of this volume was last proven recoverable.
+	// A backup nobody has restored is a guess, so this is what an operator
+	// consults to know whether recovery would actually work.
+	VerifiedAt time.Time `json:"verified_at,omitempty"`
+	// VerifiedSnapshot is the snapshot the last successful verification used.
+	VerifiedSnapshot string `json:"verified_snapshot,omitempty"`
 	// Handoff tracks a move in progress. Movement is a sequence of evidenced
 	// steps rather than a single action, because each step must be proven
 	// before the next is safe: quiesce, snapshot, transfer, verify, adopt.
@@ -314,6 +320,7 @@ const (
 	ActionTransferVolume   ActionKind = "transfer_volume"
 	ActionAdoptVolume      ActionKind = "adopt_volume"
 	ActionPruneSnapshots   ActionKind = "prune_snapshots"
+	ActionVerifyBackup     ActionKind = "verify_backup"
 	ActionStartAllocation  ActionKind = "start_allocation"
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
