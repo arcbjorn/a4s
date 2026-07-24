@@ -7,6 +7,17 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Target leases (`control.LeaseManager`) enforced before the first mutation, so
+  two proposals built against the same revision cannot interleave on one
+  allocation. Leases expire, so an abandoned holder does not block a target.
+- Node-side lease backstop rejecting an envelope that contradicts a live claim.
+- Rollout agent that retires drifted allocations one at a time within an
+  availability budget, with placement creating the replacements.
+- Kernel-enforced disruption floor, so an agent cannot exceed the availability
+  budget by proposing the stop anyway.
+- Long-running server package and `a4s server` command holding durable history,
+  a projection rebuilt from it on every start, and goal admission.
+
 - `stop_allocation` and `delete_allocation` actions with kill deadline,
   snapshot cleanup, and capacity release.
 - Real process, TCP, and HTTP readiness probes (`node.RuntimeObserver`).
