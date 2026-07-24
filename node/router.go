@@ -107,6 +107,7 @@ type CompositeRuntime struct {
 	Containers *ContainerRuntime
 	Routes     *Router
 	Networks   *Network
+	Secrets    *Secrets
 }
 
 func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (control.Evidence, error) {
@@ -121,6 +122,11 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 			return control.Evidence{}, fmt.Errorf("node has no network capability")
 		}
 		return c.Networks.Execute(ctx, action)
+	case control.ActionMountSecret:
+		if c.Secrets == nil {
+			return control.Evidence{}, fmt.Errorf("node has no secret capability")
+		}
+		return c.Secrets.Execute(ctx, action)
 	case control.ActionDeleteAllocation:
 		if c.Containers == nil {
 			return control.Evidence{}, fmt.Errorf("node has no container capability")
@@ -135,6 +141,12 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 		if c.Networks != nil {
 			if _, detachErr := c.Networks.Detach(ctx, action.Target); detachErr != nil {
 				return control.Evidence{}, detachErr
+			}
+		}
+		// A deleted workload must not leave credentials readable on the node.
+		if c.Secrets != nil {
+			if releaseErr := c.Secrets.Release(action.Target); releaseErr != nil {
+				return control.Evidence{}, releaseErr
 			}
 		}
 		return evidence, nil
@@ -158,6 +170,11 @@ func (c *CompositeRuntime) Close() error {
 	}
 	if c.Networks != nil {
 		if closeErr := c.Networks.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	if c.Secrets != nil {
+		if closeErr := c.Secrets.Close(); err == nil {
 			err = closeErr
 		}
 	}
