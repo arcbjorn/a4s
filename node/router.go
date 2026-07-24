@@ -114,6 +114,9 @@ type CompositeRuntime struct {
 	// Queues are the work queues served on this node. Deleting an allocation
 	// returns whatever it held, so work outlives the worker.
 	Queues []*Queue
+	// RuntimeAPI is the workload-facing surface agents call. It holds the
+	// per-allocation credential, so it participates in allocation lifecycle.
+	RuntimeAPI *RuntimeAPI
 }
 
 func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (control.Evidence, error) {
@@ -185,6 +188,13 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 				}
 			}
 		}
+		// A deleted agent must not leave its credential readable on the node, or
+		// keep a queue binding a later allocation could inherit.
+		if c.RuntimeAPI != nil {
+			if releaseErr := c.RuntimeAPI.Revoke(action.Target); releaseErr != nil {
+				return control.Evidence{}, releaseErr
+			}
+		}
 		// A deleted agent must not leave its tool envelope behind. A later
 		// allocation reusing the identifier would otherwise inherit capabilities
 		// nobody granted it.
@@ -205,6 +215,18 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 		// start means the meter exists before the agent can spend against it.
 		if c.Agents != nil && !action.Budget.IsZero() {
 			c.Agents.Reserve(action.Target, action.Budget)
+			// The runtime credential is issued with the reservation so it exists
+			// before the container starts. An agent that came up first would
+			// have a window with no way to identify itself.
+			if c.RuntimeAPI != nil {
+				token, err := c.Agents.IssueToken(action.Target)
+				if err != nil {
+					return control.Evidence{}, err
+				}
+				if err := c.RuntimeAPI.Provision(action.Target, token); err != nil {
+					return control.Evidence{}, err
+				}
+			}
 		}
 		return evidence, nil
 	default:
