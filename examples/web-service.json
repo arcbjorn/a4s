@@ -1,0 +1,73 @@
+{
+  "goal": {
+    "api_version": "a4s.io/v1alpha1",
+    "id": "homepage-public",
+    "objective": "Keep one healthy homepage replica reachable over public HTTPS on the base pool.",
+    "workload": {
+      "name": "homepage",
+      "image": "ghcr.io/arcbjorn/homepage@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "replicas": 1,
+      "port": 8080,
+      "resources": {
+        "cpu_millis": 100,
+        "memory_mb": 128
+      }
+    },
+    "route": {
+      "host": "homepage.example.com",
+      "port": 443,
+      "exposure": "public"
+    },
+    "constraints": {
+      "required_labels": {
+        "pool": "base"
+      }
+    }
+  },
+  "world": {
+    "revision": 0,
+    "approvals": {
+      "approve-homepage-public": {
+        "id": "approve-homepage-public",
+        "goal_id": "homepage-public",
+        "scope": "public-route",
+        "issued_by": "operator:arc",
+        "granted": true
+      }
+    },
+    "nodes": {
+      "base": {
+        "id": "base",
+        "labels": {
+          "pool": "base",
+          "zone": "home"
+        },
+        "capacity": {
+          "cpu_millis": 4000,
+          "memory_mb": 16384
+        },
+        "used": {
+          "cpu_millis": 500,
+          "memory_mb": 2048
+        },
+        "healthy": true
+      },
+      "nova": {
+        "id": "nova",
+        "labels": {
+          "pool": "sumi",
+          "zone": "remote"
+        },
+        "capacity": {
+          "cpu_millis": 2000,
+          "memory_mb": 4096
+        },
+        "used": {
+          "cpu_millis": 200,
+          "memory_mb": 512
+        },
+        "healthy": true
+      }
+    }
+  }
+}
