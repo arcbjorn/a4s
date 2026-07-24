@@ -7,6 +7,21 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- `a4s explain`: reconstructs why an allocation or route exists from the
+  hash-chained log, including the agent's reasoning, the kernel's
+  authorization, and the probe evidence that proved the outcome. An action
+  dispatched without a completion reads as pending, making the crash window
+  visible.
+- `a4s plan`: dry-run reconciliation against the real world projection. It runs
+  the real agents and the real kernel over a cloned world, mutating nothing, and
+  marks steps contingent on readiness that simulation cannot measure.
+- `a4s diagnose` and `control.Diagnoser`: synthesizes why a goal is not
+  converging and suggests a next step. The diagnoser holds no capability grants
+  and proposes no actions, so it is where model-backed reasoning can be
+  substituted without granting new authority.
+- `Target` and `Kind` on control events, recorded at dispatch, so an action that
+  never completed can still be attributed to what it was about.
+
 - Node enrollment: a challenge-response handshake in which a node proves
   possession of its enrolled Ed25519 key before the server issues any
   capability. Refusals are generic on the wire so node identities cannot be
