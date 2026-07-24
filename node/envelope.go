@@ -114,6 +114,35 @@ func Verify(signed SignedAction, keys map[string]ed25519.PublicKey, nodeID strin
 	return envelope, hex.EncodeToString(digest[:]), nil
 }
 
+// WorkDigest identifies the work an envelope authorizes, independent of when it
+// was issued.
+//
+// The idempotency key must survive a legitimate retry: a controller that
+// resends an action after a timeout issues a fresh envelope with new issue and
+// expiry times and a new envelope ID, but it is asking for the same work. The
+// whole-envelope digest changes in that case, so comparing it would reject
+// honest retries. Comparing the work instead lets a retry return the stored
+// result while still refusing a key reused for a different action.
+func WorkDigest(envelope ActionEnvelope) (string, error) {
+	work := struct {
+		NodeID         string         `json:"node_id"`
+		GoalID         string         `json:"goal_id"`
+		ProposalID     string         `json:"proposal_id"`
+		IdempotencyKey string         `json:"idempotency_key"`
+		Action         control.Action `json:"action"`
+	}{
+		NodeID: envelope.NodeID, GoalID: envelope.GoalID,
+		ProposalID: envelope.ProposalID, IdempotencyKey: envelope.IdempotencyKey,
+		Action: envelope.Action,
+	}
+	payload, err := json.Marshal(work)
+	if err != nil {
+		return "", fmt.Errorf("encode envelope work: %w", err)
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
+}
+
 func validateEnvelope(envelope ActionEnvelope) error {
 	if envelope.Version != EnvelopeVersion {
 		return fmt.Errorf("unsupported action envelope version %d", envelope.Version)
