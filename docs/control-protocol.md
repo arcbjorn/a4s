@@ -210,6 +210,17 @@ Kernel rules:
 
 - Allocation exists and is in the `running` phase.
 - Workload equals the allocation's workload.
+- Stopping a ready allocation must leave at least the availability floor of
+  ready replicas serving. The floor is the goal's replica count minus one, or
+  zero for a single-replica workload, which cannot be updated without a gap.
+
+Availability is counted across every replica currently serving the workload,
+whatever image it runs. Counting only replicas matching the goal's new image
+would read as zero availability at the start of every rollout.
+
+The kernel applies this floor independently of the proposing agent. An agent
+that respects its own budget is convenient; an agent that cannot exceed the
+budget is a safety property.
 
 Node behavior:
 
@@ -263,14 +274,15 @@ gateway refuses the new one. No concrete gateway backend is implemented yet.
 |---|---|
 | `placement-agent` | `pull_image`, `create_allocation`, `start_allocation` |
 | `network-agent` | `publish_route` |
+| `rollout-agent` | `stop_allocation`, `delete_allocation` |
 
 An agent cannot acquire another action by returning it in its descriptor or
 proposal.
 
-No agent is currently granted `stop_allocation` or `delete_allocation`. The
-kernel validates and the node executes them, but the agent that will propose
-them is the future rollout agent. Granting a destructive capability before the
-agent that needs it exists would widen authority for no reason.
+The rollout agent may retire an allocation but may not create one. Replacement
+is placement's job, which keeps destruction and creation in separate capability
+sets: an agent that can only destroy cannot quietly replace a workload with
+something else.
 
 ## Reconciliation sequence
 
@@ -422,8 +434,19 @@ Envelope validation requires:
 - Runtime clock strictly before expiry.
 - Known local key ID and valid signature.
 
-`lease_id` and `world_revision` are signed but not yet checked against local
-lease state. They reserve the protocol fields for the next server/node slice.
+`lease_id` is issued by the kernel's lease manager, which claims every target a
+proposal will mutate before the first mutation and releases them when the plan
+finishes. Revision binding alone is not sufficient: two proposals built against
+the same revision are both non-stale, and the second would still execute against
+state the first has begun changing.
+
+Leases expire, so a controller that dies mid-plan does not block its targets
+permanently. Acquisition is all-or-nothing, so a proposal cannot hold part of a
+plan while another holds the rest.
+
+The node keeps a local backstop that refuses an envelope contradicting a live
+lease it already accepted for the same target. That catches a controller which
+lost track of its own leases; it does not replace kernel-side exclusion.
 
 ## Dispatch response
 
