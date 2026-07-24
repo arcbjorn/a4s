@@ -26,6 +26,26 @@ type WorkloadSpec struct {
 	Resources  Resources `json:"resources"`
 	Privileged bool      `json:"privileged,omitempty"`
 	Stateful   bool      `json:"stateful,omitempty"`
+	// Secrets names material this workload needs. Only references appear here.
+	Secrets []SecretRef `json:"secrets,omitempty"`
+}
+
+// SecretRef names secret material without carrying it.
+//
+// There is deliberately no field capable of holding a value. A goal travels
+// through agent context, proposals, events, and the durable log, and a struct
+// with nowhere to put a secret cannot leak one no matter how it is serialized,
+// logged, or handed to a model.
+type SecretRef struct {
+	// Name identifies the secret to the broker. It is an opaque handle, not a
+	// path and not a value.
+	Name string `json:"name"`
+	// Version pins which revision to mount. Rotating a secret means changing
+	// this, so a rollout is an ordinary goal change with an audit trail.
+	Version string `json:"version"`
+	// MountPath is where the node places the decrypted material inside the
+	// container's filesystem.
+	MountPath string `json:"mount_path"`
 }
 
 type RouteSpec struct {
@@ -119,6 +139,9 @@ type Allocation struct {
 	Phase     AllocationPhase `json:"phase"`
 	Ready     bool            `json:"ready"`
 	Stateful  bool            `json:"stateful,omitempty"`
+	// Secrets records the secret versions mounted for this allocation. Versions
+	// only: the world projection never holds secret material.
+	Secrets map[string]string `json:"secrets,omitempty"`
 	// Address is the allocation's own IP, assigned by CNI. Each allocation has
 	// its own network namespace, so replicas of one workload can run on the
 	// same node without contending for a host port.
@@ -182,6 +205,7 @@ const (
 	ActionPullImage        ActionKind = "pull_image"
 	ActionCreateAllocation ActionKind = "create_allocation"
 	ActionAttachNetwork    ActionKind = "attach_network"
+	ActionMountSecret      ActionKind = "mount_secret"
 	ActionStartAllocation  ActionKind = "start_allocation"
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
@@ -199,6 +223,9 @@ type Action struct {
 	Resources Resources  `json:"resources,omitempty"`
 	Port      int        `json:"port,omitempty"`
 	Exposure  string     `json:"exposure,omitempty"`
+	// Secret names the reference to mount. An action carries the reference, not
+	// the material, so a proposal remains safe to log in full.
+	Secret    *SecretRef `json:"secret,omitempty"`
 	DependsOn []string   `json:"depends_on,omitempty"`
 }
 
