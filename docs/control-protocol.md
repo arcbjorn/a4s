@@ -247,6 +247,30 @@ the restored copy and verifies it again before swapping it in. Restoring a
 corrupt snapshot would destroy the only remaining copy and replace it with
 something unusable, which is worse than the failure being restored from.
 
+### `prune_snapshots`
+
+Snapshots accumulate without bound, and a full disk on a volume node is itself a
+data-availability failure. `prune_snapshots` removes snapshots beyond a retention
+count.
+
+What is never pruned:
+
+- The most recent `retain` snapshots.
+- The last-known-good snapshot, which is the recovery point an operator reaches
+  for.
+- Any snapshot that has been backed up off-host, so its backup record does not
+  dangle.
+- The last snapshot standing, whatever retention says. A volume with no recovery
+  point is the state pruning must never produce.
+
+Retention below one is refused by the kernel, and the node applies the same
+floor from what is on disk rather than trusting the controller's list. A volume
+mid-move cannot be pruned, since the moving snapshot could be the one removed.
+
+A dry run reports exactly what it would remove and changes nothing, which the
+roadmap requires before a real prune. The preview matches the subsequent real
+prune.
+
 ### `backup_snapshot`
 
 A snapshot that exists only on its volume's own node does not survive the loss
@@ -423,7 +447,7 @@ gateway refuses the new one. No concrete gateway backend is implemented yet.
 | `placement-agent` | `pull_image`, `create_allocation`, `create_volume`, `attach_volume`, `mount_secret`, `attach_network`, `start_allocation` |
 | `network-agent` | `publish_route` |
 | `rollout-agent` | `stop_allocation`, `delete_allocation`, `detach_volume` |
-| `storage-agent` | `snapshot_volume`, `backup_snapshot`, `restore_snapshot`, `quiesce_volume`, `transfer_volume`, `adopt_volume` |
+| `storage-agent` | `snapshot_volume`, `backup_snapshot`, `restore_snapshot`, `quiesce_volume`, `transfer_volume`, `adopt_volume`, `prune_snapshots` |
 
 An agent cannot acquire another action by returning it in its descriptor or
 proposal.
@@ -500,6 +524,7 @@ Implemented evidence kinds:
 | `volume.quiesced` | Volumes | Opens a handoff; the writer has stopped |
 | `volume.transferred` | Volumes | The target proved it holds the snapshot |
 | `volume.adopted` | Volumes | Ownership moved and the generation advanced |
+| `volume.snapshots_pruned` | Volumes | Records which snapshots were removed |
 | `secret.mounted` | Secrets | Records the mounted secret version, never the material |
 | `network.attached` | Network | Records the allocation's own address |
 | `network.detached` | Network | Clears the address on teardown |
