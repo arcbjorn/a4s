@@ -94,6 +94,7 @@ func (r *Router) Close() error { return nil }
 type CompositeRuntime struct {
 	Containers *ContainerRuntime
 	Routes     *Router
+	Networks   *Network
 }
 
 func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (control.Evidence, error) {
@@ -103,6 +104,28 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 			return control.Evidence{}, fmt.Errorf("node has no routing capability")
 		}
 		return c.Routes.Execute(ctx, action)
+	case control.ActionAttachNetwork:
+		if c.Networks == nil {
+			return control.Evidence{}, fmt.Errorf("node has no network capability")
+		}
+		return c.Networks.Execute(ctx, action)
+	case control.ActionDeleteAllocation:
+		if c.Containers == nil {
+			return control.Evidence{}, fmt.Errorf("node has no container capability")
+		}
+		evidence, err := c.Containers.Execute(ctx, action)
+		if err != nil {
+			return control.Evidence{}, err
+		}
+		// A deleted allocation must never leave a namespace or address behind,
+		// so teardown is part of delete rather than a separately proposed step
+		// an agent could forget.
+		if c.Networks != nil {
+			if _, detachErr := c.Networks.Detach(ctx, action.Target); detachErr != nil {
+				return control.Evidence{}, detachErr
+			}
+		}
+		return evidence, nil
 	default:
 		if c.Containers == nil {
 			return control.Evidence{}, fmt.Errorf("node has no container capability")
@@ -118,6 +141,11 @@ func (c *CompositeRuntime) Close() error {
 	}
 	if c.Routes != nil {
 		if closeErr := c.Routes.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	if c.Networks != nil {
+		if closeErr := c.Networks.Close(); err == nil {
 			err = closeErr
 		}
 	}
