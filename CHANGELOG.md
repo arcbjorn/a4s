@@ -7,6 +7,19 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Volumes: explicit durable objects with node affinity, single-writer ownership,
+  and a generation counter that fences a writer superseded while unreachable.
+- `create_volume`, `attach_volume`, `detach_volume`, and `snapshot_volume`
+  actions with matching evidence.
+- Node volume manager with ownership records that survive node restart, so a
+  restarted node still refuses a second writer.
+- Stateful workloads are now accepted, replacing the blanket rejection. A
+  workload declaring volumes is pinned to the node holding its data and limited
+  to one replica.
+- Kernel rules: a volume cannot be attached to two allocations, attached across
+  nodes, detached from a running writer, or deleted while still held. Destroying
+  a stateful allocation requires a separately authenticated approval.
+
 - Secrets: opaque `SecretRef` (name, version, mount path) on workloads, a
   `mount_secret` action, and `secret.mounted` evidence carrying only the
   version. `SecretRef` has no field capable of holding a value.
