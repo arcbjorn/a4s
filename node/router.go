@@ -13,7 +13,7 @@ import (
 // implementation writes a gateway configuration and reloads it; the control
 // plane never speaks the gateway's own configuration language.
 type RouteBackend interface {
-	Apply(context.Context, []control.Route) error
+	Apply(context.Context, []control.RouteSnapshot) error
 }
 
 // Router handles route actions on the node. It is separate from the container
@@ -26,6 +26,10 @@ type Router struct {
 	mu      sync.Mutex
 	backend RouteBackend
 	routes  map[string]control.Route
+	// Endpoints resolves a workload to the instances currently observed
+	// serving it. Without it a route is published with no upstream, which the
+	// gateway answers honestly rather than silently dropping.
+	Endpoints func(workload string) []control.Endpoint
 }
 
 func NewRouter(backend RouteBackend) *Router {
@@ -79,9 +83,17 @@ func (r *Router) apply(ctx context.Context) error {
 		hosts = append(hosts, host)
 	}
 	sort.Strings(hosts)
-	snapshot := make([]control.Route, 0, len(hosts))
+	snapshot := make([]control.RouteSnapshot, 0, len(hosts))
 	for _, host := range hosts {
-		snapshot = append(snapshot, r.routes[host])
+		route := r.routes[host]
+		entry := control.RouteSnapshot{
+			Host: route.Host, Workload: route.Workload,
+			Port: route.Port, Exposure: route.Exposure,
+		}
+		if r.Endpoints != nil {
+			entry.Endpoints = r.Endpoints(route.Workload)
+		}
+		snapshot = append(snapshot, entry)
 	}
 	return r.backend.Apply(ctx, snapshot)
 }
