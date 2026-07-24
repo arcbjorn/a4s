@@ -94,6 +94,51 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			},
 		}, nil
 
+	case ActionCreateVolume:
+		if action.Volume == nil {
+			return Evidence{}, fmt.Errorf("create volume requires a volume reference")
+		}
+		if _, ok := e.world.Nodes[action.Node]; !ok {
+			return Evidence{}, fmt.Errorf("node %q does not exist", action.Node)
+		}
+		return Evidence{
+			Kind: EvidenceVolumeCreated, Target: action.Volume.Name,
+			Observed: map[string]string{"node": action.Node},
+		}, nil
+
+	case ActionAttachVolume:
+		if action.Volume == nil {
+			return Evidence{}, fmt.Errorf("attach volume requires a volume reference")
+		}
+		if _, ok := e.world.Allocations[action.Target]; !ok {
+			return Evidence{}, fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		return Evidence{
+			Kind: EvidenceVolumeAttached, Target: action.Volume.Name,
+			Observed: map[string]string{
+				"allocation": action.Target,
+				"mount_path": action.Volume.MountPath,
+			},
+		}, nil
+
+	case ActionDetachVolume:
+		if action.Volume == nil {
+			return Evidence{}, fmt.Errorf("detach volume requires a volume reference")
+		}
+		return Evidence{
+			Kind: EvidenceVolumeDetached, Target: action.Volume.Name,
+			Observed: map[string]string{"allocation": action.Target},
+		}, nil
+
+	case ActionSnapshotVolume:
+		if action.Volume == nil {
+			return Evidence{}, fmt.Errorf("snapshot volume requires a volume reference")
+		}
+		return Evidence{
+			Kind: EvidenceVolumeSnapshotted, Target: action.Volume.Name,
+			Observed: map[string]string{"snapshot": action.Volume.Name + "-simulated"},
+		}, nil
+
 	case ActionMountSecret:
 		if _, ok := e.world.Allocations[action.Target]; !ok {
 			return Evidence{}, fmt.Errorf("allocation %q does not exist", action.Target)
@@ -191,6 +236,57 @@ func simulateAction(world *World, action Action) error {
 			Phase: AllocationCreated,
 		}
 		node.Used = node.Used.Add(action.Resources)
+
+	case ActionCreateVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("create volume requires a volume reference")
+		}
+		if _, exists := world.Volumes[action.Volume.Name]; !exists {
+			world.Volumes[action.Volume.Name] = &Volume{
+				Name: action.Volume.Name, Node: action.Node,
+			}
+		}
+
+	case ActionAttachVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("attach volume requires a volume reference")
+		}
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		if volume.Owner != action.Target {
+			volume.Owner = action.Target
+			volume.Generation++
+		}
+		if allocation.Volumes == nil {
+			allocation.Volumes = make(map[string]uint64)
+		}
+		allocation.Volumes[action.Volume.Name] = volume.Generation
+
+	case ActionDetachVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("detach volume requires a volume reference")
+		}
+		if volume, ok := world.Volumes[action.Volume.Name]; ok {
+			if allocation, ok := world.Allocations[volume.Owner]; ok {
+				delete(allocation.Volumes, action.Volume.Name)
+			}
+			volume.Owner = ""
+			volume.Generation++
+		}
+
+	case ActionSnapshotVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("snapshot volume requires a volume reference")
+		}
+		if volume, ok := world.Volumes[action.Volume.Name]; ok {
+			volume.LastSnapshot = "simulated"
+		}
 
 	case ActionMountSecret:
 		allocation, ok := world.Allocations[action.Target]
