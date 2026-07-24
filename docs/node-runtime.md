@@ -137,7 +137,8 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/a4s ./cmd/a4s
   implemented; a service name does not yet resolve to healthy endpoints.
 - Seccomp/AppArmor profile selection, user namespaces, and rootless execution.
 - Image and snapshot garbage collection.
-- A concrete gateway backend behind the route snapshot interface.
+- Cross-node service routing. A route resolves to endpoints on the node that
+  owns them; a service name does not yet resolve across the tailnet.
 
 These are required before running a production workload. The next useful
 milestone is running the existing round trip against a live containerd on a
