@@ -25,13 +25,18 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 	}
 	existing := make(map[int]bool)
 	for _, allocation := range world.Allocations {
-		if allocation.Workload == goal.Workload.Name && allocation.Phase != AllocationStopped {
-			node := world.Nodes[allocation.Node]
-			if node == nil || allocation.Image != goal.Workload.Image || allocation.Resources != goal.Workload.Resources || !nodeAllowed(goal.Constraints, *node) {
-				return proposal, fmt.Errorf("allocation %q has drift that requires the future rollout agent", allocation.ID)
-			}
-			existing[allocation.Replica] = true
+		if allocation.Workload != goal.Workload.Name || allocation.Phase == AllocationStopped {
+			continue
 		}
+		node := world.Nodes[allocation.Node]
+		if node == nil || allocation.Image != goal.Workload.Image ||
+			allocation.Resources != goal.Workload.Resources || !nodeAllowed(goal.Constraints, *node) {
+			// A drifted allocation is the rollout agent's business. Placement
+			// must not treat the replica slot as filled, or the replacement
+			// would never be created after the rollout retires it.
+			continue
+		}
+		existing[allocation.Replica] = true
 	}
 	reserved := make(map[string]Resources)
 	for replica := 0; replica < goal.Workload.Replicas; replica++ {
