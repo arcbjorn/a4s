@@ -67,7 +67,8 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 		}
 		proposal.Actions = append(proposal.Actions, create, Action{
 			ID: "start-" + allocationID, Kind: ActionStartAllocation,
-			Target: allocationID, Workload: goal.Workload.Name, DependsOn: []string{createID},
+			Target: allocationID, Workload: goal.Workload.Name, Node: node.ID,
+			DependsOn: []string{createID},
 		})
 		proposal.ExpectedEvidence = append(proposal.ExpectedEvidence, Check{Kind: "allocation_ready", Target: allocationID, Want: "true"})
 		reserved[node.ID] = reserved[node.ID].Add(goal.Workload.Resources)
@@ -132,8 +133,26 @@ func (NetworkAgent) Propose(goal Goal, world World) (Proposal, error) {
 	proposal.Actions = []Action{{
 		ID: "publish-" + goal.Workload.Name, Kind: ActionPublishRoute,
 		Target: goal.Route.Host, Workload: goal.Workload.Name,
+		Node: routeNode(goal, world),
 		Port: goal.Route.Port, Exposure: goal.Route.Exposure,
 	}}
 	proposal.ExpectedEvidence = []Check{{Kind: "route_reachable", Target: goal.Route.Host, Want: "true"}}
 	return proposal, nil
+}
+
+// routeNode picks the node that will serve a route. Routes are published by the
+// gateway on a node already running the workload, so traffic does not depend on
+// a node that holds no replica.
+func routeNode(goal Goal, world World) string {
+	nodes := make([]string, 0, len(world.Allocations))
+	for _, allocation := range world.Allocations {
+		if allocation.Workload == goal.Workload.Name && allocation.Ready {
+			nodes = append(nodes, allocation.Node)
+		}
+	}
+	if len(nodes) == 0 {
+		return ""
+	}
+	sort.Strings(nodes)
+	return nodes[0]
 }
