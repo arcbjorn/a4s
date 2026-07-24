@@ -33,6 +33,12 @@ const (
 	EvidenceAllocationFailed  = "allocation.failed"
 	EvidenceRouteReachable    = "route.reachable"
 	EvidenceRouteRemoved      = "route.removed"
+	EvidenceToolsGranted      = "agent.tools_granted"
+	EvidenceAgentReady        = "agent.ready"
+	EvidenceAgentSpent        = "agent.spent"
+	EvidenceAgentDraining     = "agent.draining"
+	EvidenceAllocationDrained = "allocation.drained"
+	EvidenceQueueObserved     = "queue.observed"
 )
 
 // Project applies one piece of evidence to the world and returns the updated
@@ -89,13 +95,15 @@ func projectInto(world *World, evidence Evidence) error {
 		if err != nil {
 			return err
 		}
+		budget := observedBudget(evidence)
 		world.Allocations[evidence.Target] = &Allocation{
 			ID: evidence.Target, Workload: evidence.Observed["workload"],
 			Replica: observedInt(evidence, "replica"), Node: node.ID,
 			Image: evidence.Observed["image"], Resources: resources,
-			Phase: AllocationCreated,
+			Phase: AllocationCreated, Budget: budget,
 		}
 		node.Used = node.Used.Add(resources)
+		node.BudgetUsed = node.BudgetUsed.Add(budget)
 
 	case EvidenceVolumeCreated:
 		if evidence.Target == "" {
@@ -483,6 +491,101 @@ func projectInto(world *World, evidence Evidence) error {
 	case EvidenceRouteRemoved:
 		delete(world.Routes, evidence.Target)
 
+	case EvidenceToolsGranted:
+		allocation, ok := world.Allocations[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, evidence.Target)
+		}
+		if allocation.Phase != AllocationCreated {
+			return fmt.Errorf("allocation %q cannot receive tools in phase %q",
+				evidence.Target, allocation.Phase)
+		}
+		// The world records that an envelope was installed and how large it was.
+		// The grants themselves come from the authorized action, not from what
+		// the node reports back, so a compromised node cannot widen its own
+		// envelope by describing a larger one in evidence.
+		allocation.Tools = make([]ToolGrant, 0, observedInt(evidence, "count"))
+		for i := 0; i < observedInt(evidence, "count"); i++ {
+			allocation.Tools = append(allocation.Tools, ToolGrant{})
+		}
+
+	case EvidenceAgentReady:
+		allocation, ok := world.Allocations[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, evidence.Target)
+		}
+		if allocation.Phase != AllocationRunning {
+			return fmt.Errorf("allocation %q cannot be ready in phase %q", evidence.Target, allocation.Phase)
+		}
+		// Agent readiness means provider reachable and budget remaining. Both
+		// are observed by the node runtime; neither is the agent's own claim.
+		allocation.Ready = evidence.Observed["ready"] == "true"
+		allocation.ReadyExpiresAt = evidence.ExpiresAt
+		if allocation.Ready {
+			if world.KnownGood == nil {
+				world.KnownGood = make(map[string]string)
+			}
+			world.KnownGood[allocation.Workload] = allocation.Image
+		}
+
+	case EvidenceAgentSpent:
+		allocation, ok := world.Allocations[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, evidence.Target)
+		}
+		spent := observedBudget(evidence)
+		// Spend only ever increases. A lower reading is a stale or replayed
+		// observation, and accepting it would let an exhausted agent look
+		// affordable again and be restarted into the same ceiling.
+		if spent.Tokens < allocation.Spent.Tokens || spent.CostMillis < allocation.Spent.CostMillis {
+			return nil
+		}
+		allocation.Spent = spent
+		// An agent that hit its ceiling is no longer ready. It cannot do work,
+		// and leaving it ready would let it satisfy a goal it cannot serve.
+		if allocation.Exhausted() {
+			allocation.Ready = false
+		}
+
+	case EvidenceAgentDraining:
+		allocation, ok := world.Allocations[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, evidence.Target)
+		}
+		allocation.Draining = true
+		// A draining agent stops accepting new work but is still serving what it
+		// holds, so readiness is unchanged here. Only the drained observation
+		// reports that it finished.
+		if task, reported := evidence.Observed["task"]; reported {
+			allocation.Task = task
+		}
+
+	case EvidenceAllocationDrained:
+		allocation, ok := world.Allocations[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, evidence.Target)
+		}
+		// Drained means the instance released its task. This is what makes the
+		// following stop non-destructive, so it is recorded only from the node's
+		// observation of an empty task slot.
+		allocation.Draining = true
+		allocation.Task = ""
+		allocation.Ready = false
+
+	case EvidenceQueueObserved:
+		if evidence.Target == "" {
+			return fmt.Errorf("evidence %q must name a queue", evidence.Kind)
+		}
+		queue, ok := world.Queues[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown queue %q", evidence.Kind, evidence.Target)
+		}
+		// Depth is a measured fact with a time, because scaling on a stale depth
+		// would keep adding workers for work that has already drained.
+		queue.Depth = observedInt(evidence, "depth")
+		queue.InFlight = observedInt(evidence, "in_flight")
+		queue.ObservedAt = evidence.ObservedAt
+
 	default:
 		return fmt.Errorf("unknown evidence kind %q", evidence.Kind)
 	}
@@ -498,6 +601,19 @@ func observedResources(evidence Evidence) (Resources, error) {
 		return Resources{}, fmt.Errorf("evidence %q must observe positive resources", evidence.Kind)
 	}
 	return resources, nil
+}
+
+// observedBudget reads budget fields from evidence.
+//
+// Unlike observedResources, a zero budget is not an error: ordinary workloads
+// carry none, and their creation evidence has no budget fields at all.
+func observedBudget(evidence Evidence) Budget {
+	return Budget{
+		Tokens:      observedInt(evidence, "tokens"),
+		CostMillis:  observedInt(evidence, "cost_millis"),
+		WallSeconds: observedInt(evidence, "wall_seconds"),
+		ToolCalls:   observedInt(evidence, "tool_calls"),
+	}
 }
 
 func observedInt(evidence Evidence, key string) int {

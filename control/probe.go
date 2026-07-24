@@ -21,10 +21,12 @@ type Prober interface {
 // holds the intent; the node performs the measurement.
 type ProbeTarget struct {
 	Allocation string `json:"allocation"`
-	// Kind is "process", "tcp", "http", or "database".
+	// Kind is "process", "tcp", "http", "database", or "agent".
 	Kind string `json:"kind"`
 	Port int    `json:"port,omitempty"`
 	Path string `json:"path,omitempty"`
+	// Provider names the model provider an agent probe must reach.
+	Provider string `json:"provider,omitempty"`
 	// Address is the allocation's own IP. Probing this rather than loopback is
 	// what makes a measurement attributable to one replica.
 	Address string `json:"address,omitempty"`
@@ -40,6 +42,11 @@ const (
 	// only proves the port is open, which a database that is still recovering
 	// its write-ahead log will pass while refusing every query.
 	ProbeDatabase = "database"
+	// ProbeAgent asks the runtime whether it can reach its provider with budget
+	// remaining. A process probe would pass for an agent whose provider is
+	// unreachable or whose ceiling is spent, both of which mean no work can be
+	// done despite a healthy-looking container.
+	ProbeAgent = "agent"
 )
 
 // ReadinessObserver measures whether an allocation is actually serving. It is
@@ -69,7 +76,18 @@ func NewMeasuredProber(observer ReadinessObserver, targets map[string]ProbeTarge
 }
 
 func (p *MeasuredProber) Probe(world World, check Check) (Evidence, bool) {
-	if p == nil || p.Observer == nil || check.Kind != CheckAllocationReady {
+	if p == nil || p.Observer == nil {
+		return Evidence{}, false
+	}
+	// Agent readiness is measured the same way, but reported as its own evidence
+	// kind so the projection knows a provider and budget were checked rather
+	// than a port.
+	evidenceKind := EvidenceAllocationReady
+	switch check.Kind {
+	case CheckAllocationReady:
+	case CheckAgentReady:
+		evidenceKind = EvidenceAgentReady
+	default:
 		return Evidence{}, false
 	}
 	allocation, ok := world.Allocations[check.Target]
@@ -104,7 +122,7 @@ func (p *MeasuredProber) Probe(world World, check Check) (Evidence, bool) {
 		ttl = DefaultReadinessTTL
 	}
 	return Evidence{
-		Kind: EvidenceAllocationReady, Target: check.Target,
+		Kind: evidenceKind, Target: check.Target,
 		Source: "prober:" + target.Kind, ObservedAt: now,
 		ExpiresAt: now.Add(ttl), Observed: observed,
 	}, true

@@ -234,9 +234,16 @@ func (e *Engine) registerProbeTarget(goal Goal, action Action) {
 	if goal.Workload.Engine != "" {
 		kind = ProbeDatabase
 	}
+	// An agent is ready only when it can reach its provider with budget left. A
+	// process probe would pass for one that can do no work at all.
+	provider := ""
+	if goal.Workload.Runtime != nil {
+		kind = ProbeAgent
+		provider = goal.Workload.Runtime.Provider
+	}
 	e.probeTargets[action.Target] = ProbeTarget{
 		Allocation: action.Target, Kind: kind, Port: goal.Workload.Port,
-		Engine: goal.Workload.Engine,
+		Engine: goal.Workload.Engine, Provider: provider,
 	}
 }
 
@@ -270,6 +277,21 @@ func verifyChecks(world World, checks []Check) error {
 		switch check.Kind {
 		case CheckAllocationReady:
 			observed := world.Allocations[check.Target].ReadyAt(world.Now())
+			if fmt.Sprint(observed) != check.Want {
+				return fmt.Errorf("check %s for %s: observed %t, want %s", check.Kind, check.Target, observed, check.Want)
+			}
+		case CheckAgentReady:
+			// An agent is ready only if it is serving: reachable and within
+			// budget. A draining or exhausted instance is observably running and
+			// unable to do work, so readiness alone would overstate it.
+			allocation := world.Allocations[check.Target]
+			observed := allocation.ReadyAt(world.Now()) &&
+				!allocation.Draining && !allocation.Exhausted()
+			if fmt.Sprint(observed) != check.Want {
+				return fmt.Errorf("check %s for %s: observed %t, want %s", check.Kind, check.Target, observed, check.Want)
+			}
+		case CheckAllocationDrained:
+			observed := world.Allocations[check.Target].Drained()
 			if fmt.Sprint(observed) != check.Want {
 				return fmt.Errorf("check %s for %s: observed %t, want %s", check.Kind, check.Target, observed, check.Want)
 			}
