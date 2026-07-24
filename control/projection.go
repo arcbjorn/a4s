@@ -1,6 +1,9 @@
 package control
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Evidence kinds are the only vocabulary that advances the world projection.
 // An executor cannot mutate observed state directly; it can only report
@@ -18,6 +21,7 @@ const (
 	EvidenceVolumeQuiesced    = "volume.quiesced"
 	EvidenceVolumeTransferred = "volume.transferred"
 	EvidenceVolumeAdopted     = "volume.adopted"
+	EvidenceSnapshotsPruned   = "volume.snapshots_pruned"
 	EvidenceNetworkAttached   = "network.attached"
 	EvidenceNetworkDetached   = "network.detached"
 	EvidenceAllocationRunning = "allocation.running"
@@ -172,11 +176,15 @@ func projectInto(world *World, evidence Evidence) error {
 		if volume.Snapshots == nil {
 			volume.Snapshots = make(map[string]string)
 		}
-		if existing, taken := volume.Snapshots[snapshot]; taken && existing != checksum {
-			// Two different contents under one snapshot id means one of them is
-			// not what the operator thinks it is.
-			return fmt.Errorf("snapshot %q of volume %q already exists with a different checksum",
-				snapshot, evidence.Target)
+		if existing, taken := volume.Snapshots[snapshot]; taken {
+			if existing != checksum {
+				// Two different contents under one snapshot id means one of them
+				// is not what the operator thinks it is.
+				return fmt.Errorf("snapshot %q of volume %q already exists with a different checksum",
+					snapshot, evidence.Target)
+			}
+		} else {
+			volume.SnapshotOrder = append(volume.SnapshotOrder, snapshot)
 		}
 		volume.Snapshots[snapshot] = checksum
 		volume.LastSnapshot = snapshot
@@ -281,6 +289,27 @@ func projectInto(world *World, evidence Evidence) error {
 		volume.Generation++
 		volume.Handoff.Phase = HandoffAdopted
 		volume.Handoff = nil
+
+	case EvidenceSnapshotsPruned:
+		volume, ok := world.Volumes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
+		}
+		// The removed ids are reported as a newline-separated list. Dropping
+		// them from the world is what makes a pruned snapshot unrestorable, so
+		// no one can name a snapshot whose bytes are gone.
+		for _, id := range splitLines(evidence.Observed["removed"]) {
+			delete(volume.Snapshots, id)
+			delete(volume.Backups, id)
+			volume.SnapshotOrder = removeString(volume.SnapshotOrder, id)
+		}
+		if _, ok := volume.Snapshots[volume.LastSnapshot]; !ok {
+			// The most recent surviving snapshot becomes last-known.
+			volume.LastSnapshot = ""
+			if len(volume.SnapshotOrder) > 0 {
+				volume.LastSnapshot = volume.SnapshotOrder[len(volume.SnapshotOrder)-1]
+			}
+		}
 
 	case EvidenceVolumeRestored:
 		volume, ok := world.Volumes[evidence.Target]
@@ -431,4 +460,63 @@ func observedInt(evidence Evidence, key string) int {
 		return 0
 	}
 	return value
+}
+
+// splitLines splits a newline-separated observed value into non-empty entries.
+func splitLines(value string) []string {
+	if value == "" {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(value, "\n") {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// removeString returns values with the first occurrence of target removed.
+func removeString(values []string, target string) []string {
+	for i, v := range values {
+		if v == target {
+			return append(values[:i], values[i+1:]...)
+		}
+	}
+	return values
+}
+
+// prunableSnapshots returns the snapshots that may be removed while keeping
+// `retain` recent ones and every protected snapshot.
+//
+// Protection is the whole safety of pruning. A snapshot is never removed if it
+// is the last-known recovery point, has been shipped off-host (the backup is
+// the only copy that survives host loss, and its record must not dangle), or is
+// among the most recent `retain`. Everything else is churn an operator does not
+// need to keep.
+func prunableSnapshots(volume *Volume, retain int) []string {
+	if retain < 1 {
+		retain = 1
+	}
+	protected := make(map[string]bool)
+	if volume.LastSnapshot != "" {
+		protected[volume.LastSnapshot] = true
+	}
+	for id := range volume.Backups {
+		protected[id] = true
+	}
+	// Keep the most recent `retain`, counting from the end of the order.
+	kept := 0
+	for i := len(volume.SnapshotOrder) - 1; i >= 0 && kept < retain; i-- {
+		protected[volume.SnapshotOrder[i]] = true
+		kept++
+	}
+
+	var removable []string
+	for _, id := range volume.SnapshotOrder {
+		if !protected[id] {
+			removable = append(removable, id)
+		}
+	}
+	return removable
 }
