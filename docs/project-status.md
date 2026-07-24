@@ -25,8 +25,9 @@ durable event log. The end-to-end acceptance suite drives a real control engine
 against a real node dispatcher over the real protocol, with only containerd
 faked.
 
-What remains missing is a long-running server process and an authenticated
-network transport. The implemented transport is a byte-stream protocol currently
+A server package and `a4s server` command now hold durable history and rebuild
+the world projection on every start. What remains missing is an authenticated
+network transport and node enrollment. The implemented transport is a byte-stream protocol currently
 carried over a pipe; moving it onto the tailnet does not change the control
 contract.
 
@@ -64,6 +65,11 @@ contract.
   recovers authoritative state instead of losing it.
 - Remote executor that binds every issued capability to the proposal that
   authorized it.
+- Target leases acquired before the first mutation and released on every exit
+  path, so two proposals cannot interleave on one allocation. Leases expire so
+  an abandoned holder cannot block a target indefinitely.
+- Rollout agent retiring drifted allocations one at a time, with the kernel
+  independently enforcing the availability floor.
 
 ### Event persistence
 
@@ -78,6 +84,15 @@ The hash chain detects edits and reordering relative to the local first record.
 It does not prevent undetected truncation or replacement unless the latest hash
 is anchored outside the file. It is an integrity aid, not yet a complete audit
 security system.
+
+### Server
+
+- Durable event log opened at startup and world projection rebuilt from it, so
+  recovery is the normal startup path rather than a special case.
+- Goal admission validated before acceptance.
+- Lease manager shared across reconciliations, so goals touching the same
+  allocation cannot interleave.
+- Repeatable rebuild, proving the projection is a function of the log.
 
 ### Node trust boundary
 
@@ -119,7 +134,7 @@ security system.
 
 ### Developer tooling
 
-- `validate`, `simulate`, `node`, `version`, and `help` CLI commands.
+- `validate`, `simulate`, `node`, `server`, `version`, and `help` CLI commands.
 - Race-tested unit and contract tests.
 - Linux amd64 cross-build verification.
 - Generic web-service example with an explicit public-route approval.
@@ -139,13 +154,14 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 
 ## Not implemented
 
-- Long-running a4s server process or external goal API.
+- External goal API. The server package and `a4s server` command exist, but
+  goals are supplied from a scenario file rather than an authenticated API.
 - Node enrollment, mutual authentication, and encrypted network transport. The
   implemented transport is a byte-stream protocol carried over a pipe.
 - Controller key custody and key rotation.
-- Target leases despite the envelope carrying a `lease_id`.
-- Compensating actions and rollback execution.
-- Rolling replacement, canary, and disruption budgets.
+- Canary rollout and compensating-action execution. Rolling replacement and the
+  disruption budget are implemented; automatic rollback to a prior digest on a
+  failed rollout is not.
 - Garbage collection of unreferenced images and snapshots.
 - CNI, allocation network namespaces, DNS, or nftables. The router applies
   gateway route snapshots but no gateway backend is implemented.
