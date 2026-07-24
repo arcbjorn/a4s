@@ -34,6 +34,7 @@ type acceptanceRig struct {
 	backend   *supervisedBackend
 	desired   *DesiredState
 	recorded  *recordingSource
+	gateway   *recordingGateway
 	stop      func()
 }
 
@@ -87,6 +88,7 @@ func newAcceptanceRig(t *testing.T) *acceptanceRig {
 		t.Fatal(err)
 	}
 	gateway := &recordingGateway{}
+	router := NewRouter(gateway)
 	memoryNetwork, err := NewMemoryNetwork("10.42.0.0/24")
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +108,7 @@ func newAcceptanceRig(t *testing.T) *acceptanceRig {
 		NodeID: "base", Keys: map[string]ed25519.PublicKey{"control-1": publicKey},
 		Runtime: &CompositeRuntime{
 			Containers: containers,
-			Routes:     NewRouter(gateway),
+			Routes:     router,
 			Networks:   network,
 		},
 		Ledger: ledger, Desired: desired, Now: time.Now,
@@ -139,9 +141,16 @@ func newAcceptanceRig(t *testing.T) *acceptanceRig {
 		control.PlacementAgent{}, control.NetworkAgent{})
 	engine.WithProbers(prober)
 
+	// The router resolves a route to the endpoints the world says are serving,
+	// exactly as it does in production.
+	router.Endpoints = func(workload string) []control.Endpoint {
+		return control.BuildDirectory(projector.World(),
+			map[string]int{"web": 8080})[workload].Endpoints
+	}
+
 	return &acceptanceRig{
 		engine: engine, projector: projector, executor: executor, backend: backend,
-		desired: desired, recorded: recorded,
+		desired: desired, recorded: recorded, gateway: gateway,
 		stop: func() {
 			_ = fromServer.Close()
 			<-served
@@ -154,15 +163,15 @@ func newAcceptanceRig(t *testing.T) *acceptanceRig {
 // It captures each applied snapshot so tests can assert the gateway is given
 // whole configurations rather than incremental edits.
 type recordingGateway struct {
-	snapshots [][]control.Route
+	snapshots [][]control.RouteSnapshot
 	err       error
 }
 
-func (g *recordingGateway) Apply(_ context.Context, routes []control.Route) error {
+func (g *recordingGateway) Apply(_ context.Context, routes []control.RouteSnapshot) error {
 	if g.err != nil {
 		return g.err
 	}
-	g.snapshots = append(g.snapshots, append([]control.Route(nil), routes...))
+	g.snapshots = append(g.snapshots, append([]control.RouteSnapshot(nil), routes...))
 	return nil
 }
 
@@ -350,3 +359,56 @@ func TestAcceptanceFailedReadinessBlocksGoal(t *testing.T) {
 }
 
 var errRouteRejected = errors.New("gateway rejected the route snapshot")
+
+// The complete chain: a goal becomes a running allocation with its own address,
+// an independent probe measures it serving, and the gateway receives that
+// address as an upstream. Every link is real except containerd itself.
+func TestAcceptanceGatewayReceivesServingEndpoint(t *testing.T) {
+	rig := newAcceptanceRig(t)
+	defer rig.stop()
+
+	if err := rig.engine.Run(acceptanceGoal(), 8); err != nil {
+		t.Fatalf("goal did not converge: %v", err)
+	}
+
+	world := rig.projector.World()
+	allocation := world.Allocations["web-0"]
+	if allocation == nil || allocation.Address == "" {
+		t.Fatalf("allocation has no address: %+v", allocation)
+	}
+
+	if len(rig.gateway.snapshots) == 0 {
+		t.Fatal("the gateway was never configured")
+	}
+	last := rig.gateway.snapshots[len(rig.gateway.snapshots)-1]
+	if len(last) != 1 {
+		t.Fatalf("expected one route in the snapshot: %+v", last)
+	}
+	if len(last[0].Endpoints) != 1 {
+		t.Fatalf("gateway received no serving endpoint: %+v", last[0])
+	}
+	endpoint := last[0].Endpoints[0]
+	if endpoint.Address != allocation.Address {
+		t.Fatalf("gateway upstream %s does not match the allocation address %s",
+			endpoint.Address, allocation.Address)
+	}
+	if endpoint.Port != 8080 {
+		t.Fatalf("gateway dialed the wrong port: %+v", endpoint)
+	}
+}
+
+// A workload that is running but never measured ready must not receive traffic.
+// This is the property that keeps a rollout from becoming an outage.
+func TestAcceptanceUnreadyWorkloadGetsNoTraffic(t *testing.T) {
+	rig := newAcceptanceRig(t)
+	defer rig.stop()
+
+	rig.backend.startLeavesStopped = true
+	_ = rig.engine.Run(acceptanceGoal(), 4)
+
+	endpoints := control.BuildDirectory(rig.projector.World(),
+		map[string]int{"web": 8080})["web"].Endpoints
+	if len(endpoints) != 0 {
+		t.Fatalf("an unready workload was published as an endpoint: %+v", endpoints)
+	}
+}
