@@ -1,6 +1,7 @@
 package control
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
@@ -103,6 +104,16 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 			world := e.World.World()
 			proposal, err := agent.Propose(goal, world)
 			if err != nil {
+				// A required rollback is an operator decision, not a denial to
+				// retry. Blocking here surfaces the known-good digest rather
+				// than looping against a version observed to be failing.
+				var rollback *RollbackRequired
+				if errors.As(err, &rollback) {
+					if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: agent.Descriptor().ID, GoalID: goal.ID, Message: err.Error()}); recordErr != nil {
+						return recordErr
+					}
+					return err
+				}
 				if recordErr := e.record(Event{Type: EventProposalDenied, Actor: agent.Descriptor().ID, GoalID: goal.ID, Message: err.Error()}); recordErr != nil {
 					return recordErr
 				}
