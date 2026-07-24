@@ -52,6 +52,8 @@ func run(args []string) error {
 		return runServer(args[1:])
 	case "keygen":
 		return keygen(args[1:])
+	case "keys":
+		return keys(args[1:])
 	case "seal":
 		return seal(args[1:])
 	case "explain":
@@ -601,13 +603,17 @@ func runNode(args []string) error {
 	tlsInternal := flags.Bool("tls-internal", false, "issue internal certificates instead of using ACME")
 	serverAddress := flags.String("server", "", "server address to connect to (empty reads stdin)")
 	identityKeyPath := flags.String("identity-key", "", "path to this node's base64 Ed25519 private key")
+	keysetPath := flags.String("keyset", "", "controller keyset to trust (supersedes --public-key)")
 	logLevel := flags.String("log-level", "info", "log verbosity: debug, info, warn, or error")
 	logFormat := flags.String("log-format", "text", "log format: text or json")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *nodeID == "" || *keyID == "" || *publicKeyPath == "" {
-		return fmt.Errorf("node-id, key-id, and public-key are required")
+	if *nodeID == "" {
+		return fmt.Errorf("node-id is required")
+	}
+	if *keysetPath == "" && (*keyID == "" || *publicKeyPath == "") {
+		return fmt.Errorf("either keyset, or key-id and public-key, are required")
 	}
 	logger, err := obs.New(obs.Config{
 		Level: *logLevel, Format: obs.Format(*logFormat), Component: "node",
@@ -616,9 +622,15 @@ func runNode(args []string) error {
 		return err
 	}
 	logger = logger.With(slog.String("node_id", *nodeID))
-	publicKey, err := loadPublicKey(*publicKeyPath)
-	if err != nil {
-		return err
+	// With a keyset the single public key is unused, so requiring it would make
+	// the rotation-capable path harder to run than the one it replaces.
+	var publicKey ed25519.PublicKey
+	if *publicKeyPath != "" {
+		loaded, err := loadPublicKey(*publicKeyPath)
+		if err != nil {
+			return err
+		}
+		publicKey = loaded
 	}
 
 	ctx := context.Background()
@@ -741,9 +753,30 @@ func runNode(args []string) error {
 		}
 	}
 
+	// A keyset lets this node trust several controller keys at once, which is
+	// what makes rotation possible without restarting the fleet. The single
+	// --public-key form remains supported for a one-key deployment.
+	trustedKeys := map[string]ed25519.PublicKey{}
+	if publicKey != nil {
+		trustedKeys[*keyID] = publicKey
+	}
+	if *keysetPath != "" {
+		set, err := readKeySet(*keysetPath)
+		if err != nil {
+			return err
+		}
+		trusted, err := set.TrustMap()
+		if err != nil {
+			return err
+		}
+		trustedKeys = trusted
+		logger.Info("loaded controller keyset",
+			slog.String("keyset", *keysetPath), slog.Int("trusted_keys", len(trusted)))
+	}
+
 	dispatcher := a4snode.Dispatcher{
 		NodeID: *nodeID,
-		Keys:   map[string]ed25519.PublicKey{*keyID: publicKey},
+		Keys:   trustedKeys,
 		Runtime: &a4snode.CompositeRuntime{
 			Containers: runtime,
 			Networks:   network,
@@ -921,6 +954,10 @@ Usage:
              [--api host:port --operator-keys /dir]
              [--log-level info] [--log-format text|json]
   a4s keygen --out /path
+  a4s keys init --keyset /path/keyset.json --key-id control-1 --out /path/key
+  a4s keys rotate --keyset /path/keyset.json --key-id control-2 --out /path/key2
+  a4s keys retire --keyset /path/keyset.json --key-id control-1
+  a4s keys list --keyset /path/keyset.json [--json]
   a4s seal --secret NAME --version V --node ID --node-key /path --in /path --out /dir
   a4s plan --file scenario.json [--event-log /path] [--json]
   a4s explain --event-log /path --target ID [--json]
