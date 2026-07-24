@@ -502,6 +502,32 @@ func TestExhaustedAgentIsTreatedAsDrifted(t *testing.T) {
 	}
 }
 
+// Reservation and consumption are different questions, and Exhausts is
+// deliberately not the negation of Fits. An instance that consumed exactly its
+// ceiling has nothing left; treating that as "still fits" would grant one extra
+// unit on every dimension to every agent.
+func TestExhaustsIsNotTheNegationOfFits(t *testing.T) {
+	ceiling := Budget{Tokens: 5, CostMillis: 5, WallSeconds: 5, ToolCalls: 5}
+	exact := ceiling
+
+	if !exact.Fits(ceiling) {
+		t.Fatal("a reservation equal to remaining capacity must be permitted")
+	}
+	if !exact.Exhausts(ceiling) {
+		t.Fatal("consumption equal to the ceiling must read as exhausted")
+	}
+
+	// Exhaustion is per dimension: spending all of any one ceiling is enough,
+	// since the agent cannot make progress without it.
+	oneDimension := Budget{ToolCalls: 5}
+	if !oneDimension.Exhausts(ceiling) {
+		t.Fatal("expected a single spent dimension to exhaust the instance")
+	}
+	if under := (Budget{Tokens: 4, CostMillis: 4, WallSeconds: 4, ToolCalls: 4}); under.Exhausts(ceiling) {
+		t.Fatal("expected consumption below every ceiling to leave room")
+	}
+}
+
 // Spend only ever increases. Accepting a lower reading would let an exhausted
 // agent look affordable again and be restarted into the same ceiling.
 func TestSpendEvidenceNeverDecreases(t *testing.T) {

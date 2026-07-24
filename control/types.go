@@ -105,9 +105,25 @@ type Budget struct {
 }
 
 // Fits reports whether this budget is within the given ceiling.
+//
+// This is the reservation question: may a node commit this much. It is
+// inclusive, because a reservation exactly equal to remaining capacity is
+// legitimate. Consumption asks a different question; see Exhausts.
 func (b Budget) Fits(ceiling Budget) bool {
 	return b.Tokens <= ceiling.Tokens && b.CostMillis <= ceiling.CostMillis &&
 		b.WallSeconds <= ceiling.WallSeconds && b.ToolCalls <= ceiling.ToolCalls
+}
+
+// Exhausts reports whether this much consumption uses up the given ceiling.
+//
+// This is the spending question, and it is deliberately not the negation of
+// Fits. An instance that has consumed exactly its ceiling has nothing left: a
+// budget of five tool calls permits five calls and refuses the sixth. Treating
+// that as "still fits" would grant one more of everything than was authorized,
+// on every dimension, for every agent.
+func (b Budget) Exhausts(ceiling Budget) bool {
+	return b.Tokens >= ceiling.Tokens || b.CostMillis >= ceiling.CostMillis ||
+		b.WallSeconds >= ceiling.WallSeconds || b.ToolCalls >= ceiling.ToolCalls
 }
 
 // Add accumulates budget, which is how per-instance ceilings sum into what a
@@ -401,7 +417,7 @@ func (a *Allocation) Exhausted() bool {
 	if a == nil || a.Budget.IsZero() {
 		return false
 	}
-	return !a.Spent.Fits(a.Budget)
+	return a.Spent.Exhausts(a.Budget)
 }
 
 // Drained reports whether a draining allocation has finished its work and is
