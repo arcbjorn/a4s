@@ -99,15 +99,21 @@ type ListenerConfig struct {
 	// OnError reports rejected or failed connections. Enrollment failures are
 	// expected in normal operation and must not stop the listener.
 	OnError func(error)
+	// RequireEncryption refuses any node that does not negotiate a channel.
+	//
+	// The default is permissive so an older node keeps working during an
+	// upgrade. On an untrusted network an operator should set this, because
+	// otherwise a downgrade to plaintext is available to anyone who can strip
+	// the ephemeral key from a hello.
+	RequireEncryption bool
 }
 
 // Listener accepts node connections, enrolls them, and registers the
 // authenticated sessions.
 //
-// The transport is deliberately not responsible for confidentiality. It is
-// intended to run over an already-encrypted tailnet, and the enrollment
-// handshake establishes *who* the peer is rather than protecting the channel.
-// Running it over an untrusted network requires TLS beneath it.
+// The enrollment handshake establishes who the peer is and, when both sides
+// offer an ephemeral key, agrees a session key that encrypts everything after
+// it. Set RequireEncryption to refuse peers that do not negotiate a channel.
 type Listener struct {
 	config   ListenerConfig
 	registry *Registry
@@ -151,7 +157,8 @@ func (l *Listener) Serve(ctx context.Context) error {
 }
 
 func (l *Listener) enroll(conn net.Conn) {
-	nodeID, err := AcceptNode(conn, l.config.NodeKeys, l.config.ServerKeyID, l.config.HandshakeTimeout)
+	negotiated, nodeID, err := acceptNode(conn, l.config.NodeKeys,
+		l.config.ServerKeyID, l.config.HandshakeTimeout)
 	if err != nil {
 		// A refused connection is closed and reported, never registered.
 		_ = conn.Close()
@@ -160,9 +167,35 @@ func (l *Listener) enroll(conn net.Conn) {
 		}
 		return
 	}
+
+	// Once a session was negotiated, every subsequent byte travels encrypted.
+	// The signed envelope inside remains the authority boundary; this only
+	// removes the assumption that the network path is private.
+	stream := net.Conn(conn)
+	if negotiated != nil {
+		secure, err := newSecureConn(conn, negotiated.sendKey, negotiated.receiveKey, negotiated.buffered)
+		if err != nil {
+			_ = conn.Close()
+			if l.config.OnError != nil {
+				l.config.OnError(err)
+			}
+			return
+		}
+		stream = secure
+	} else if l.config.RequireEncryption {
+		// A node that offered no ephemeral key cannot be encrypted. When the
+		// operator has demanded encryption, refusing is the only safe answer.
+		_ = conn.Close()
+		if l.config.OnError != nil {
+			l.config.OnError(fmt.Errorf(
+				"node %q enrolled without channel encryption, which this server requires", nodeID))
+		}
+		return
+	}
+
 	l.registry.add(&NodeConnection{
 		NodeID: nodeID, conn: conn,
-		transport: NewStreamTransport(conn, conn, conn),
+		transport: NewStreamTransport(stream, stream, conn),
 	})
 }
 
@@ -181,7 +214,7 @@ func DialServer(ctx context.Context, network, address string, nodeID string,
 	}
 	defer conn.Close()
 
-	serverKeyID, err := ConnectToServer(conn, nodeID, nodeKey, timeout)
+	negotiated, serverKeyID, err := connectToServer(conn, nodeID, nodeKey, timeout)
 	if err != nil {
 		return err
 	}
@@ -190,7 +223,16 @@ func DialServer(ctx context.Context, network, address string, nodeID string,
 	if _, trusted := dispatcher.Keys[serverKeyID]; !trusted {
 		return fmt.Errorf("server named untrusted signing key %q", serverKeyID)
 	}
-	return Serve(ctx, dispatcher, conn, conn)
+
+	stream := net.Conn(conn)
+	if negotiated != nil {
+		secure, err := newSecureConn(conn, negotiated.sendKey, negotiated.receiveKey, negotiated.buffered)
+		if err != nil {
+			return err
+		}
+		stream = secure
+	}
+	return Serve(ctx, dispatcher, stream, stream)
 }
 
 // RegistryExecutor issues capabilities to whichever enrolled node an action

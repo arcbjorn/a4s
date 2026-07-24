@@ -340,6 +340,8 @@ func runServer(args []string) error {
 	signingKeyPath := flags.String("signing-key", "", "path to the base64 Ed25519 private signing key")
 	nodeKeyDir := flags.String("node-keys", "", "directory of <node-id>.pub enrolled node keys")
 	operatorKeyDir := flags.String("operator-keys", "", "directory of <key-id>.pub operator keys")
+	requireEncryption := flags.Bool("require-encryption", false,
+		"refuse nodes that do not negotiate an encrypted channel")
 	apiListen := flags.String("api", "", "address to serve the operator API on (empty disables it)")
 	logLevel := flags.String("log-level", "info", "log verbosity: debug, info, warn, or error")
 	logFormat := flags.String("log-format", "text", "log format: text or json")
@@ -430,6 +432,7 @@ func runServer(args []string) error {
 	defer registry.CloseAll()
 	listener, err := a4snode.Listen("tcp", *listen, registry, a4snode.ListenerConfig{
 		NodeKeys: nodeKeys, ServerKeyID: *keyID,
+		RequireEncryption: *requireEncryption,
 		OnError: func(err error) {
 			// A rejected enrollment is a security-relevant event, not noise:
 			// it is what an unenrolled or misconfigured peer looks like.
@@ -951,7 +954,7 @@ Usage:
            [--gateway-admin http://127.0.0.1:2019 --acme-email you@example.com]
   a4s server --event-log /path [--file scenario.json] [--status]
              [--listen host:port --signing-key /path --node-keys /dir]
-             [--api host:port --operator-keys /dir]
+             [--api host:port --operator-keys /dir] [--require-encryption]
              [--log-level info] [--log-format text|json]
   a4s keygen --out /path
   a4s keys init --keyset /path/keyset.json --key-id control-1 --out /path/key
