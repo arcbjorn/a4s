@@ -5,6 +5,18 @@ release or compatibility guarantee yet.
 
 ## Unreleased
 
+### Fixed
+
+- A torn final write no longer makes the event log unopenable. A machine losing
+  power mid-append left a partial line, and replay aborted on the whole file —
+  so a single badly-timed crash stopped the control plane from starting, with
+  every prior record intact and verifiable. An incomplete trailing record is now
+  truncated and reported through `Truncated()`.
+- Corruption anywhere but the trailing record stays fatal. A bad record with
+  valid records after it cannot be explained by an interrupted append, and
+  silently dropping it would discard history the hash chain says exists. Tests
+  cover unparseable, tampered, and deleted middle records.
+
 ### Added
 
 - Agent workloads as a workload kind. A workload may declare a `runtime` block
@@ -49,6 +61,13 @@ release or compatibility guarantee yet.
   leakage between agents comes from shared runtime state, not a shared kernel
   namespace, so envelopes, workspaces, and credentials are per instance and a
   deleted allocation's envelope is released.
+- Fuzz targets for the kernel's untrusted-input surface: scenario validation,
+  model output decoding, approval verification, evidence projection, and log
+  replay. `architecture.md` had committed to fuzzing the kernel thoroughly and
+  there were none. Each asserts an invariant rather than only checking for
+  panics — a decoder that survives arbitrary input by accepting it would pass a
+  crash-only test while being the bug worth finding. Roughly 20 million
+  executions across the four kernel targets found no violations.
 - An operator surface. Approvals existed in the world type but nothing could
   create one, so every gated decision — public exposure, destroying durable data,
   restoring over live data, moving a volume, granting an agent mutating tools —

@@ -41,6 +41,31 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 git diff --check
 ```
 
+## Fuzzing the kernel
+
+`architecture.md` commits to keeping the kernel small enough to reason about and
+fuzz thoroughly. Run these when changing anything that parses untrusted input —
+scenario validation, model output, approvals, evidence projection, or log
+replay:
+
+```bash
+go test ./control/ -run XXX -fuzz FuzzApprovalVerification -fuzztime 60s
+go test ./control/ -run XXX -fuzz FuzzScenarioValidation -fuzztime 60s
+go test ./control/ -run XXX -fuzz FuzzModelDiagnosisDecode -fuzztime 60s
+go test ./control/ -run XXX -fuzz FuzzProjection -fuzztime 60s
+go test ./eventlog/ -run XXX -fuzz FuzzReplay -fuzztime 300s
+```
+
+Each target asserts an invariant rather than only checking for panics: that no
+input authorizes without a valid signature, that a decoded diagnosis cannot name
+something the world lacks, that validation never admits an unpinned image or a
+zero budget ceiling, and that projection never produces negative capacity or a
+double-owned volume. A decoder that survived arbitrary input by accepting it
+would pass a crash-only fuzz test while being exactly the bug worth finding.
+
+`FuzzReplay` writes a file per iteration and runs far slower than the in-memory
+targets; give it a longer window.
+
 Also run the simulation when changing control behavior:
 
 ```bash
