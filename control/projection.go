@@ -10,7 +10,11 @@ const (
 	EvidenceAllocationCreated = "allocation.created"
 	EvidenceAllocationRunning = "allocation.running"
 	EvidenceAllocationReady   = "allocation.ready"
+	EvidenceAllocationStopped = "allocation.stopped"
+	EvidenceAllocationDeleted = "allocation.deleted"
+	EvidenceAllocationFailed  = "allocation.failed"
 	EvidenceRouteReachable    = "route.reachable"
+	EvidenceRouteRemoved      = "route.removed"
 )
 
 // Project applies one piece of evidence to the world and returns the updated
@@ -28,6 +32,11 @@ func Project(world World, evidence Evidence) (World, error) {
 		return World{}, err
 	}
 	next.Revision = world.Revision + 1
+	// Advance the snapshot's evaluation time so freshness checks compare
+	// against when the world was last observed, not an arbitrary clock read.
+	if !evidence.ObservedAt.IsZero() && evidence.ObservedAt.After(next.ObservedAt) {
+		next.ObservedAt = evidence.ObservedAt
+	}
 	return next, nil
 }
 
@@ -88,6 +97,41 @@ func projectInto(world *World, evidence Evidence) error {
 			return fmt.Errorf("allocation %q cannot be ready in phase %q", evidence.Target, allocation.Phase)
 		}
 		allocation.Ready = evidence.Observed["ready"] == "true"
+		// Carrying the expiry into the world lets the verifier reject a goal
+		// whose readiness is merely remembered rather than currently observed.
+		allocation.ReadyExpiresAt = evidence.ExpiresAt
+
+	case EvidenceAllocationStopped:
+		allocation, ok := world.Allocations[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, evidence.Target)
+		}
+		// A stopped allocation is never ready. Clearing readiness here keeps a
+		// stale ready flag from satisfying a goal or authorizing a route.
+		allocation.Phase = AllocationStopped
+		allocation.Ready = false
+
+	case EvidenceAllocationFailed:
+		allocation, ok := world.Allocations[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, evidence.Target)
+		}
+		allocation.Phase = AllocationStopped
+		allocation.Ready = false
+		allocation.ExitCode = observedInt(evidence, "exit_code")
+		allocation.Restarts = observedInt(evidence, "restarts")
+
+	case EvidenceAllocationDeleted:
+		allocation, ok := world.Allocations[evidence.Target]
+		if !ok {
+			// Deleting an already-absent allocation is the expected result of a
+			// replayed delete, so the projection stays idempotent.
+			return nil
+		}
+		if node, ok := world.Nodes[allocation.Node]; ok {
+			node.Used = node.Used.Subtract(allocation.Resources)
+		}
+		delete(world.Allocations, evidence.Target)
 
 	case EvidenceRouteReachable:
 		if evidence.Target == "" {
@@ -97,6 +141,9 @@ func projectInto(world *World, evidence Evidence) error {
 			Host: evidence.Target, Workload: evidence.Observed["workload"],
 			Port: observedInt(evidence, "port"), Exposure: evidence.Observed["exposure"],
 		}
+
+	case EvidenceRouteRemoved:
+		delete(world.Routes, evidence.Target)
 
 	default:
 		return fmt.Errorf("unknown evidence kind %q", evidence.Kind)
