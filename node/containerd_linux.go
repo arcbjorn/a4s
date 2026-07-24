@@ -110,6 +110,20 @@ func (b *containerdBackend) Create(ctx context.Context, spec ContainerSpec) (boo
 		oci.WithCPUCFS(int64(spec.Resources.CPUMillis)*100, 100000),
 		oci.WithPidsLimit(256),
 	}
+	for _, mount := range spec.VolumeMounts {
+		options := []string{"rbind", "nosuid", "nodev"}
+		if mount.ReadOnly {
+			options = append(options, "ro")
+		} else {
+			options = append(options, "rw")
+		}
+		opts = append(opts, oci.WithMounts([]specs.Mount{{
+			Source:      mount.Source,
+			Destination: mount.Destination,
+			Type:        "bind",
+			Options:     options,
+		}}))
+	}
 	for _, mount := range spec.SecretMounts {
 		// Read-only so a compromised workload cannot rewrite its own
 		// credentials, and bound rather than copied so rotation is a remount.
