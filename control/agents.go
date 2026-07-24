@@ -3,6 +3,7 @@ package control
 import (
 	"fmt"
 	"sort"
+	"time"
 )
 
 // MaxReplicasPerProposal bounds how many replicas one authorization may create.
@@ -47,12 +48,16 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 		existing[allocation.Replica] = true
 	}
 	reserved := make(map[string]Resources)
+	reservedBudget := make(map[string]Budget)
 	placed := 0
-	for replica := 0; replica < goal.Workload.Replicas; replica++ {
+	// A queue-backed agent workload is sized by observed demand rather than by a
+	// fixed replica count, bounded by the queue's own worker ceiling.
+	desiredReplicas := desiredReplicas(goal, world, len(existing))
+	for replica := 0; replica < desiredReplicas; replica++ {
 		if existing[replica] {
 			continue
 		}
-		node, err := selectNode(goal, world, reserved)
+		node, err := selectNode(goal, world, reserved, reservedBudget)
 		if err != nil {
 			return proposal, err
 		}
@@ -90,12 +95,28 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 			Workload: goal.Workload.Name, Node: node.ID, Image: goal.Workload.Image,
 			Replica: replica, Resources: goal.Workload.Resources,
 		}
+		if runtime := goal.Workload.Runtime; runtime != nil {
+			create.Budget = runtime.Budget
+		}
 		if pullID != "" {
 			create.DependsOn = []string{pullID}
 		}
 		proposal.Actions = append(proposal.Actions, create)
 
 		startDeps := []string{createID}
+		// An agent's tool envelope is installed before it runs, for the same
+		// reason its secrets are: an agent that started first would be deciding
+		// its own capabilities during the window before the grant landed.
+		if runtime := goal.Workload.Runtime; runtime != nil && len(runtime.Tools) > 0 {
+			grantID := "grant-tools-" + allocationID
+			proposal.Actions = append(proposal.Actions, Action{
+				ID: grantID, Kind: ActionGrantTools, Target: allocationID,
+				Workload: goal.Workload.Name, Node: node.ID,
+				Tools:     append([]ToolGrant(nil), runtime.Tools...),
+				DependsOn: []string{createID},
+			})
+			startDeps = append(startDeps, grantID)
+		}
 		// Storage must be in place before the process starts, or the workload
 		// comes up and writes to an empty directory that is not its volume.
 		for _, ref := range goal.Workload.Volumes {
@@ -146,8 +167,18 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 			Target: allocationID, Workload: goal.Workload.Name, Node: node.ID,
 			DependsOn: startDeps,
 		})
-		proposal.ExpectedEvidence = append(proposal.ExpectedEvidence, Check{Kind: CheckAllocationReady, Target: allocationID, Want: "true"})
+		// An agent declares agent readiness, which means provider reachable with
+		// budget remaining, rather than the process-level readiness an ordinary
+		// workload declares.
+		readyKind := CheckAllocationReady
+		if goal.Workload.Runtime != nil {
+			readyKind = CheckAgentReady
+		}
+		proposal.ExpectedEvidence = append(proposal.ExpectedEvidence, Check{Kind: readyKind, Target: allocationID, Want: "true"})
 		reserved[node.ID] = reserved[node.ID].Add(goal.Workload.Resources)
+		if runtime := goal.Workload.Runtime; runtime != nil {
+			reservedBudget[node.ID] = reservedBudget[node.ID].Add(runtime.Budget)
+		}
 		placed++
 		// Placing every missing replica in one proposal would make the blast
 		// radius of a single authorization the whole workload. Batching keeps
@@ -161,14 +192,16 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 	return proposal, nil
 }
 
-func selectNode(goal Goal, world World, reserved map[string]Resources) (*Node, error) {
+func selectNode(goal Goal, world World, reserved map[string]Resources, reservedBudget map[string]Budget) (*Node, error) {
 	ids := make([]string, 0, len(world.Nodes))
 	for id := range world.Nodes {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	runtime := goal.Workload.Runtime
 	var selected *Node
 	bestFreeMemory := -1
+	unreachable := 0
 	for _, id := range ids {
 		node := world.Nodes[id]
 		if !node.Healthy || !nodeAllowed(goal.Constraints, *node) {
@@ -178,6 +211,18 @@ func selectNode(goal Goal, world World, reserved map[string]Resources) (*Node, e
 		if !used.Fits(node.Capacity) {
 			continue
 		}
+		if runtime != nil {
+			// An agent cannot work where its provider is unreachable, so those
+			// nodes are infeasible rather than merely less preferred.
+			if !node.Providers[runtime.Provider] {
+				unreachable++
+				continue
+			}
+			committed := node.BudgetUsed.Add(reservedBudget[id]).Add(runtime.Budget)
+			if !committed.Fits(node.BudgetCapacity) {
+				continue
+			}
+		}
 		freeMemory := node.Capacity.MemoryMB - used.MemoryMB
 		if selected == nil || freeMemory > bestFreeMemory {
 			selected = node
@@ -185,6 +230,11 @@ func selectNode(goal Goal, world World, reserved map[string]Resources) (*Node, e
 		}
 	}
 	if selected == nil {
+		if runtime != nil && unreachable > 0 {
+			return nil, fmt.Errorf(
+				"no healthy node can reach provider %q with budget capacity for workload %q",
+				runtime.Provider, goal.Workload.Name)
+		}
 		return nil, fmt.Errorf("no healthy node satisfies placement and capacity constraints")
 	}
 	return selected, nil
@@ -237,6 +287,56 @@ func routeNode(goal Goal, world World) string {
 	}
 	sort.Strings(nodes)
 	return nodes[0]
+}
+
+// desiredReplicas is how many instances the goal currently justifies.
+//
+// For an ordinary workload this is exactly what the goal declared. A queue-backed
+// agent workload is different: the point of a queue is that demand, not the
+// author of the goal, decides how many workers are useful. The goal's replica
+// count becomes a floor and the queue's MaxWorkers becomes the ceiling, so
+// scaling stays inside a bound the operator wrote down.
+func desiredReplicas(goal Goal, world World, running int) int {
+	queue := workloadQueue(goal, world)
+	if queue == nil {
+		return goal.Workload.Replicas
+	}
+	// A depth measured too long ago is not evidence of current demand. Scaling
+	// on it would keep adding workers for work that has already drained.
+	if !queueFresh(queue, world.Now()) {
+		return goal.Workload.Replicas
+	}
+	desired := queue.DesiredWorkers(running)
+	if desired < goal.Workload.Replicas {
+		return goal.Workload.Replicas
+	}
+	return desired
+}
+
+// maxQueueDepthAge bounds how old a depth observation may be and still drive
+// scaling. It is deliberately short: queue depth is the most perishable fact in
+// the world view, because the workers themselves are consuming it.
+const maxQueueDepthAge = 60 * time.Second
+
+// queueFresh reports whether a depth observation is recent enough to scale on.
+func queueFresh(queue *Queue, now time.Time) bool {
+	if queue.ObservedAt.IsZero() {
+		return false
+	}
+	return now.Sub(queue.ObservedAt) <= maxQueueDepthAge
+}
+
+// workloadQueue returns the queue backing this workload, if any.
+func workloadQueue(goal Goal, world World) *Queue {
+	runtime := goal.Workload.Runtime
+	if runtime == nil || runtime.Queue == "" {
+		return nil
+	}
+	queue, ok := world.Queues[runtime.Queue]
+	if !ok || queue.Workload != goal.Workload.Name {
+		return nil
+	}
+	return queue
 }
 
 // volumeHome reports the node a workload's existing volumes live on.
