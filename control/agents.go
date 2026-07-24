@@ -58,6 +58,14 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 		}
 		// Durable data does not move. A workload whose volume already exists is
 		// pinned to that node, whatever placement would otherwise prefer.
+		if moving := volumeInFlight(goal, world); moving != "" {
+			// A workload must not be placed while its data is in flight. The
+			// move will settle on one node, and starting before it does could
+			// attach a copy that is about to be superseded.
+			return proposal, fmt.Errorf(
+				"volume %q for workload %q is being moved; wait for the handoff to finish",
+				moving, goal.Workload.Name)
+		}
 		if home := volumeHome(goal, world); home != "" {
 			pinned, ok := world.Nodes[home]
 			if !ok || !pinned.Healthy {
@@ -239,6 +247,16 @@ func volumeHome(goal Goal, world World) string {
 	for _, ref := range goal.Workload.Volumes {
 		if volume, ok := world.Volumes[ref.Name]; ok {
 			return volume.Node
+		}
+	}
+	return ""
+}
+
+// volumeInFlight reports a volume the workload needs that is mid-move.
+func volumeInFlight(goal Goal, world World) string {
+	for _, ref := range goal.Workload.Volumes {
+		if volume, ok := world.Volumes[ref.Name]; ok && volume.Handoff != nil {
+			return ref.Name
 		}
 	}
 	return ""
