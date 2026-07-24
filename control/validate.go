@@ -44,6 +44,9 @@ func (s *Scenario) NormalizeAndValidate() error {
 	if w.Stateful {
 		return fmt.Errorf("stateful workloads require the future volume ownership protocol")
 	}
+	if err := validateSecrets(w.Secrets); err != nil {
+		return err
+	}
 	if s.Goal.Route != nil {
 		if strings.TrimSpace(s.Goal.Route.Host) == "" {
 			return fmt.Errorf("route host is required")
@@ -109,4 +112,52 @@ func hasApproval(world World, goalID, scope string) bool {
 		}
 	}
 	return false
+}
+
+// secretNamePattern keeps secret names to opaque handles. A name that looked
+// like a path or carried arbitrary text would invite operators to smuggle
+// material into a field that gets logged.
+var secretNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?$`)
+
+// maxSecretVersionLength bounds a version string. A version is an identifier,
+// and anything long enough to hold a key is not one.
+const maxSecretVersionLength = 64
+
+// validateSecrets enforces that only references, never material, reach a goal.
+//
+// The struct has no field for a value, so this guards the remaining risk: an
+// operator encoding material into a name, a version, or a mount path, any of
+// which are recorded in the durable log.
+func validateSecrets(refs []SecretRef) error {
+	seenNames := make(map[string]bool, len(refs))
+	seenPaths := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		if !secretNamePattern.MatchString(ref.Name) {
+			return fmt.Errorf("secret name %q must be a short lowercase handle", ref.Name)
+		}
+		if ref.Version == "" || len(ref.Version) > maxSecretVersionLength {
+			return fmt.Errorf("secret %q needs a version of at most %d characters",
+				ref.Name, maxSecretVersionLength)
+		}
+		if strings.ContainsAny(ref.Version, "\n\r\t ") {
+			return fmt.Errorf("secret %q version must not contain whitespace", ref.Name)
+		}
+		if !strings.HasPrefix(ref.MountPath, "/") {
+			return fmt.Errorf("secret %q mount path must be absolute", ref.Name)
+		}
+		// A relative element could escape the mount directory and place secret
+		// material somewhere the workload does not expect.
+		if strings.Contains(ref.MountPath, "..") {
+			return fmt.Errorf("secret %q mount path must not contain %q", ref.Name, "..")
+		}
+		if seenNames[ref.Name] {
+			return fmt.Errorf("secret %q is referenced twice", ref.Name)
+		}
+		if seenPaths[ref.MountPath] {
+			return fmt.Errorf("two secrets share mount path %q", ref.MountPath)
+		}
+		seenNames[ref.Name] = true
+		seenPaths[ref.MountPath] = true
+	}
+	return nil
 }
