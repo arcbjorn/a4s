@@ -40,6 +40,11 @@ const (
 	EvidenceAllocationDrained = "allocation.drained"
 	EvidenceQueueObserved     = "queue.observed"
 	EvidenceProviderReachable = "provider.reachable"
+	// EvidenceDiagnosisRecorded attributes an explanation to what produced it.
+	// It changes no world state: a diagnosis is a reading of history, not a
+	// fact about infrastructure, and a model must not be able to move the world
+	// by explaining it.
+	EvidenceDiagnosisRecorded = "diagnosis.recorded"
 )
 
 // Project applies one piece of evidence to the world and returns the updated
@@ -56,6 +61,13 @@ func Project(world World, evidence Evidence) (World, error) {
 	if err := projectInto(&next, evidence); err != nil {
 		return World{}, err
 	}
+	// Evidence that observes nothing must not advance the revision. Every
+	// proposal is bound to an exact revision, so bumping it here would let a
+	// read-only artifact such as a diagnosis invalidate in-flight plans and
+	// stall reconciliation without any fact about the world having changed.
+	if observesNothing(evidence.Kind) {
+		return next, nil
+	}
 	next.Revision = world.Revision + 1
 	// Advance the snapshot's evaluation time so freshness checks compare
 	// against when the world was last observed, not an arbitrary clock read.
@@ -63,6 +75,15 @@ func Project(world World, evidence Evidence) (World, error) {
 		next.ObservedAt = evidence.ObservedAt
 	}
 	return next, nil
+}
+
+// observesNothing reports evidence kinds that are recorded purely for audit.
+//
+// The set is deliberately explicit rather than inferred: a kind is exempt from
+// advancing the revision only when someone decided it observes no fact about
+// infrastructure, which is a judgement, not a property of the payload.
+func observesNothing(kind string) bool {
+	return kind == EvidenceDiagnosisRecorded
 }
 
 func projectInto(world *World, evidence Evidence) error {
@@ -599,6 +620,14 @@ func projectInto(world *World, evidence Evidence) error {
 			ExpiresAt:  evidence.ExpiresAt,
 			Detail:     evidence.Observed["detail"],
 		}
+
+	case EvidenceDiagnosisRecorded:
+		// Deliberately projects nothing. A diagnosis explains recorded history;
+		// it observes no new fact about the world. Letting it write state would
+		// hand a model-influenced artifact a path into the projection that the
+		// kernel authorizes actions against, which is exactly the authority a
+		// model must never have. The event is kept for audit and ignored here.
+		return nil
 
 	case EvidenceQueueObserved:
 		if evidence.Target == "" {
