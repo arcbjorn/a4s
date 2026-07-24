@@ -251,6 +251,10 @@ func cloneWorld(world World) World {
 		Allocations: make(map[string]*Allocation, len(world.Allocations)),
 		Routes:      make(map[string]*Route, len(world.Routes)),
 		Approvals:   make(map[string]*Approval, len(world.Approvals)),
+		KnownGood:   make(map[string]string, len(world.KnownGood)),
+	}
+	for workload, image := range world.KnownGood {
+		clone.KnownGood[workload] = image
 	}
 	for id, node := range world.Nodes {
 		copyNode := *node
