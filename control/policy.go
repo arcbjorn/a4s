@@ -43,6 +43,9 @@ func DefaultPolicy() Policy {
 				ActionSnapshotVolume:  true,
 				ActionBackupSnapshot:  true,
 				ActionRestoreSnapshot: true,
+				ActionQuiesceVolume:   true,
+				ActionTransferVolume:  true,
+				ActionAdoptVolume:     true,
 			},
 		},
 	}
@@ -206,6 +209,12 @@ func validateAction(goal Goal, world World, action Action) error {
 		if volume.Owner != "" && volume.Owner != action.Target {
 			return fmt.Errorf("volume %q is owned by allocation %q", action.Volume.Name, volume.Owner)
 		}
+		// A volume mid-move must not be attached. The data is in flight, and a
+		// writer on either node could diverge from what is being transferred.
+		if volume.Handoff != nil {
+			return fmt.Errorf("volume %q is being moved to node %q and cannot be attached",
+				action.Volume.Name, volume.Handoff.To)
+		}
 		// Local storage stays local. Attaching across nodes would mean the data
 		// is not where the workload is.
 		if volume.Node != allocation.Node {
@@ -244,6 +253,74 @@ func validateAction(goal Goal, world World, action Action) error {
 		if volume.Owner != "" {
 			return fmt.Errorf("volume %q must be quiesced before snapshotting; it is attached to %q",
 				action.Volume.Name, volume.Owner)
+		}
+
+	case ActionQuiesceVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("quiesce volume requires a volume reference")
+		}
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		// Quiescing means the writer has stopped. Beginning a move under a live
+		// process would snapshot data that is still changing.
+		if volume.Owner != "" {
+			return fmt.Errorf("volume %q must be detached before a move; it is held by %q",
+				action.Volume.Name, volume.Owner)
+		}
+		target, ok := world.Nodes[action.Node]
+		if !ok || !target.Healthy {
+			return fmt.Errorf("handoff target %q is missing or unhealthy", action.Node)
+		}
+		if action.Node == volume.Node {
+			return fmt.Errorf("volume %q already lives on node %q", action.Volume.Name, action.Node)
+		}
+		// Moving data is irreversible in practice: the origin copy is expected
+		// to be reclaimed. It needs a separately authenticated decision.
+		if !hasApproval(world, goal.ID, "move-volume") {
+			return fmt.Errorf("moving volume %q requires move-volume approval", action.Volume.Name)
+		}
+
+	case ActionTransferVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("transfer volume requires a volume reference")
+		}
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		if volume.Handoff == nil {
+			return fmt.Errorf("volume %q has no handoff in progress", action.Volume.Name)
+		}
+		if volume.Handoff.Phase != HandoffSnapshotted {
+			return fmt.Errorf("volume %q must be snapshotted before transfer, not %q",
+				action.Volume.Name, volume.Handoff.Phase)
+		}
+		if action.Node != volume.Handoff.To {
+			return fmt.Errorf("transfer target %q is not the handoff target %q",
+				action.Node, volume.Handoff.To)
+		}
+
+	case ActionAdoptVolume:
+		if action.Volume == nil {
+			return fmt.Errorf("adopt volume requires a volume reference")
+		}
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		if volume.Handoff == nil {
+			return fmt.Errorf("volume %q has no handoff in progress", action.Volume.Name)
+		}
+		// Ownership moves only after the target proved it holds the data.
+		if volume.Handoff.Phase != HandoffTransferred {
+			return fmt.Errorf("volume %q must be transferred before adoption, not %q",
+				action.Volume.Name, volume.Handoff.Phase)
+		}
+		if action.Node != volume.Handoff.To {
+			return fmt.Errorf("adoption node %q is not the handoff target %q",
+				action.Node, volume.Handoff.To)
 		}
 
 	case ActionBackupSnapshot:
@@ -512,6 +589,10 @@ func cloneWorld(world World) World {
 			for id, checksum := range volume.Snapshots {
 				copyVolume.Snapshots[id] = checksum
 			}
+		}
+		if volume.Handoff != nil {
+			copyHandoff := *volume.Handoff
+			copyVolume.Handoff = &copyHandoff
 		}
 		if volume.Backups != nil {
 			copyVolume.Backups = make(map[string]string, len(volume.Backups))
