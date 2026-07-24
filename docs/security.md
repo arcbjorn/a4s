@@ -284,10 +284,31 @@ Secret values must never appear in:
 - Events, log messages, filenames, or labels.
 - Container command-line arguments when avoidable.
 
-The planned secret action should reference opaque secret identity and version.
-The node should obtain node-scoped encrypted material from a broker, mount it
-in tmpfs or a runtime credential facility, and report only version and mount
-status.
+This is implemented. `SecretRef` carries a name, version, and mount path, and
+has no field capable of holding a value: a struct with nowhere to put a secret
+cannot leak one however it is serialized, logged, or handed to a model.
+
+Material is sealed to a node's X25519 key, derived from the Ed25519 identity it
+already uses for enrollment, so an operator manages one key per node. The
+control plane distributes material it cannot itself read, and a stolen sealed
+file is useless without that node's key. Name, version, and node are bound into
+the ciphertext, so a renamed file cannot impersonate another secret.
+
+The node decrypts into a tmpfs directory at mode `0400` and binds it read-only,
+`nosuid`, `nodev`, `noexec` into the container. Deleting an allocation removes
+its material. Evidence reports the name, version, and mount path only.
+
+`SecretMaterial` refuses to marshal and renders as `[redacted]` under every
+formatting verb, so a debug print or wrapped error cannot expose it. Decryption
+failures report no detail, avoiding an oracle.
+
+Redaction is tested by running a real reconciliation with a secret and scanning
+every serialized artifact — goal, world, events, plan, explanation, diagnosis —
+for the value. That catches a future field that carries material, not just
+today's paths.
+
+Remaining gaps: material is not zeroed from process memory after writing, and
+rotation replaces the allocation rather than remounting in place.
 
 ## Model-backed agent policy
 
@@ -329,7 +350,7 @@ Digest pinning provides immutability, not provenance. Before production add:
 - Independent readiness/liveness probes.
 - Seccomp/AppArmor policy and non-root/user-namespace strategy.
 - CNI/network-policy enforcement and gateway snapshot authenticity.
-- Secret broker with redaction tests.
+- Secret rotation without workload restart.
 - Stateful ownership protocol before any durable workload.
 - Resource and request limits on all decoders and agent runtimes.
 - Fuzzing of protocol decoders, kernel authorization, event replay, and node
