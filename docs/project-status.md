@@ -66,6 +66,12 @@ contract.
 - A composite readiness observer routing each probe kind to the capability that
   owns it, and an agent probe measuring provider reachability, remaining budget,
   and container liveness.
+- The first model-backed control agent: a diagnoser that explains a
+  non-converging goal. It lives in `reason`, outside the stdlib-only `control`
+  package, and falls back to the deterministic `LogDiagnoser` on every failure of
+  the model path, so model availability is not a dependency. Input is a redacted,
+  bounded context; output is strictly decoded and cannot express an action; every
+  explanation records its model, template version, and observed revision.
 - The `a4s.agent/v1` workload-facing runtime API on a Unix socket: claim, ack,
   requeue, spend, tool authorization, and identity. Allocation identity comes
   from a node-issued token resolved before any handler runs, so no endpoint

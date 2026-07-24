@@ -49,6 +49,27 @@ release or compatibility guarantee yet.
   leakage between agents comes from shared runtime state, not a shared kernel
   namespace, so envelopes, workspaces, and credentials are per instance and a
   deleted allocation's envelope is released.
+- The first model-backed control agent. A diagnoser explains why a goal did not
+  converge, using a model where one is available. It was chosen as the first
+  because it is the smallest useful surface: it proposes nothing, holds no
+  capability grants, and can influence what an operator reads but never what the
+  kernel executes.
+- A redacted model context built by subtraction, so a new field on `World` or
+  `Event` does not silently become model input. Secret versions and mount paths,
+  image digests, spend amounts, and other workloads' allocations are excluded,
+  and operator text is stripped of control characters because a goal objective
+  containing role markers would otherwise read as instructions.
+- A strict decoder for untrusted model output. It refuses unknown fields,
+  oversized responses, and excess findings, and drops targets the world does not
+  contain, so a hallucinated allocation cannot appear to an operator as observed
+  fact. The decoded type has nowhere to put an action or a capability.
+- A deterministic fallback on every model failure — provider down, timeout,
+  malformed output, a response naming things that do not exist. A model can
+  improve an explanation; it can never remove one.
+- `diagnosis.recorded` evidence carrying model id, template version, observed
+  revision, and whether the explanation fell back. It changes no world state and
+  does not advance the world revision: advancing it would let a read-only
+  explanation invalidate in-flight proposals through the stale-revision check.
 - The `a4s.agent/v1` runtime API, the surface an agent image implements. It
   serves claim, ack, requeue, spend, tool authorization, and identity on a Unix
   socket. Every enforcement point built earlier now has a caller.

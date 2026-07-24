@@ -37,6 +37,8 @@ containerd, networking implementations, model SDKs, and transport libraries.
 | `engine.go` | Reconciliation coordination, event ordering, verification |
 | `engine_test.go` | End-to-end kernel safety and convergence tests |
 | `agent_workload_test.go` | Agent-workload budget, tool-grant, drain, and queue rules |
+| `modelcontext.go` | Redacted model input and explanation provenance |
+| `modeldecode.go` | Strict decoding of untrusted model output |
 
 Dependency direction:
 
@@ -45,6 +47,21 @@ control -> Go standard library only
 ```
 
 Preserve that property unless there is a compelling, recorded reason.
+
+### `reason`
+
+Model-backed control agents. It is separate from `control` precisely so the
+kernel keeps the property above: dependencies point inward, and nothing in
+`control` imports `reason`.
+
+| File | Responsibility |
+|---|---|
+| `diagnoser.go` | Model-backed diagnosis with deterministic fallback and provenance |
+| `anthropic.go` | Minimal Messages API client implementing `Completer` |
+
+```text
+reason -> control -> Go standard library only
+```
 
 ### `eventlog`
 

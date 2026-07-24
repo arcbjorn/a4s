@@ -565,6 +565,7 @@ Implemented evidence kinds:
 | `allocation.drained` | Agents | The instance released its task and is safe to stop |
 | `queue.observed` | Queue | Records measured depth and in-flight count with an observation time |
 | `provider.reachable` | Provider monitor | Records measured egress to a model provider, with an expiry and failure detail |
+| `diagnosis.recorded` | Diagnoser | Attributes an explanation to the model and template that produced it; changes no state and does not advance the revision |
 
 Readiness evidence carries `observed_at` and `expires_at`. An expired readiness
 observation stops satisfying a goal, because a service that was healthy when

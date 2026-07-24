@@ -375,6 +375,46 @@ A model integration must not precede these controls:
 Never interpret natural-language model output as a shell command or direct host
 operation.
 
+### Implemented model integration: diagnosis
+
+The first model-backed agent explains why a goal did not converge. It was chosen
+because it is the smallest useful surface: it proposes nothing, holds no
+capability grants, and cannot mutate anything. A model influences what an
+operator reads, never what the kernel executes.
+
+The controls above map to code as follows:
+
+- **Isolated runtime and identity.** The model client lives in `reason`, outside
+  `control`. Nothing in `control` imports it, so the kernel and its deterministic
+  agents build and run with no model provider present.
+- **Redacted input.** `control.BuildModelContext` is the only supported way to
+  produce model input. It is built by subtraction: a field reaches a model only
+  because someone copied it there, so a new field on `World` or `Event` does not
+  silently become model input. Secret versions and mount paths, image digests,
+  spend amounts, task payloads, and other workloads' allocations are excluded.
+  Operator text is stripped of control characters, because a goal objective
+  containing role markers would otherwise read as instructions.
+- **Strict decoding.** `control.DecodeModelDiagnosis` refuses unknown fields,
+  oversized responses, and findings above a count limit, and drops any target the
+  world does not contain. The decoded type has nowhere to put an action, a
+  proposal, or a capability.
+- **Bounded context.** History is capped at `MaxModelEvents`, messages are
+  truncated, and the response is size-limited before decoding.
+- **Deterministic fallback.** Every failure of the model path — provider down,
+  timeout, malformed output, a response naming things that do not exist — lands
+  on `LogDiagnoser`. A model can improve an explanation; it can never remove one.
+- **Full audit.** Every diagnosis records model id, template version, world
+  revision, event count, and whether it fell back, as `diagnosis.recorded`
+  evidence. The context and the model's raw output are not stored: the audit
+  answers what produced an explanation, which does not require keeping what was
+  sent.
+
+One projection rule is load-bearing: `diagnosis.recorded` changes no world state
+**and does not advance the world revision**. Advancing it would let a read-only
+explanation invalidate every in-flight proposal through the stale-revision check,
+which is a way for a model-influenced artifact to disrupt reconciliation without
+ever being authorized to act.
+
 ## Supply-chain requirements
 
 Digest pinning provides immutability, not provenance. Before production add:
