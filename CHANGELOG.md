@@ -7,6 +7,22 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- `stop_allocation` and `delete_allocation` actions with kill deadline,
+  snapshot cleanup, and capacity release.
+- Real process, TCP, and HTTP readiness probes (`node.RuntimeObserver`).
+- Observation freshness: readiness evidence expires and stale readiness no
+  longer satisfies a goal.
+- Durable world projection rebuilt from recorded evidence
+  (`control.DurableProjector`), so a restarted server recovers its state.
+- Node desired-state cache and supervisor with crash-loop budget, exponential
+  backoff, and orphan discovery, so workloads survive a server outage.
+- Controller-to-node transport: `RemoteExecutor` issues signed capabilities and
+  `Serve` handles them, replacing the ad-hoc stdin harness.
+- Router capability with atomic gateway route snapshots and rollback on a
+  failed apply.
+- End-to-end acceptance suite covering convergence over the transport, server
+  restart recovery, node survival during an outage, replay after node restart,
+  and failed readiness blocking a goal.
 - Pure, idempotent world projection from evidence (`control.Project`).
 - `Prober` interface and `OptimisticProber` stand-in separating readiness
   observation from action execution.
@@ -24,6 +40,9 @@ release or compatibility guarantee yet.
 
 ### Fixed
 
+- Node deduplication compared whole envelopes, so a legitimate retry with fresh
+  issue and expiry times was rejected as idempotency-key reuse. The ledger now
+  compares a digest of the authorized work instead.
 - Placement proposals accumulated readiness checks instead of overwriting them.
   Previously only the last replica's evidence declaration survived, which would
   have silently dropped evidence requirements once multi-replica placement was
