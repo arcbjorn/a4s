@@ -48,16 +48,42 @@ func (r Resources) Add(other Resources) Resources {
 	return Resources{CPUMillis: r.CPUMillis + other.CPUMillis, MemoryMB: r.MemoryMB + other.MemoryMB}
 }
 
+// Subtract releases resources, clamping at zero. Capacity accounting must never
+// go negative even if evidence arrives out of order or is replayed.
+func (r Resources) Subtract(other Resources) Resources {
+	result := Resources{CPUMillis: r.CPUMillis - other.CPUMillis, MemoryMB: r.MemoryMB - other.MemoryMB}
+	if result.CPUMillis < 0 {
+		result.CPUMillis = 0
+	}
+	if result.MemoryMB < 0 {
+		result.MemoryMB = 0
+	}
+	return result
+}
+
 func (r Resources) Fits(capacity Resources) bool {
 	return r.CPUMillis <= capacity.CPUMillis && r.MemoryMB <= capacity.MemoryMB
 }
 
 type World struct {
-	Revision    uint64                 `json:"revision"`
+	Revision uint64 `json:"revision"`
+	// ObservedAt is the time this snapshot represents. Freshness checks compare
+	// perishable observations against it, so evaluation is deterministic and
+	// does not depend on a hidden call to the system clock.
+	ObservedAt  time.Time              `json:"observed_at,omitempty"`
 	Nodes       map[string]*Node       `json:"nodes"`
 	Allocations map[string]*Allocation `json:"allocations,omitempty"`
 	Routes      map[string]*Route      `json:"routes,omitempty"`
 	Approvals   map[string]*Approval   `json:"approvals,omitempty"`
+}
+
+// Now returns the snapshot's evaluation time, falling back to the wall clock
+// for worlds built before observation time was recorded.
+func (w World) Now() time.Time {
+	if w.ObservedAt.IsZero() {
+		return time.Now()
+	}
+	return w.ObservedAt
 }
 
 // Approval is materialized from a separately authenticated operator event. It
@@ -89,6 +115,21 @@ type Allocation struct {
 	Phase     AllocationPhase `json:"phase"`
 	Ready     bool            `json:"ready"`
 	Stateful  bool            `json:"stateful,omitempty"`
+	ExitCode  int             `json:"exit_code,omitempty"`
+	Restarts  int             `json:"restarts,omitempty"`
+	// ReadyExpiresAt is when the readiness observation stops being trustworthy.
+	// Zero means readiness was never observed with an expiry.
+	ReadyExpiresAt time.Time `json:"ready_expires_at,omitempty"`
+}
+
+// ReadyAt reports whether the allocation is ready and that readiness has not
+// expired. Goal satisfaction must use this rather than the raw Ready flag, so a
+// stale observation cannot keep a dead workload looking healthy.
+func (a *Allocation) ReadyAt(now time.Time) bool {
+	if a == nil || !a.Ready {
+		return false
+	}
+	return a.ReadyExpiresAt.IsZero() || now.Before(a.ReadyExpiresAt)
 }
 
 type AllocationPhase string
@@ -133,6 +174,8 @@ const (
 	ActionPullImage        ActionKind = "pull_image"
 	ActionCreateAllocation ActionKind = "create_allocation"
 	ActionStartAllocation  ActionKind = "start_allocation"
+	ActionStopAllocation   ActionKind = "stop_allocation"
+	ActionDeleteAllocation ActionKind = "delete_allocation"
 	ActionPublishRoute     ActionKind = "publish_route"
 )
 
@@ -165,9 +208,24 @@ type Check struct {
 }
 
 type Evidence struct {
-	Kind     string            `json:"kind"`
-	Target   string            `json:"target"`
-	Observed map[string]string `json:"observed"`
+	Kind   string `json:"kind"`
+	Target string `json:"target"`
+	// Source names what produced the evidence. Executor-produced and
+	// probe-produced evidence are deliberately distinguishable.
+	Source string `json:"source,omitempty"`
+	// ObservedAt and ExpiresAt bound how long an observation may be trusted. A
+	// readiness observation is a perishable fact, not a permanent one: the
+	// service can stop serving at any time after it was measured.
+	ObservedAt time.Time         `json:"observed_at,omitempty"`
+	ExpiresAt  time.Time         `json:"expires_at,omitempty"`
+	Observed   map[string]string `json:"observed"`
+}
+
+// Fresh reports whether the observation can still be trusted at the given time.
+// Evidence without an expiry is treated as fresh, because state-change evidence
+// such as allocation.created does not decay.
+func (e Evidence) Fresh(now time.Time) bool {
+	return e.ExpiresAt.IsZero() || now.Before(e.ExpiresAt)
 }
 
 type EventType string
