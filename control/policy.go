@@ -153,6 +153,35 @@ func validateAction(goal Goal, world World, action Action) error {
 			return fmt.Errorf("workload differs from goal")
 		}
 
+	case ActionStopAllocation:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		if allocation.Phase != AllocationRunning {
+			return fmt.Errorf("allocation %q is not running", action.Target)
+		}
+		if action.Workload != allocation.Workload {
+			return fmt.Errorf("workload differs from allocation")
+		}
+
+	case ActionDeleteAllocation:
+		allocation, ok := world.Allocations[action.Target]
+		if !ok {
+			return fmt.Errorf("allocation %q does not exist", action.Target)
+		}
+		// Deleting a running allocation would destroy a workload without the
+		// operator ever observing it stop. Stop is a required prior step.
+		if allocation.Phase == AllocationRunning {
+			return fmt.Errorf("allocation %q must be stopped before deletion", action.Target)
+		}
+		if action.Workload != allocation.Workload {
+			return fmt.Errorf("workload differs from allocation")
+		}
+		if allocation.Stateful {
+			return fmt.Errorf("stateful allocation %q requires the future volume ownership protocol", action.Target)
+		}
+
 	case ActionPublishRoute:
 		if goal.Route == nil {
 			return fmt.Errorf("goal does not request a route")
@@ -200,6 +229,7 @@ func nodeAllowed(constraints Constraints, node Node) bool {
 func cloneWorld(world World) World {
 	clone := World{
 		Revision:    world.Revision,
+		ObservedAt:  world.ObservedAt,
 		Nodes:       make(map[string]*Node, len(world.Nodes)),
 		Allocations: make(map[string]*Allocation, len(world.Allocations)),
 		Routes:      make(map[string]*Route, len(world.Routes)),
@@ -234,9 +264,10 @@ func cloneWorld(world World) World {
 
 func matchingReadyAllocations(goal Goal, world World) int {
 	ready := 0
+	now := world.Now()
 	for _, allocation := range world.Allocations {
 		node := world.Nodes[allocation.Node]
-		if node != nil && allocation.Ready && allocation.Workload == goal.Workload.Name &&
+		if node != nil && allocation.ReadyAt(now) && allocation.Workload == goal.Workload.Name &&
 			allocation.Image == goal.Workload.Image && allocation.Resources == goal.Workload.Resources &&
 			nodeAllowed(goal.Constraints, *node) {
 			ready++
