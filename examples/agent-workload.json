@@ -68,7 +68,9 @@
           "memory_mb": 2048
         },
         "providers": {
-          "anthropic": true
+          "anthropic": {
+            "reachable": true
+          }
         },
         "budget_capacity": {
           "tokens": 2000000,

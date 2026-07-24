@@ -31,13 +31,26 @@ func agentWorld(t *testing.T) World {
 	t.Helper()
 	world := cloneWorld(validScenario().World)
 	world.normalize()
+	// Reachability is perishable, so the fixture pins an evaluation time and
+	// gives every measurement a live expiry. A world without one would read as
+	// having no current provider evidence at all.
+	world.ObservedAt = time.Unix(1_700_000_000, 0).UTC()
 	for _, node := range world.Nodes {
-		node.Providers = map[string]bool{"anthropic": true}
+		node.Providers = map[string]ProviderReach{
+			"anthropic": reachableNow(world.ObservedAt),
+		}
 		node.BudgetCapacity = Budget{
 			Tokens: 1000000, CostMillis: 50000, WallSeconds: 9000, ToolCalls: 500,
 		}
 	}
 	return world
+}
+
+// reachableNow is a live reachability measurement taken at the given time.
+func reachableNow(at time.Time) ProviderReach {
+	return ProviderReach{
+		Reachable: true, ObservedAt: at, ExpiresAt: at.Add(2 * time.Minute),
+	}
 }
 
 func agentScenario(t *testing.T) Scenario {
@@ -128,7 +141,7 @@ func TestAgentIsNotPlacedWithoutProviderReach(t *testing.T) {
 	goal := agentGoal()
 	world := agentWorld(t)
 	for _, node := range world.Nodes {
-		node.Providers = map[string]bool{}
+		node.Providers = map[string]ProviderReach{}
 	}
 	_, err := (PlacementAgent{}).Propose(goal, world)
 	if err == nil || !strings.Contains(err.Error(), "reach provider") {
@@ -140,7 +153,7 @@ func TestAgentIsNotPlacedWithoutProviderReach(t *testing.T) {
 func TestKernelRefusesAgentOnUnreachableProvider(t *testing.T) {
 	goal := agentGoal()
 	world := agentWorld(t)
-	world.Nodes["base"].Providers = map[string]bool{}
+	world.Nodes["base"].Providers = map[string]ProviderReach{}
 	world.Nodes["base"].Images[testImage] = true
 
 	proposal := Proposal{
@@ -726,5 +739,142 @@ func TestPlacementGrantsToolsBeforeStartingAgent(t *testing.T) {
 	if err := (Kernel{Policy: DefaultPolicy()}).Authorize(
 		AgentDescriptor{ID: "placement-agent"}, goal, world, proposal); err != nil {
 		t.Fatalf("kernel rejected the placement agent's own agent-workload plan: %v", err)
+	}
+}
+
+// Egress is perishable. Treating a remembered measurement as current would
+// place agents onto a node that has since lost its route.
+func TestExpiredProviderReachIsNotReachable(t *testing.T) {
+	world := agentWorld(t)
+	node := world.Nodes["base"]
+
+	if !node.CanReach("anthropic", world.Now()) {
+		t.Fatal("expected a live measurement to count as reachable")
+	}
+	// One second past expiry is not reachability.
+	past := node.Providers["anthropic"].ExpiresAt.Add(time.Second)
+	if node.CanReach("anthropic", past) {
+		t.Fatal("expected an expired measurement to stop counting")
+	}
+}
+
+// The scheduler must have positive evidence of reach, not an absence of bad
+// news.
+func TestUnmeasuredProviderIsNotReachable(t *testing.T) {
+	world := agentWorld(t)
+	node := world.Nodes["base"]
+
+	if node.CanReach("openai", world.Now()) {
+		t.Fatal("expected a provider that was never measured to be unreachable")
+	}
+	node.Providers["openai"] = ProviderReach{
+		Reachable: false, ObservedAt: world.Now(),
+		ExpiresAt: world.Now().Add(time.Minute), Detail: "dial tcp: no route to host",
+	}
+	if node.CanReach("openai", world.Now()) {
+		t.Fatal("expected a failed measurement to be unreachable")
+	}
+}
+
+// A node whose reachability observation aged out must stop attracting agent
+// placements, even though the fact is still in the world.
+func TestStaleProviderReachBlocksPlacement(t *testing.T) {
+	goal := agentGoal()
+	world := agentWorld(t)
+	// Advance evaluation past every provider measurement's expiry.
+	world.ObservedAt = world.Nodes["base"].Providers["anthropic"].ExpiresAt.Add(time.Minute)
+
+	_, err := (PlacementAgent{}).Propose(goal, world)
+	if err == nil || !strings.Contains(err.Error(), "reach provider") {
+		t.Fatalf("expected stale reachability to block placement, got %v", err)
+	}
+}
+
+// The kernel recomputes staleness itself rather than trusting that the agent
+// checked it.
+func TestKernelRefusesStaleProviderReach(t *testing.T) {
+	goal := agentGoal()
+	world := agentWorld(t)
+	world.Nodes["base"].Images[testImage] = true
+	world.ObservedAt = world.Nodes["base"].Providers["anthropic"].ExpiresAt.Add(time.Minute)
+
+	proposal := Proposal{
+		ID: "p1", AgentID: "placement-agent", GoalID: goal.ID,
+		BasedOnRevision: world.Revision,
+		Actions: []Action{{
+			ID: "create", Kind: ActionCreateAllocation, Target: "triage-0",
+			Workload: "triage", Node: "base", Image: testImage,
+			Resources: goal.Workload.Resources, Budget: goal.Workload.Runtime.Budget,
+		}},
+	}
+	err := (Kernel{Policy: DefaultPolicy()}).Authorize(
+		AgentDescriptor{ID: "placement-agent"}, goal, world, proposal)
+	if err == nil || !strings.Contains(err.Error(), "cannot reach provider") {
+		t.Fatalf("expected the kernel to refuse stale reachability, got %v", err)
+	}
+}
+
+// Nothing wrote node provider facts before this evidence existed, so an agent
+// workload could never be placed in a real deployment.
+func TestProviderEvidenceRecordsReachability(t *testing.T) {
+	world := agentWorld(t)
+	world.Nodes["base"].Providers = map[string]ProviderReach{}
+	observed := world.Now()
+
+	next, err := Project(world, Evidence{
+		Kind: EvidenceProviderReachable, Target: "anthropic",
+		ObservedAt: observed, ExpiresAt: observed.Add(2 * time.Minute),
+		Observed: map[string]string{"node": "base", "reachable": "true"},
+	})
+	if err != nil {
+		t.Fatalf("projection failed: %v", err)
+	}
+	if !next.Nodes["base"].CanReach("anthropic", observed) {
+		t.Fatal("expected projected evidence to make the provider reachable")
+	}
+}
+
+// A stale success overwriting a fresh failure is the direction that places
+// agents onto a node which has lost its egress.
+func TestOlderProviderEvidenceDoesNotOverwrite(t *testing.T) {
+	world := agentWorld(t)
+	now := world.Now()
+	world.Nodes["base"].Providers = map[string]ProviderReach{
+		"anthropic": {
+			Reachable: false, ObservedAt: now,
+			ExpiresAt: now.Add(time.Minute), Detail: "connection refused",
+		},
+	}
+
+	next, err := Project(world, Evidence{
+		Kind: EvidenceProviderReachable, Target: "anthropic",
+		ObservedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Minute),
+		Observed: map[string]string{"node": "base", "reachable": "true"},
+	})
+	if err != nil {
+		t.Fatalf("projection failed: %v", err)
+	}
+	if next.Nodes["base"].CanReach("anthropic", now) {
+		t.Fatal("a stale success overwrote a fresh failure")
+	}
+}
+
+// An operator should be able to tell a DNS failure from a provider outage
+// without reading node logs.
+func TestProviderEvidenceCarriesFailureDetail(t *testing.T) {
+	world := agentWorld(t)
+	next, err := Project(world, Evidence{
+		Kind: EvidenceProviderReachable, Target: "anthropic",
+		ObservedAt: world.Now().Add(time.Second),
+		Observed: map[string]string{
+			"node": "base", "reachable": "false", "detail": "provider returned 503",
+		},
+	})
+	if err != nil {
+		t.Fatalf("projection failed: %v", err)
+	}
+	reach := next.Nodes["base"].Providers["anthropic"]
+	if reach.Reachable || reach.Detail != "provider returned 503" {
+		t.Fatalf("expected the failure detail to be recorded, got %+v", reach)
 	}
 }
