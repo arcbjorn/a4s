@@ -52,6 +52,12 @@ contract.
 - Privileged workload rejection in v1alpha1.
 - Database workloads with engine-consistent backup, connection-based readiness,
   and a raw snapshot of a running database refused.
+- Agent workloads as a workload kind: pinned model and runtime, mandatory
+  positive budget ceilings, scoped tool envelopes granted before start, mutating
+  grants behind a separate approval, provider reachability and budget capacity
+  as placement constraints, provider-and-budget readiness, monotonic spend
+  evidence, drain-before-stop retirement, and queue-depth scaling capped by a
+  worker ceiling the kernel recomputes.
 - Stateful workloads limited to one replica, pinned to the node holding their
   data, and never relocated on a missing heartbeat.
 - Separate authenticated approval record for public routes.

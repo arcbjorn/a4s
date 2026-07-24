@@ -7,6 +7,50 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Agent workloads as a workload kind. A workload may declare a `runtime` block
+  the way a database declares an `engine`, which makes its cost measured in
+  tokens rather than cpu-seconds, its readiness a question of provider reach and
+  remaining budget, and its blast radius a declared tool envelope. An agent
+  workload is not a control agent: it proposes nothing, holds no `ActionKind`
+  grants, and the two grant vocabularies are deliberately disjoint.
+- `Budget` as a resource dimension beside cpu and memory, with per-node
+  `budget_capacity` and `budget_used`. A cpu limit bounds how fast an agent burns
+  money, not how much, so budget is committed at placement the way memory is.
+  Every ceiling must be positive: a zero is rejected rather than read as
+  unlimited, so a forgotten field cannot grant infinite spend.
+- `grant_tools`, which installs a scoped tool envelope while the allocation is
+  still in `created` phase. This is what lets the kernel authorize an agent up
+  front without knowing what it will decide to do: the envelope is checked
+  before it starts and cannot be widened at runtime. Mutating grants require a
+  separate `agent-mutating-tools` approval, since they change state outside a4s
+  where no compensation or event log reaches.
+- `drain_allocation` and drain-before-stop retirement. An agent instance
+  accumulates task context a stateless replica does not, so stopping it mid-task
+  destroys work already paid for in tokens. The kernel refuses to stop an agent
+  holding a task until it is observed holding nothing, borrowing the shape of
+  the volume handoff. An exhausted agent is exempt, since waiting for it would
+  never end.
+- Provider reachability as a node fact and a hard placement constraint. An agent
+  placed where its provider is unreachable can never become ready, so it is
+  refused at placement rather than discovered at probe time.
+- An `agent` probe and `agent_ready` check. A process probe would pass for an
+  agent whose provider is unreachable or whose ceiling is spent, both of which
+  mean no work can be done despite a healthy-looking container.
+- Monotonic `agent.spent` evidence. A lower reading is ignored as stale, because
+  accepting it would let an exhausted agent look affordable again and be
+  restarted into the same ceiling. An exhausted agent stops being ready, stops
+  counting toward goal satisfaction, and is treated as drifted so it can be
+  replaced.
+- Work queues and demand-driven scaling between the goal's replica count and the
+  queue's `max_workers`. The kernel recomputes that ceiling itself rather than
+  trusting the placement agent's arithmetic, and depth older than 60 seconds
+  does not scale, since workers consume the depth as it is read.
+- A node agent capability holding tool envelopes strictly per allocation. Context
+  leakage between agents comes from shared runtime state, not a shared kernel
+  namespace, so envelopes, workspaces, and credentials are per instance and a
+  deleted allocation's envelope is released.
+- `examples/agent-workload.json` and [agent workloads](docs/agent-workloads.md).
+
 - Database workloads: a workload may declare an `engine` (postgres), which makes
   it single-writer, volume-backed, and readiness-checked by an accepted
   connection rather than an open port.
