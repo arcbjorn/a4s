@@ -111,6 +111,22 @@ func (f *File) NextSequence() uint64 {
 	return uint64(len(f.records) + 1)
 }
 
+// ReplayEvidence returns every recorded observation in sequence order. It is
+// what allows a restarted server to rebuild its world projection from durable
+// history rather than from memory.
+func (f *File) ReplayEvidence() ([]control.Evidence, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	evidence := make([]control.Evidence, 0, len(f.records))
+	for _, record := range f.records {
+		if record.Event.Evidence == nil {
+			continue
+		}
+		evidence = append(evidence, *record.Event.Evidence)
+	}
+	return evidence, nil
+}
+
 func (f *File) replay() error {
 	if _, err := f.handle.Seek(0, 0); err != nil {
 		return fmt.Errorf("seek event log: %w", err)
