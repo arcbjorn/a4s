@@ -153,6 +153,8 @@ func (v *Volumes) Execute(ctx context.Context, action control.Action) (control.E
 		return v.adopt(ctx, action)
 	case control.ActionPruneSnapshots:
 		return v.prune(action)
+	case control.ActionVerifyBackup:
+		return v.verifyBackup(ctx, action)
 	default:
 		return control.Evidence{}, fmt.Errorf("volumes do not support action kind %q", action.Kind)
 	}
@@ -435,6 +437,80 @@ func (v *Volumes) adopt(ctx context.Context, action control.Action) (control.Evi
 	return volumeEvidence(control.EvidenceVolumeAdopted, name, map[string]string{
 		"node": action.Node, "snapshot": action.Snapshot, "checksum": checksum,
 	}), nil
+}
+
+// verifyBackup proves a snapshot is recoverable without touching the live
+// volume.
+//
+// It restores the snapshot into a scratch directory, checksums the result, and
+// discards it. Nothing about the live volume changes, so this is safe to run on
+// a schedule against a volume in active use. A restore test that could damage
+// the data it protects would be worse than no test at all.
+func (v *Volumes) verifyBackup(ctx context.Context, action control.Action) (control.Evidence, error) {
+	v.mu.Lock()
+	record, ok := v.volumes[action.Volume.Name]
+	v.mu.Unlock()
+	if !ok {
+		return control.Evidence{}, fmt.Errorf("volume %q does not exist on this node", action.Volume.Name)
+	}
+	if action.Snapshot == "" {
+		return control.Evidence{}, fmt.Errorf("verify requires a snapshot id")
+	}
+
+	// Restore into scratch space that is never the live volume path. Sourcing
+	// from the local snapshot when present, and the backup store otherwise, so
+	// verification covers whichever copy would be used in a real recovery.
+	scratch := filepath.Join(v.snapshots, record.Name, action.Snapshot+".verify")
+	defer os.RemoveAll(scratch)
+
+	source := filepath.Join(v.snapshots, record.Name, action.Snapshot)
+	if _, err := os.Stat(source); err != nil {
+		if v.backups == nil {
+			return v.verificationFailure(record.Name, action.Snapshot,
+				"snapshot is not present on this node and no backup store is configured"), nil
+		}
+		if err := v.backups.Fetch(ctx, record.Name, action.Snapshot, scratch); err != nil {
+			return v.verificationFailure(record.Name, action.Snapshot,
+				"backup could not be fetched: "+err.Error()), nil
+		}
+		source = scratch
+	} else {
+		// Copy the local snapshot into scratch so the checksum is computed the
+		// same way a real restore would materialize it, not read in place.
+		if err := copyTree(source, scratch); err != nil {
+			return control.Evidence{}, fmt.Errorf("stage verification copy: %w", err)
+		}
+		source = scratch
+	}
+
+	checksum, err := checksumTree(source)
+	if err != nil {
+		return control.Evidence{}, err
+	}
+	// A recorded checksum lets the node confirm the copy is what was snapshotted.
+	// A mismatch means the backup would not recover the right data.
+	if action.Volume.Checksum != "" && action.Volume.Checksum != checksum {
+		return v.verificationFailure(record.Name, action.Snapshot,
+			"checksum mismatch: recorded "+action.Volume.Checksum+", found "+checksum), nil
+	}
+	return control.Evidence{
+		Kind: control.EvidenceBackupVerified, Target: record.Name,
+		Observed: map[string]string{
+			"snapshot": action.Snapshot, "verified": "true", "checksum": checksum,
+		},
+	}, nil
+}
+
+// verificationFailure reports a backup that could not be proven recoverable.
+// A failure is evidence too: it is exactly what an operator needs to see before
+// they depend on a backup that would not work.
+func (v *Volumes) verificationFailure(volume, snapshot, reason string) control.Evidence {
+	return control.Evidence{
+		Kind: control.EvidenceBackupVerified, Target: volume,
+		Observed: map[string]string{
+			"snapshot": snapshot, "verified": "false", "reason": reason,
+		},
+	}
 }
 
 // prune removes snapshots beyond the retention count, keeping the most recent.
