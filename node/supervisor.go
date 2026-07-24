@@ -33,6 +33,14 @@ type Supervisor struct {
 	// node, so metering has to reach the world view on the same schedule as
 	// every other supervised fact.
 	Agents *Agents
+	// Providers measures egress to model providers. The scheduler refuses to
+	// place an agent on a node that cannot reach its provider, so a node that
+	// never reports reachability attracts no agent workloads at all.
+	Providers *ProviderMonitor
+	// NodeID attributes node-scoped observations. Provider reachability is a
+	// fact about this node rather than about any one allocation, so the evidence
+	// has to say which node measured it.
+	NodeID string
 	// Evidence receives observations produced by supervision so they can be
 	// forwarded to the server when it is reachable again.
 	Evidence func(control.Evidence)
@@ -71,6 +79,10 @@ func (s *Supervisor) Reconcile(ctx context.Context) ([]control.Evidence, error) 
 		return nil, fmt.Errorf("supervisor is not initialized")
 	}
 	var observations []control.Evidence
+	// Provider reachability is measured before allocations are reconciled, so a
+	// node that has just lost egress reports that fact in the same round it
+	// reports the agents which are about to stop being ready.
+	observations = append(observations, s.refreshProviders(ctx)...)
 	for _, entry := range s.Desired.List() {
 		evidence, err := s.reconcileOne(ctx, entry)
 		if err != nil {
@@ -79,6 +91,25 @@ func (s *Supervisor) Reconcile(ctx context.Context) ([]control.Evidence, error) 
 		observations = append(observations, evidence...)
 	}
 	return observations, nil
+}
+
+// refreshProviders measures egress and attributes the result to this node.
+func (s *Supervisor) refreshProviders(ctx context.Context) []control.Evidence {
+	if s.Providers == nil {
+		return nil
+	}
+	observations := s.Providers.Refresh(ctx)
+	for i := range observations {
+		observations[i].Source = "node-supervisor"
+		if observations[i].Observed == nil {
+			observations[i].Observed = map[string]string{}
+		}
+		// The projection keys this fact by node, and only the node knows which
+		// one it is.
+		observations[i].Observed["node"] = s.NodeID
+		s.emit(observations[i])
+	}
+	return observations
 }
 
 func (s *Supervisor) reconcileOne(ctx context.Context, entry DesiredAllocation) ([]control.Evidence, error) {
