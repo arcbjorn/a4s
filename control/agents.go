@@ -5,6 +5,14 @@ import (
 	"sort"
 )
 
+// MaxReplicasPerProposal bounds how many replicas one authorization may create.
+//
+// Each replica costs several actions, so this also keeps a proposal within the
+// kernel's action limit. More importantly it bounds blast radius: a proposal
+// that placed every replica at once would commit the whole workload to an image
+// before any of it had been observed running.
+const MaxReplicasPerProposal = 2
+
 // PlacementAgent is a deterministic reference agent. A future model-backed
 // agent implements the same interface and receives no additional authority.
 type PlacementAgent struct{}
@@ -39,6 +47,7 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 		existing[allocation.Replica] = true
 	}
 	reserved := make(map[string]Resources)
+	placed := 0
 	for replica := 0; replica < goal.Workload.Replicas; replica++ {
 		if existing[replica] {
 			continue
@@ -65,16 +74,36 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 		if pullID != "" {
 			create.DependsOn = []string{pullID}
 		}
-		proposal.Actions = append(proposal.Actions, create, Action{
+		proposal.Actions = append(proposal.Actions, create)
+
+		startDeps := []string{createID}
+		// A workload that serves a port needs its own address before it starts,
+		// so replicas on one node do not contend for a host port.
+		if goal.Workload.Port > 0 {
+			attachID := "attach-" + allocationID
+			proposal.Actions = append(proposal.Actions, Action{
+				ID: attachID, Kind: ActionAttachNetwork, Target: allocationID,
+				Workload: goal.Workload.Name, Node: node.ID, Port: goal.Workload.Port,
+				DependsOn: []string{createID},
+			})
+			startDeps = append(startDeps, attachID)
+		}
+		proposal.Actions = append(proposal.Actions, Action{
 			ID: "start-" + allocationID, Kind: ActionStartAllocation,
 			Target: allocationID, Workload: goal.Workload.Name, Node: node.ID,
-			DependsOn: []string{createID},
+			DependsOn: startDeps,
 		})
-		proposal.ExpectedEvidence = append(proposal.ExpectedEvidence, Check{Kind: "allocation_ready", Target: allocationID, Want: "true"})
+		proposal.ExpectedEvidence = append(proposal.ExpectedEvidence, Check{Kind: CheckAllocationReady, Target: allocationID, Want: "true"})
 		reserved[node.ID] = reserved[node.ID].Add(goal.Workload.Resources)
-		// One replica per proposal keeps the mutation budget small. A fresh
-		// observation and revision are required before placing the next.
-		break
+		placed++
+		// Placing every missing replica in one proposal would make the blast
+		// radius of a single authorization the whole workload. Batching keeps
+		// each authorized mutation small and forces re-observation before the
+		// next batch, which is what lets a bad image be caught after one
+		// replica rather than all of them.
+		if placed >= MaxReplicasPerProposal {
+			break
+		}
 	}
 	return proposal, nil
 }
