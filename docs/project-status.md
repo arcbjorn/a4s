@@ -69,6 +69,8 @@ contract.
 - Per-allocation network addressing, with the kernel refusing to start a
   networked workload that has no address.
 - Multi-replica placement batched to bound blast radius.
+- Service discovery derived from verified evidence, and route snapshots
+  resolving each route to the endpoints observed serving it.
 - Target leases acquired before the first mutation and released on every exit
   path, so two proposals cannot interleave on one allocation. Leases expire so
   an abandoned holder cannot block a target indefinitely.
@@ -182,11 +184,10 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
   disruption budget, and known-good rollback detection are implemented;
   applying the rollback is deliberately an operator decision.
 - Garbage collection of unreferenced images and snapshots.
-- Node-local DNS, service discovery, and nftables policy compilation. CNI
-  attachment and per-allocation addressing are implemented; cross-node service
-  routing is not.
-- A concrete gateway backend. The router applies whole route snapshots to a
-  backend interface that has no implementation yet.
+- Node-local DNS and cross-node service routing. Service discovery resolves a
+  workload to endpoints on the node that owns them; a service name does not yet
+  resolve across nodes.
+- nftables policy compilation from typed network intent.
 - Public ingress or TLS automation.
 - Volumes, snapshots, backups, or stateful ownership handoff.
 - Secret broker and runtime credential mounts.
