@@ -7,6 +7,14 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Snapshot retention and a `prune_snapshots` action. Pruning keeps the most
+  recent N snapshots and never removes the last-known-good, a backed-up
+  snapshot, or the last one standing, so a prune cannot leave a volume with no
+  recovery point.
+- Dry-run pruning that reports exactly what it would remove without touching the
+  disk, and matches the subsequent real prune.
+- Snapshot ordering on volumes, so pruning has a deterministic notion of oldest.
+
 - Node-side volume transfer: the origin ships a verified snapshot through the
   shared store, the target fetches it and proves receipt by reproducing the
   checksum, and adoption materializes the data on the target. The origin keeps
