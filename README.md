@@ -3,9 +3,15 @@
 `a4s` is a control-plane experiment for replacing K3s with agentic
 infrastructure. The name is provisional.
 
-This is infrastructure controlled by agents, not infrastructure specifically
-for running AI agents. Workloads remain ordinary OCI containers, services,
-jobs, databases, and gateways.
+This is infrastructure controlled by agents. Workloads remain ordinary OCI
+containers, services, jobs, databases, and gateways.
+
+Agent workloads are one of those kinds, not the point of the system. The word
+"agent" names two separate objects here: a **control agent** proposes typed
+plans and holds infrastructure capabilities, while an **agent workload** is
+scheduled cargo that proposes nothing and reaches the world through granted
+tools. Their authority vocabularies are deliberately disjoint. See
+[agent workloads](docs/agent-workloads.md).
 
 ## Thesis
 
@@ -57,6 +63,13 @@ infrastructure primitives.
 go test ./...
 go run ./cmd/a4s validate --file examples/web-service.json
 go run ./cmd/a4s simulate --file examples/web-service.json
+```
+
+An agent workload runs through the same loop, adding a budget reservation and a
+tool-envelope grant before it starts:
+
+```bash
+go run ./cmd/a4s simulate --file examples/agent-workload.json
 ```
 
 Expected reconciliation:
