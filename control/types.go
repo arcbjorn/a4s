@@ -249,13 +249,18 @@ const (
 )
 
 type Event struct {
-	Sequence      uint64    `json:"sequence"`
-	At            time.Time `json:"at"`
-	Type          EventType `json:"type"`
-	Actor         string    `json:"actor"`
-	GoalID        string    `json:"goal_id"`
-	ProposalID    string    `json:"proposal_id,omitempty"`
-	ActionID      string    `json:"action_id,omitempty"`
+	Sequence   uint64    `json:"sequence"`
+	At         time.Time `json:"at"`
+	Type       EventType `json:"type"`
+	Actor      string    `json:"actor"`
+	GoalID     string    `json:"goal_id"`
+	ProposalID string    `json:"proposal_id,omitempty"`
+	ActionID   string    `json:"action_id,omitempty"`
+	// Target names what the event acted on. It is recorded at dispatch, before
+	// any evidence exists, so an action that never completed can still be
+	// attributed to the allocation or route it was about.
+	Target        string    `json:"target,omitempty"`
+	Kind          string    `json:"kind,omitempty"`
 	WorldRevision uint64    `json:"world_revision"`
 	Message       string    `json:"message"`
 	Evidence      *Evidence `json:"evidence,omitempty"`
