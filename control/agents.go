@@ -77,6 +77,19 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 		proposal.Actions = append(proposal.Actions, create)
 
 		startDeps := []string{createID}
+		// Credentials must be in place before the process starts, or the
+		// workload comes up without them and fails in a way that looks like an
+		// application bug rather than a missing mount.
+		for _, ref := range goal.Workload.Secrets {
+			mountID := "mount-" + ref.Name + "-" + allocationID
+			secret := ref
+			proposal.Actions = append(proposal.Actions, Action{
+				ID: mountID, Kind: ActionMountSecret, Target: allocationID,
+				Workload: goal.Workload.Name, Node: node.ID, Secret: &secret,
+				DependsOn: []string{createID},
+			})
+			startDeps = append(startDeps, mountID)
+		}
 		// A workload that serves a port needs its own address before it starts,
 		// so replicas on one node do not contend for a host port.
 		if goal.Workload.Port > 0 {
