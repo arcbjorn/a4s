@@ -66,6 +66,10 @@ type Dispatcher struct {
 	Runtime Runtime
 	Ledger  Ledger
 	Now     func() time.Time
+	// Desired records server-authorized intent so the node can keep workloads
+	// running while the server is unreachable. Optional: without it the node
+	// stays purely reactive.
+	Desired *DesiredState
 	mu      sync.Mutex
 }
 
@@ -77,7 +81,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, signed SignedAction) (Dispatc
 	if d.Runtime == nil || d.Ledger == nil || d.Now == nil {
 		return DispatchResult{}, fmt.Errorf("dispatcher is not initialized")
 	}
-	envelope, digest, err := Verify(signed, d.Keys, d.NodeID, d.Now().UTC())
+	envelope, _, err := Verify(signed, d.Keys, d.NodeID, d.Now().UTC())
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	// Deduplicate on the work being authorized rather than on the exact
+	// envelope, so a legitimate retry is recognized while a key reused for
+	// different work is still refused.
+	digest, err := WorkDigest(envelope)
 	if err != nil {
 		return DispatchResult{}, err
 	}
@@ -92,9 +103,83 @@ func (d *Dispatcher) Dispatch(ctx context.Context, signed SignedAction) (Dispatc
 	if err != nil {
 		return DispatchResult{}, err
 	}
+	// The node stamps its own identity and observation time. A runtime adapter
+	// reports what it did; only the node knows where it happened.
+	evidence = d.attribute(evidence, envelope.Action)
+	// Record intent only after the mutation succeeded, so the node never
+	// supervises a workload the runtime failed to create.
+	if err := d.recordDesired(envelope.Action); err != nil {
+		return DispatchResult{}, err
+	}
 	result := DispatchResult{EnvelopeDigest: digest, Evidence: evidence}
 	if err := d.Ledger.Put(key, result); err != nil {
 		return DispatchResult{}, err
 	}
 	return result, nil
+}
+
+// attribute completes evidence with facts only the node can supply: which node
+// observed it, when, and the allocation details the world projection needs to
+// account for capacity.
+func (d *Dispatcher) attribute(evidence control.Evidence, action control.Action) control.Evidence {
+	if evidence.Observed == nil {
+		evidence.Observed = map[string]string{}
+	}
+	evidence.Source = "node:" + d.NodeID
+	if evidence.ObservedAt.IsZero() {
+		evidence.ObservedAt = d.Now().UTC()
+	}
+	evidence.Observed["node"] = d.NodeID
+	if action.Kind == control.ActionPullImage {
+		evidence.Observed["image"] = action.Image
+	}
+	if action.Kind == control.ActionCreateAllocation {
+		evidence.Observed["workload"] = action.Workload
+		evidence.Observed["image"] = action.Image
+		evidence.Observed["replica"] = fmt.Sprint(action.Replica)
+		evidence.Observed["cpu_millis"] = fmt.Sprint(action.Resources.CPUMillis)
+		evidence.Observed["memory_mb"] = fmt.Sprint(action.Resources.MemoryMB)
+	}
+	if action.Kind == control.ActionPublishRoute {
+		evidence.Observed["workload"] = action.Workload
+		evidence.Observed["port"] = fmt.Sprint(action.Port)
+		evidence.Observed["exposure"] = action.Exposure
+	}
+	return evidence
+}
+
+// recordDesired translates an authorized action into local supervision intent.
+// The node only ever mirrors what the server authorized; it never adds a
+// workload of its own.
+func (d *Dispatcher) recordDesired(action control.Action) error {
+	if d.Desired == nil {
+		return nil
+	}
+	switch action.Kind {
+	case control.ActionCreateAllocation:
+		return d.Desired.Record(DesiredAllocation{
+			ID: action.Target, Workload: action.Workload, Image: action.Image,
+			Resources: action.Resources, Running: false,
+			Probe: control.ProbeTarget{
+				Allocation: action.Target, Kind: probeKindFor(action.Port),
+				Port: action.Port,
+			},
+			UpdatedAt: d.Now().UTC(),
+		})
+	case control.ActionStartAllocation:
+		return d.Desired.SetRunning(action.Target, true)
+	case control.ActionStopAllocation:
+		return d.Desired.SetRunning(action.Target, false)
+	case control.ActionDeleteAllocation:
+		return d.Desired.Forget(action.Target)
+	default:
+		return nil
+	}
+}
+
+func probeKindFor(port int) string {
+	if port > 0 {
+		return control.ProbeTCP
+	}
+	return control.ProbeProcess
 }
