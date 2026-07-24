@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="470" viewBox="0 0 880 470" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrow-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a78bfa"/>
+    </marker>
+  </defs>
+
+  <!-- stage 1: inputs -->
+  <rect x="265" y="20" width="300" height="52" rx="10" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="415" y="42" text-anchor="middle" font-size="14" font-weight="600" fill="#64748b">goal + policies + observations</text>
+  <text x="415" y="60" text-anchor="middle" font-size="11.5" fill="#94a3b8">operator intent and observed world revision</text>
+
+  <path d="M 415 72 L 415 106" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- stage 2: agents -->
+  <rect x="235" y="108" width="360" height="66" rx="10" fill="none" stroke="#38bdf8" stroke-width="1.5"/>
+  <text x="415" y="132" text-anchor="middle" font-size="14" font-weight="600" fill="#0ea5e9">control agents propose</text>
+  <text x="415" y="152" text-anchor="middle" font-size="11.5" fill="#94a3b8">placement · network · rollout · storage · recovery</text>
+  <text x="415" y="167" text-anchor="middle" font-size="11" fill="#94a3b8">bounded typed plans, no ambient root</text>
+
+  <path d="M 415 174 L 415 208" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- stage 3: kernel (deterministic gate) -->
+  <rect x="215" y="210" width="400" height="72" rx="10" fill="none" stroke="#f59e0b" stroke-width="2.5"/>
+  <text x="415" y="234" text-anchor="middle" font-size="14" font-weight="700" fill="#d97706">deterministic policy kernel</text>
+  <text x="415" y="254" text-anchor="middle" font-size="11.5" fill="#94a3b8">simulate whole plan · check constraints · require approvals</text>
+  <text x="415" y="270" text-anchor="middle" font-size="11" fill="#94a3b8">rejects stale revisions — not an agent</text>
+
+  <path d="M 415 282 L 415 316" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- stage 4: capabilities -->
+  <rect x="265" y="318" width="300" height="52" rx="10" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="415" y="340" text-anchor="middle" font-size="14" font-weight="600" fill="#64748b">typed node capabilities</text>
+  <text x="415" y="358" text-anchor="middle" font-size="11.5" fill="#94a3b8">signed, node-bound envelopes · idempotency keys</text>
+
+  <path d="M 415 370 L 415 404" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- stage 5: runtime -->
+  <rect x="265" y="406" width="300" height="46" rx="10" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="415" y="434" text-anchor="middle" font-size="13.5" font-weight="600" fill="#64748b">containerd · CNI · volumes · gateway</text>
+
+  <!-- evidence feedback loop -->
+  <path d="M 565 429 L 700 429 L 700 46 L 565 46"
+        fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrow-loop)"/>
+  <text x="714" y="230" font-size="12.5" font-weight="600" fill="#8b5cf6">external</text>
+  <text x="714" y="247" font-size="12.5" font-weight="600" fill="#8b5cf6">evidence</text>
+  <text x="714" y="266" font-size="11" fill="#94a3b8">verified from</text>
+  <text x="714" y="280" font-size="11" fill="#94a3b8">fresh probes,</text>
+  <text x="714" y="294" font-size="11" fill="#94a3b8">not from the</text>
+  <text x="714" y="308" font-size="11" fill="#94a3b8">actor</text>
+
+  <!-- hash-chained event log spine -->
+  <path d="M 150 46 L 150 429" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <circle cx="150" cy="46" r="3" fill="#94a3b8"/>
+  <circle cx="150" cy="141" r="3" fill="#94a3b8"/>
+  <circle cx="150" cy="246" r="3" fill="#94a3b8"/>
+  <circle cx="150" cy="344" r="3" fill="#94a3b8"/>
+  <circle cx="150" cy="429" r="3" fill="#94a3b8"/>
+  <text x="132" y="218" text-anchor="end" font-size="12.5" font-weight="600" fill="#64748b">hash-chained</text>
+  <text x="132" y="235" text-anchor="end" font-size="12.5" font-weight="600" fill="#64748b">event log</text>
+  <text x="132" y="254" text-anchor="end" font-size="11" fill="#94a3b8">every transition</text>
+  <text x="132" y="268" text-anchor="end" font-size="11" fill="#94a3b8">appended and</text>
+  <text x="132" y="282" text-anchor="end" font-size="11" fill="#94a3b8">replayable</text>
+</svg>

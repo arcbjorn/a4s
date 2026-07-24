@@ -15,24 +15,9 @@ Specialized control agents propose bounded plans for placement, rollout,
 networking, storage, security, and recovery. A deterministic kernel—not an
 agent—checks and executes those plans.
 
-```text
-goal + policies + observations
-              |
-              v
-      control agents propose
-              |
-              v
- deterministic policy kernel
-              |
-              v
- typed node capabilities
-              |
-              v
- containerd / CNI / volumes / gateway
-              |
-              v
-        external evidence
-```
+<p align="center">
+  <img src="docs/assets/architecture.svg" alt="a4s control flow: goal, policies, and observations feed control agents that propose bounded plans; a deterministic policy kernel simulates and checks them; approved plans become typed node capabilities executed against containerd, CNI, volumes, and the gateway; external evidence flows back into observations, and every transition is appended to a hash-chained event log." width="880">
+</p>
 
 Agents never receive ambient root or shell access. They can only propose typed
 actions granted to their role. Every proposal is bound to an observed world
