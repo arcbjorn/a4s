@@ -457,6 +457,8 @@ func runNode(args []string) error {
 	cniNetwork := flags.String("cni-network", "a4s0", "CNI network name")
 	allocationSubnet := flags.String("subnet", "10.42.0.0/24", "node-local allocation subnet")
 	netnsDir := flags.String("netns-dir", "/var/run/a4s/netns", "allocation network namespace directory")
+	volumeRoot := flags.String("volume-root", "/var/lib/a4s/volumes", "directory holding durable volumes")
+	volumeState := flags.String("volume-state", "/var/lib/a4s/volume-state.jsonl", "durable volume ownership state")
 	secretDir := flags.String("secret-dir", "/var/lib/a4s/secrets", "directory of sealed secrets for this node")
 	secretRoot := flags.String("secret-root", "/run/a4s/secrets", "tmpfs directory for decrypted material")
 	gatewayAdmin := flags.String("gateway-admin", "", "Caddy admin API address (empty disables the gateway)")
@@ -515,6 +517,17 @@ func runNode(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Volume ownership is durable, so a restarted node still knows which
+	// allocation holds each volume and refuses a second writer.
+	volumes, err := a4snode.OpenVolumes(*volumeRoot, *volumeState)
+	if err != nil {
+		return err
+	}
+	defer volumes.Close()
+	runtime.VolumeMountsFor = func(allocation string) []a4snode.VolumeMountSpec {
+		return volumes.Mounts(allocation, volumeRefsFor(allocation, desired))
+	}
+
 	// Secrets require the node identity key, which is also what proves identity
 	// during enrollment. One key per node rather than two that can drift.
 	var secrets *a4snode.Secrets
@@ -584,6 +597,7 @@ func runNode(args []string) error {
 			Networks:   network,
 			Routes:     router,
 			Secrets:    secrets,
+			Volumes:    volumes,
 		},
 		Ledger:  ledger,
 		Desired: desired,
@@ -611,6 +625,16 @@ func runNode(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "a4s: connecting to %s as node %q\n", *serverAddress, *nodeID)
 	return a4snode.DialServer(ctx, "tcp", *serverAddress, *nodeID, identityKey, &dispatcher, 0)
+}
+
+// volumeRefsFor reports the volumes an allocation was authorized to mount,
+// taken from the node's record of server intent rather than invented locally.
+func volumeRefsFor(allocation string, desired *a4snode.DesiredState) []control.VolumeRef {
+	entry, ok := desired.Get(allocation)
+	if !ok {
+		return nil
+	}
+	return entry.Volumes
 }
 
 // superviseLoop periodically reconciles observed local state toward the node's
