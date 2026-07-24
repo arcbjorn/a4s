@@ -25,8 +25,11 @@ const DefaultProbeTimeout = 3 * time.Second
 type RuntimeObserver struct {
 	Runtime   *ContainerRuntime
 	Endpoints map[string]string
-	Timeout   time.Duration
-	Client    *http.Client
+	// Network resolves an allocation's CNI address when the probe target does
+	// not already carry one.
+	Network *Network
+	Timeout time.Duration
+	Client  *http.Client
 }
 
 func NewRuntimeObserver(runtime *ContainerRuntime) *RuntimeObserver {
@@ -119,8 +122,11 @@ func (o *RuntimeObserver) ObserveReadiness(target control.ProbeTarget) (bool, ma
 	}
 }
 
-// endpoint resolves where to reach an allocation. Until CNI assigns per
-// allocation addresses, the node records the mapped host endpoint at start.
+// endpoint resolves where to reach an allocation.
+//
+// The allocation's own CNI address is authoritative. Probing loopback would be
+// wrong in two ways: it cannot distinguish replicas sharing a node, and it can
+// succeed against an unrelated process that happens to hold the port.
 func (o *RuntimeObserver) endpoint(target control.ProbeTarget) (string, error) {
 	if host, ok := o.Endpoints[target.Allocation]; ok {
 		return host, nil
@@ -128,9 +134,18 @@ func (o *RuntimeObserver) endpoint(target control.ProbeTarget) (string, error) {
 	if target.Port <= 0 {
 		return "", fmt.Errorf("probe for %q has no port", target.Allocation)
 	}
-	// Without an allocation network, the workload is reachable on loopback.
-	// This is deliberately conservative and must change when CNI lands.
-	return net.JoinHostPort("127.0.0.1", strconv.Itoa(target.Port)), nil
+	if target.Address != "" {
+		return net.JoinHostPort(target.Address, strconv.Itoa(target.Port)), nil
+	}
+	if o.Network != nil {
+		attachment, err := o.Network.Attachment(context.Background(), target.Allocation)
+		if err == nil && attachment.Address != "" {
+			return net.JoinHostPort(attachment.Address, strconv.Itoa(target.Port)), nil
+		}
+	}
+	// Refusing is safer than guessing. A probe against the wrong address either
+	// reports a dead workload healthy or a healthy one dead.
+	return "", fmt.Errorf("allocation %q has no known address to probe", target.Allocation)
 }
 
 func (o *RuntimeObserver) client() *http.Client {
