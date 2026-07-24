@@ -1,6 +1,9 @@
 package control
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Executor mutates the data plane and reports what it observed. It is not the
 // source of truth for world state: the engine advances the world by projecting
@@ -174,6 +177,28 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			Kind: EvidenceVolumeAdopted, Target: action.Volume.Name,
 			Observed: map[string]string{"node": action.Node},
 		}, nil
+
+	case ActionPruneSnapshots:
+		if action.Volume == nil {
+			return Evidence{}, fmt.Errorf("prune snapshots requires a volume reference")
+		}
+		volume, ok := e.world.Volumes[action.Volume.Name]
+		if !ok {
+			return Evidence{}, fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		removable := prunableSnapshots(volume, action.Retain)
+		observed := map[string]string{
+			"removed":  strings.Join(removable, "\n"),
+			"retained": fmt.Sprintf("%d", len(volume.SnapshotOrder)-len(removable)),
+			"dry_run":  fmt.Sprintf("%t", action.DryRun),
+		}
+		if action.DryRun {
+			// A dry run reports the plan and changes nothing, which is what the
+			// roadmap requires before a real prune.
+			observed["removed"] = strings.Join(removable, "\n")
+			return Evidence{Kind: EvidenceSnapshotsPruned, Target: action.Volume.Name, Observed: observed}, nil
+		}
+		return Evidence{Kind: EvidenceSnapshotsPruned, Target: action.Volume.Name, Observed: observed}, nil
 
 	case ActionBackupSnapshot:
 		if action.Volume == nil || action.Snapshot == "" {
@@ -374,6 +399,18 @@ func simulateAction(world *World, action Action) error {
 			volume.Node = volume.Handoff.To
 			volume.Generation++
 			volume.Handoff = nil
+		}
+
+	case ActionPruneSnapshots:
+		if action.Volume == nil {
+			return fmt.Errorf("prune snapshots requires a volume reference")
+		}
+		if volume, ok := world.Volumes[action.Volume.Name]; ok && !action.DryRun {
+			for _, id := range prunableSnapshots(volume, action.Retain) {
+				delete(volume.Snapshots, id)
+				delete(volume.Backups, id)
+				volume.SnapshotOrder = removeString(volume.SnapshotOrder, id)
+			}
 		}
 
 	case ActionBackupSnapshot:
