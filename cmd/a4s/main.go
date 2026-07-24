@@ -47,6 +47,12 @@ func run(args []string) error {
 		return runServer(args[1:])
 	case "keygen":
 		return keygen(args[1:])
+	case "explain":
+		return explain(args[1:])
+	case "plan":
+		return plan(args[1:])
+	case "diagnose":
+		return diagnose(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -61,6 +67,130 @@ func run(args []string) error {
 // runServer starts the control plane against a durable event log and reports
 // the world it recovered. Recovery is the normal startup path, so the same code
 // runs whether the log is empty or holds a full history.
+// explain reconstructs why a target is in its current state from durable
+// history. It is read-only: it opens the log, walks the causal chain, and
+// mutates nothing.
+func explain(args []string) error {
+	flags := flag.NewFlagSet("explain", flag.ContinueOnError)
+	eventLog := flags.String("event-log", "", "absolute path to the durable event log")
+	target := flags.String("target", "", "allocation id or route host to explain")
+	jsonOutput := flags.Bool("json", false, "emit JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *eventLog == "" || *target == "" {
+		return fmt.Errorf("event-log and target are required")
+	}
+	events, err := readEvents(*eventLog)
+	if err != nil {
+		return err
+	}
+	explanation := control.Explain(events, *target)
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(explanation)
+	}
+	fmt.Print(explanation)
+	if !explanation.Found {
+		return fmt.Errorf("no history for %q", *target)
+	}
+	return nil
+}
+
+// plan reports what reconciliation would do without touching anything.
+func plan(args []string) error {
+	flags := flag.NewFlagSet("plan", flag.ContinueOnError)
+	file := flags.String("file", "scenario.json", "goal and observed world scenario")
+	eventLog := flags.String("event-log", "", "optional event log to rebuild the world from")
+	jsonOutput := flags.Bool("json", false, "emit JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	scenario, err := loadScenario(*file)
+	if err != nil {
+		return err
+	}
+
+	world := scenario.World
+	if *eventLog != "" {
+		// Planning against recorded history rather than a declared world shows
+		// what would happen to the cluster as it actually is.
+		store, err := eventlog.Open(*eventLog)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		projector, err := control.NewDurableProjector(scenario.World, store)
+		if err != nil {
+			return err
+		}
+		world = projector.World()
+	}
+
+	kernel := control.Kernel{Policy: control.DefaultPolicy()}
+	result := control.DryRun(kernel, world, scenario.Goal,
+		control.RolloutAgent{}, control.PlacementAgent{}, control.NetworkAgent{})
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+	fmt.Print(result)
+	return nil
+}
+
+// diagnose explains why a goal is not converging. The diagnoser reads history
+// and writes text; it holds no capability grants and proposes no actions.
+func diagnose(args []string) error {
+	flags := flag.NewFlagSet("diagnose", flag.ContinueOnError)
+	eventLog := flags.String("event-log", "", "absolute path to the durable event log")
+	goalID := flags.String("goal", "", "goal id to diagnose")
+	file := flags.String("file", "", "optional scenario supplying node inventory")
+	jsonOutput := flags.Bool("json", false, "emit JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *eventLog == "" || *goalID == "" {
+		return fmt.Errorf("event-log and goal are required")
+	}
+
+	base := control.World{}
+	if *file != "" {
+		scenario, err := loadScenario(*file)
+		if err != nil {
+			return err
+		}
+		base = scenario.World
+	}
+	store, err := eventlog.Open(*eventLog)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	projector, err := control.NewDurableProjector(base, store)
+	if err != nil {
+		return err
+	}
+	events, err := store.ReplayEvents()
+	if err != nil {
+		return err
+	}
+
+	result := control.LogDiagnoser{}.Diagnose(*goalID, events, projector.World())
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+	fmt.Print(result)
+	return nil
+}
+
+// readEvents opens an event log read-only and returns its recorded events.
+func readEvents(path string) ([]control.Event, error) {
+	store, err := eventlog.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.ReplayEvents()
+}
+
 // keygen writes an Ed25519 keypair to disk. Keys are written to files with
 // restrictive permissions and never printed, because a private key echoed to a
 // terminal ends up in scrollback and shell history.
@@ -459,5 +589,8 @@ Usage:
   a4s server --event-log /path [--file scenario.json] [--status]
              [--listen host:port --signing-key /path --node-keys /dir]
   a4s keygen --out /path
+  a4s plan --file scenario.json [--event-log /path] [--json]
+  a4s explain --event-log /path --target ID [--json]
+  a4s diagnose --event-log /path --goal ID [--file scenario.json] [--json]
   a4s version`)
 }
