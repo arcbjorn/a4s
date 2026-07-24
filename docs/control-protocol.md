@@ -221,11 +221,31 @@ A missing heartbeat is never treated as evidence that a writer stopped. Placemen
 proposes nothing for a workload whose data is unreachable rather than starting a
 second copy elsewhere.
 
-### `snapshot_volume`
+### `snapshot_volume` and `restore_snapshot`
 
 Snapshotting an attached volume is refused: a copy taken from a live writer may
 be internally inconsistent, and an operator would later trust it for restore.
-The volume must be quiesced first. No snapshot backend is implemented yet.
+The volume must be quiesced first.
+
+A snapshot is identified and checksummed. The checksum is what makes it a backup
+rather than a guess, because it is the only way a restore can tell intact data
+from rot. Snapshots are immutable: re-taking one under an existing id returns
+the original rather than silently changing what a verified id refers to.
+
+Restore rules:
+
+- Only a snapshot this cluster took and verified may be restored, so an operator
+  cannot name arbitrary content and have it written over data.
+- The volume must be detached. Restoring over a live writer would replace the
+  filesystem underneath a running process.
+- A granted `restore-volume` approval is required. Restore overwrites durable
+  data irreversibly, so like destruction it needs a separately authenticated
+  decision.
+
+The node verifies the recorded checksum before overwriting anything, then stages
+the restored copy and verifies it again before swapping it in. Restoring a
+corrupt snapshot would destroy the only remaining copy and replace it with
+something unusable, which is worse than the failure being restored from.
 
 ### `mount_secret`
 
