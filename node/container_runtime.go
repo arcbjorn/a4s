@@ -25,6 +25,10 @@ type ContainerSpec struct {
 	LogPath         string
 	NoNewPrivileges bool
 	Capabilities    []string
+	// Namespace is the CNI-created network namespace the container must join.
+	// Empty means the container keeps the runtime default, which is only
+	// appropriate for a workload that serves no port.
+	Namespace string
 }
 
 type BackendTask struct {
@@ -66,10 +70,22 @@ type BackendState struct {
 
 type ContainerRuntime struct {
 	backend ContainerBackend
+	// Namespaces resolves an allocation's network namespace. It is set when the
+	// node has a network capability, so a container joins the namespace CNI
+	// created for it rather than sharing the host network.
+	Namespaces func(string) string
 }
 
 func NewContainerRuntime(backend ContainerBackend) *ContainerRuntime {
 	return &ContainerRuntime{backend: backend}
+}
+
+// Namespace resolves the network namespace for an allocation, if one exists.
+func (r *ContainerRuntime) Namespace(allocation string) string {
+	if r == nil || r.Namespaces == nil {
+		return ""
+	}
+	return r.Namespaces(allocation)
 }
 
 func (r *ContainerRuntime) Execute(ctx context.Context, action control.Action) (control.Evidence, error) {
@@ -106,6 +122,7 @@ func (r *ContainerRuntime) Execute(ctx context.Context, action control.Action) (
 			return control.Evidence{}, fmt.Errorf("create allocation requires positive resource limits")
 		}
 		created, err := r.backend.Create(ctx, ContainerSpec{
+			Namespace:       r.Namespace(action.Target),
 			ID:              action.Target,
 			Workload:        action.Workload,
 			Image:           action.Image,
