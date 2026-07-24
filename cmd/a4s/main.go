@@ -56,6 +56,10 @@ func run(args []string) error {
 		return plan(args[1:])
 	case "diagnose":
 		return diagnose(args[1:])
+	case "approve":
+		return approve(args[1:])
+	case "history":
+		return history(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -812,5 +816,11 @@ Usage:
   a4s plan --file scenario.json [--event-log /path] [--json]
   a4s explain --event-log /path --target ID [--json]
   a4s diagnose --event-log /path --goal ID [--file scenario.json] [--json]
+             [--deterministic] [--model ID]
+  a4s approve --event-log /path --goal ID --scope SCOPE --operator NAME
+              --key /path --key-id ID [--reason TEXT] [--lifetime 1h] [--revoke]
+  a4s approve --scopes
+  a4s history --event-log /path [--goal ID] [--target ID] [--kind KIND]
+              [--since 1h] [--limit N] [--json]
   a4s version`)
 }
