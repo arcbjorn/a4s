@@ -14,6 +14,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
 
 type ContainerdConfig struct {
@@ -108,6 +109,14 @@ func (b *containerdBackend) Create(ctx context.Context, spec ContainerSpec) (boo
 		oci.WithMemoryLimit(uint64(spec.Resources.MemoryMB) * 1024 * 1024),
 		oci.WithCPUCFS(int64(spec.Resources.CPUMillis)*100, 100000),
 		oci.WithPidsLimit(256),
+	}
+	if spec.Namespace != "" {
+		// Join the namespace CNI created for this allocation. Without this the
+		// container shares the host network and replicas of one workload
+		// collide on the same port.
+		opts = append(opts, oci.WithLinuxNamespace(specs.LinuxNamespace{
+			Type: specs.NetworkNamespace, Path: spec.Namespace,
+		}))
 	}
 	if spec.NoNewPrivileges {
 		opts = append(opts, oci.WithNoNewPrivileges)
