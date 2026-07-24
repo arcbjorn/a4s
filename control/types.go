@@ -41,6 +41,10 @@ type VolumeRef struct {
 	MountPath string `json:"mount_path"`
 	// ReadOnly mounts without write access, which is safe to share.
 	ReadOnly bool `json:"read_only,omitempty"`
+	// Checksum is the recorded checksum a restore must verify against. The
+	// controller supplies it from the world; the node refuses a mismatch rather
+	// than writing unverified content over live data.
+	Checksum string `json:"checksum,omitempty"`
 }
 
 // Volume is durable storage with an owner and a home.
@@ -66,6 +70,13 @@ type Volume struct {
 	// LastSnapshot records the most recent verified snapshot, which is what
 	// makes a destructive action recoverable.
 	LastSnapshot string `json:"last_snapshot,omitempty"`
+	// Snapshots records every verified snapshot by id, with its checksum. A
+	// restore names one of these, so an operator cannot restore something this
+	// cluster never took and verified.
+	Snapshots map[string]string `json:"snapshots,omitempty"`
+	// RestoredFrom records the snapshot this volume was last restored from,
+	// which is what an operator needs to know after a recovery.
+	RestoredFrom string `json:"restored_from,omitempty"`
 }
 
 // SecretRef names secret material without carrying it.
@@ -253,6 +264,7 @@ const (
 	ActionAttachVolume     ActionKind = "attach_volume"
 	ActionDetachVolume     ActionKind = "detach_volume"
 	ActionSnapshotVolume   ActionKind = "snapshot_volume"
+	ActionRestoreSnapshot  ActionKind = "restore_snapshot"
 	ActionStartAllocation  ActionKind = "start_allocation"
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
@@ -272,6 +284,8 @@ type Action struct {
 	Exposure  string     `json:"exposure,omitempty"`
 	// Volume names the volume this action operates on.
 	Volume *VolumeRef `json:"volume,omitempty"`
+	// Snapshot names the snapshot to restore from.
+	Snapshot string `json:"snapshot,omitempty"`
 	// Secret names the reference to mount. An action carries the reference, not
 	// the material, so a proposal remains safe to log in full.
 	Secret    *SecretRef `json:"secret,omitempty"`
