@@ -49,6 +49,24 @@ release or compatibility guarantee yet.
   leakage between agents comes from shared runtime state, not a shared kernel
   namespace, so envelopes, workspaces, and credentials are per instance and a
   deleted allocation's envelope is released.
+- A durable node work queue. `Queue.Depth` drove agent scaling but nothing
+  measured it, and `HoldTask`/`ReleaseTask` were never called, so a drain always
+  observed an empty task slot and could stop an instance mid-work. Delivery now
+  lives on the node, durably, and depth is measured on the supervision tick.
+- Leased claims with bounded redelivery. An instance that dies holding a task
+  would otherwise strand it forever, since the control plane cannot redeliver
+  work whose contents it never sees. The lease is longer than a typical task
+  because reclaiming from a merely slow instance means paying twice and possibly
+  acting twice. A task that exhausts its attempts stops being delivered, stops
+  counting toward depth, and is reported as stalled.
+- `QueueBroker`, the seam between the queue and the agent lifecycle. An instance
+  may claim only if it is metered, funded, not draining, and not already holding
+  work. Authorization runs before the queue is touched, so a refused claim does
+  not consume an attempt on a task the instance was never eligible for.
+- Draining is now sticky on the node. An instance that finished its task and
+  claimed another would never drain, stalling the rollout waiting on it.
+- Deleting an allocation returns the work it held, rather than leaving a task
+  undelivered until its lease lapses.
 - Measured provider reachability. `Node.Providers` was read by the scheduler but
   never written, so in a real deployment every agent placement failed with
   "cannot reach provider". A node-side monitor now measures egress on a timer and

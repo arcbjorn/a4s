@@ -66,6 +66,10 @@ contract.
 - A composite readiness observer routing each probe kind to the capability that
   owns it, and an agent probe measuring provider reachability, remaining budget,
   and container liveness.
+- A durable node work queue with leased claims, bounded redelivery, stalled-task
+  reporting, and measured depth. Claims are gated on the instance being metered,
+  funded, not draining, and not already holding work, which is what makes a drain
+  observe real held tasks rather than an empty slot.
 - Measured provider reachability: a node-side monitor that checks egress on a
   timer, fails closed, and reports `provider.reachable` with an expiry. Node
   provider facts are measurements rather than flags, and unmeasured, unreachable,

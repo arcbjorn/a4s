@@ -288,6 +288,42 @@ arithmetic.
 A queue serves exactly one workload, so a scaling decision has an unambiguous
 subject and one workload's demand cannot scale another's replicas.
 
+### Delivery is the node's job
+
+The control plane observes depth and never sees a task's contents. Delivery
+lives on the node, durably, for the same reason desired state does: an agent
+that claimed work before a restart must not silently lose it, and enqueued work
+must not disappear because a process exited.
+
+Claims are leased rather than permanent. An instance that dies holding a task
+would otherwise strand it forever, and the control plane cannot redeliver work
+whose contents it never sees. The lease is deliberately longer than a typical
+task, because reclaiming from an instance that is merely slow produces duplicate
+execution — for an agent that means paying twice and possibly acting twice. The
+wall-clock budget is the real bound on task length; the lease is the backstop
+for a node that died.
+
+Redelivery is bounded by an attempt count. Work that fails every instance it
+touches would otherwise burn budget indefinitely. A task that exhausts its
+attempts stops being delivered, stops counting toward depth so it cannot inflate
+scaling, and is reported as stalled — a queue that silently stops draining is
+worse than one that says so.
+
+`QueueBroker` is the seam between the queue and the agent lifecycle. It enforces
+the one rule spanning both: an instance may claim only if it is metered, funded,
+not draining, and not already holding a task. That last condition matters
+because the node tracks one task slot per instance and a drain waits on it being
+empty; a second concurrent claim would make completion unobservable.
+
+Authorization happens before the queue is touched. Claiming first and validating
+after would consume an attempt on a task the instance was never eligible for,
+which for a task near its limit means losing it to a worker that could not have
+run it.
+
+Draining is sticky. An instance that finished its task and then claimed another
+would never actually drain, and the rollout waiting on it would stall behind an
+agent that keeps finding work.
+
 ## Actions, checks, and evidence
 
 New actions:
@@ -347,8 +383,9 @@ budget reserved, `grant_tools`, `start_allocation`, then independent
   bounded, and the node enforces it; no image implements it. The runtime reports
   consumption through `Agents.Spend` and passes `Agents.AuthorizeToolCall` before
   each tool call.
-- Queue storage and delivery. `Queue` is an observed object; there is no broker
-  behind it.
+- A cluster-wide queue. Delivery is node-local, so two nodes running the same
+  agent workload each serve their own tasks. Sharing one backlog needs a broker
+  the node can reach, and nothing requires it yet.
 - Per-instance credential derivation. Agents use the existing secret broker,
   which is not yet per-allocation-scoped for provider keys.
 - Agent-to-agent messaging. Deliberately absent: it would need its own authority

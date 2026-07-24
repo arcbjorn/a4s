@@ -76,6 +76,7 @@ The node package owns the host mutation trust boundary.
 | `agent.go` | Per-allocation tool envelopes, budget meters, tool-call gate, drain |
 | `probe.go` | Readiness measurement and per-kind observer routing |
 | `provider.go` | Model-provider egress measurement, caching, and expiry |
+| `queue.go` | Durable work queue, leased claims, and the agent claim gate |
 | `*_test.go` | Signature, replay, tamper, contract, and durability tests |
 
 Dependency direction:
