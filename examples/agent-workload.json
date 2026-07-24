@@ -1,0 +1,99 @@
+{
+  "goal": {
+    "api_version": "a4s.io/v1alpha1",
+    "id": "triage-agent",
+    "objective": "Keep two triage agents pulling from the intake queue, each bounded by its own budget and a read-only repository scope.",
+    "workload": {
+      "name": "triage",
+      "image": "ghcr.io/arcbjorn/triage-agent@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "replicas": 2,
+      "port": 0,
+      "resources": {
+        "cpu_millis": 200,
+        "memory_mb": 512
+      },
+      "runtime": {
+        "name": "a4s.agent/v1",
+        "provider": "anthropic",
+        "model": "claude-opus-5",
+        "queue": "intake",
+        "budget": {
+          "tokens": 200000,
+          "cost_millis": 4000,
+          "wall_seconds": 900,
+          "tool_calls": 60
+        },
+        "tools": [
+          {
+            "name": "repo.read",
+            "scope": "github.com/arcbjorn/a4s"
+          },
+          {
+            "name": "issue.read",
+            "scope": "github.com/arcbjorn/a4s"
+          }
+        ]
+      }
+    },
+    "constraints": {
+      "required_labels": {
+        "pool": "base"
+      }
+    }
+  },
+  "world": {
+    "revision": 0,
+    "queues": {
+      "intake": {
+        "name": "intake",
+        "workload": "triage",
+        "depth": 0,
+        "in_flight": 0,
+        "max_workers": 6
+      }
+    },
+    "nodes": {
+      "base": {
+        "id": "base",
+        "labels": {
+          "pool": "base",
+          "zone": "home"
+        },
+        "capacity": {
+          "cpu_millis": 4000,
+          "memory_mb": 16384
+        },
+        "used": {
+          "cpu_millis": 500,
+          "memory_mb": 2048
+        },
+        "providers": {
+          "anthropic": true
+        },
+        "budget_capacity": {
+          "tokens": 2000000,
+          "cost_millis": 40000,
+          "wall_seconds": 9000,
+          "tool_calls": 600
+        },
+        "healthy": true
+      },
+      "nova": {
+        "id": "nova",
+        "labels": {
+          "pool": "sumi",
+          "zone": "remote"
+        },
+        "capacity": {
+          "cpu_millis": 2000,
+          "memory_mb": 4096
+        },
+        "used": {
+          "cpu_millis": 200,
+          "memory_mb": 512
+        },
+        "healthy": true
+      }
+    }
+  }
+}
