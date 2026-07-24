@@ -341,6 +341,31 @@ type Approval struct {
 	Scope    string `json:"scope"`
 	IssuedBy string `json:"issued_by"`
 	Granted  bool   `json:"granted"`
+	// IssuedAt and ExpiresAt bound how long a decision stands. An approval is a
+	// human judgement about a situation, and situations change: a grant to move
+	// a volume made last month should not still authorize the move today.
+	IssuedAt  time.Time `json:"issued_at,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	// Revision is the world revision the operator saw when deciding. It is
+	// advisory rather than enforced: refusing an approval because the world
+	// moved would make approvals unusable on a live cluster, but recording what
+	// was on screen is what makes an after-the-fact review meaningful.
+	Revision uint64 `json:"revision,omitempty"`
+	// Reason is the operator's own words. It is the only field here a human
+	// writes freely, and it is what a later reviewer actually wants to read.
+	Reason string `json:"reason,omitempty"`
+}
+
+// Valid reports whether an approval authorizes anything at the given time.
+//
+// A revoked or expired grant is not an approval. Checking this at read time
+// rather than pruning expired records keeps the decision auditable: the log
+// still shows that someone approved, and that the authorization has lapsed.
+func (a *Approval) Valid(now time.Time) bool {
+	if a == nil || !a.Granted {
+		return false
+	}
+	return a.ExpiresAt.IsZero() || now.Before(a.ExpiresAt)
 }
 
 type Node struct {

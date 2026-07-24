@@ -125,9 +125,15 @@ func (w *World) normalize() {
 	}
 }
 
+// hasApproval reports whether a live operator grant covers this goal and scope.
+//
+// Expiry is checked against the world's own observation time rather than the
+// wall clock, so authorization is evaluated deterministically against the same
+// snapshot every other policy check reads.
 func hasApproval(world World, goalID, scope string) bool {
+	now := world.Now()
 	for _, approval := range world.Approvals {
-		if approval.GoalID == goalID && approval.Scope == scope && approval.Granted {
+		if approval.GoalID == goalID && approval.Scope == scope && approval.Valid(now) {
 			return true
 		}
 	}

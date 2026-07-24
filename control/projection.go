@@ -40,6 +40,12 @@ const (
 	EvidenceAllocationDrained = "allocation.drained"
 	EvidenceQueueObserved     = "queue.observed"
 	EvidenceProviderReachable = "provider.reachable"
+	// EvidenceApprovalGranted records a verified operator decision. It is the
+	// only evidence kind that grants authority rather than observing a fact,
+	// which is why it is produced solely by signature verification.
+	EvidenceApprovalGranted = "approval.granted"
+	// EvidenceApprovalRevoked withdraws a grant before its expiry.
+	EvidenceApprovalRevoked = "approval.revoked"
 	// EvidenceDiagnosisRecorded attributes an explanation to what produced it.
 	// It changes no world state: a diagnosis is a reading of history, not a
 	// fact about infrastructure, and a model must not be able to move the world
@@ -620,6 +626,45 @@ func projectInto(world *World, evidence Evidence) error {
 			ExpiresAt:  evidence.ExpiresAt,
 			Detail:     evidence.Observed["detail"],
 		}
+
+	case EvidenceApprovalGranted:
+		if evidence.Target == "" {
+			return fmt.Errorf("evidence %q must name an approval", evidence.Kind)
+		}
+		goalID := evidence.Observed["goal"]
+		scope := evidence.Observed["scope"]
+		if goalID == "" || scope == "" {
+			return fmt.Errorf("evidence %q must name a goal and scope", evidence.Kind)
+		}
+		// The scope is re-checked here rather than trusted from the event. A log
+		// is replayed on every start, and a scope the kernel does not gate on
+		// would materialize an approval that authorizes nothing while appearing
+		// in the world as though it did.
+		if _, known := ApprovalScopes[scope]; !known {
+			return fmt.Errorf("evidence %q names ungated scope %q", evidence.Kind, scope)
+		}
+		if world.Approvals == nil {
+			world.Approvals = make(map[string]*Approval)
+		}
+		world.Approvals[evidence.Target] = &Approval{
+			ID: evidence.Target, GoalID: goalID, Scope: scope,
+			IssuedBy: evidence.Observed["issued_by"], Granted: true,
+			IssuedAt: evidence.ObservedAt, ExpiresAt: evidence.ExpiresAt,
+			Revision: uint64(observedInt(evidence, "revision")),
+			Reason:   evidence.Observed["reason"],
+		}
+
+	case EvidenceApprovalRevoked:
+		approval, ok := world.Approvals[evidence.Target]
+		if !ok {
+			// Revoking an absent approval is the expected result of a replayed
+			// revocation, so the projection stays idempotent.
+			return nil
+		}
+		// The record is kept rather than deleted. An operator reviewing what
+		// happened needs to see that a grant existed and was withdrawn, not an
+		// absence that looks like it was never issued.
+		approval.Granted = false
 
 	case EvidenceDiagnosisRecorded:
 		// Deliberately projects nothing. A diagnosis explains recorded history;
