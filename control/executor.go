@@ -142,6 +142,17 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			},
 		}, nil
 
+	case ActionBackupSnapshot:
+		if action.Volume == nil || action.Snapshot == "" {
+			return Evidence{}, fmt.Errorf("backup snapshot requires a volume reference and snapshot id")
+		}
+		return Evidence{
+			Kind: EvidenceVolumeBackedUp, Target: action.Volume.Name,
+			Observed: map[string]string{
+				"snapshot": action.Snapshot, "location": "simulated",
+			},
+		}, nil
+
 	case ActionRestoreSnapshot:
 		if action.Volume == nil || action.Snapshot == "" {
 			return Evidence{}, fmt.Errorf("restore snapshot requires a volume reference and snapshot id")
@@ -302,6 +313,17 @@ func simulateAction(world *World, action Action) error {
 			}
 			volume.Snapshots["simulated"] = "simulated"
 			volume.LastSnapshot = "simulated"
+		}
+
+	case ActionBackupSnapshot:
+		if action.Volume == nil || action.Snapshot == "" {
+			return fmt.Errorf("backup snapshot requires a volume reference and snapshot id")
+		}
+		if volume, ok := world.Volumes[action.Volume.Name]; ok {
+			if volume.Backups == nil {
+				volume.Backups = make(map[string]string)
+			}
+			volume.Backups[action.Snapshot] = "simulated"
 		}
 
 	case ActionRestoreSnapshot:
