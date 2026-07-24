@@ -15,6 +15,9 @@ const (
 	EvidenceVolumeSnapshotted = "volume.snapshotted"
 	EvidenceVolumeRestored    = "volume.restored"
 	EvidenceVolumeBackedUp    = "volume.backed_up"
+	EvidenceVolumeQuiesced    = "volume.quiesced"
+	EvidenceVolumeTransferred = "volume.transferred"
+	EvidenceVolumeAdopted     = "volume.adopted"
 	EvidenceNetworkAttached   = "network.attached"
 	EvidenceNetworkDetached   = "network.detached"
 	EvidenceAllocationRunning = "allocation.running"
@@ -177,6 +180,12 @@ func projectInto(world *World, evidence Evidence) error {
 		}
 		volume.Snapshots[snapshot] = checksum
 		volume.LastSnapshot = snapshot
+		// A snapshot taken during a quiesced handoff is the one being moved.
+		if volume.Handoff != nil && volume.Handoff.Phase == HandoffQuiesced {
+			volume.Handoff.Phase = HandoffSnapshotted
+			volume.Handoff.Snapshot = snapshot
+			volume.Handoff.Checksum = checksum
+		}
 
 	case EvidenceVolumeBackedUp:
 		volume, ok := world.Volumes[evidence.Target]
@@ -200,6 +209,78 @@ func projectInto(world *World, evidence Evidence) error {
 			volume.Backups = make(map[string]string)
 		}
 		volume.Backups[snapshot] = location
+
+	case EvidenceVolumeQuiesced:
+		volume, ok := world.Volumes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
+		}
+		target := evidence.Observed["to"]
+		if target == "" {
+			return fmt.Errorf("evidence %q must observe a target node", evidence.Kind)
+		}
+		if _, known := world.Nodes[target]; !known {
+			return fmt.Errorf("evidence %q names unknown node %q", evidence.Kind, target)
+		}
+		// Quiescence means no writer holds the volume. Recording it while an
+		// allocation still owns it would let a move begin under a live process.
+		if volume.Owner != "" {
+			return fmt.Errorf("volume %q cannot be quiesced while allocation %q holds it",
+				evidence.Target, volume.Owner)
+		}
+		volume.Handoff = &VolumeHandoff{
+			From: volume.Node, To: target, Phase: HandoffQuiesced,
+		}
+
+	case EvidenceVolumeTransferred:
+		volume, ok := world.Volumes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
+		}
+		if volume.Handoff == nil {
+			return fmt.Errorf("volume %q has no handoff in progress", evidence.Target)
+		}
+		// Transfer is only meaningful once a verified snapshot exists to move.
+		if volume.Handoff.Phase != HandoffSnapshotted {
+			return fmt.Errorf("volume %q must be snapshotted before transfer, not %q",
+				evidence.Target, volume.Handoff.Phase)
+		}
+		checksum := evidence.Observed["checksum"]
+		if checksum == "" {
+			return fmt.Errorf("evidence %q must observe a checksum", evidence.Kind)
+		}
+		// The target must reproduce the checksum of the snapshot it received.
+		// Anything else means it does not hold the data it claims to.
+		if checksum != volume.Handoff.Checksum {
+			return fmt.Errorf("transfer of volume %q does not match the snapshot checksum", evidence.Target)
+		}
+		volume.Handoff.Phase = HandoffTransferred
+
+	case EvidenceVolumeAdopted:
+		volume, ok := world.Volumes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
+		}
+		if volume.Handoff == nil {
+			return fmt.Errorf("volume %q has no handoff in progress", evidence.Target)
+		}
+		// Ownership moves only after the target has proven it holds the data.
+		// Adopting earlier would point the cluster at a node that may hold
+		// nothing.
+		if volume.Handoff.Phase != HandoffTransferred {
+			return fmt.Errorf("volume %q must be transferred before adoption, not %q",
+				evidence.Target, volume.Handoff.Phase)
+		}
+		if evidence.Observed["node"] != volume.Handoff.To {
+			return fmt.Errorf("volume %q was adopted by %q, not the handoff target %q",
+				evidence.Target, evidence.Observed["node"], volume.Handoff.To)
+		}
+		// The volume now lives on the target. Its generation advances so any
+		// writer still holding the old node's view is fenced.
+		volume.Node = volume.Handoff.To
+		volume.Generation++
+		volume.Handoff.Phase = HandoffAdopted
+		volume.Handoff = nil
 
 	case EvidenceVolumeRestored:
 		volume, ok := world.Volumes[evidence.Target]
