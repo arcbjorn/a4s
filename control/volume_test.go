@@ -433,3 +433,122 @@ func TestStatefulWorkloadConverges(t *testing.T) {
 		t.Fatalf("allocation is not running: %+v", allocation)
 	}
 }
+
+// Restoring overwrites durable data irreversibly. Like destruction, it needs a
+// separately authenticated decision rather than an agent's judgement.
+func TestRestoreRequiresApproval(t *testing.T) {
+	scenario := statefulScenario(t)
+	world := statefulWorld(t, scenario.Goal)
+	world.Volumes["app-data"].Owner = ""
+	world.Volumes["app-data"].Snapshots = map[string]string{"backup-1": "abc123"}
+	world.Allocations["app-0"].Volumes = nil
+
+	ref := VolumeRef{Name: "app-data", MountPath: "/var/lib/app"}
+	proposal := Proposal{
+		ID: "p1", AgentID: "storage-agent", GoalID: scenario.Goal.ID,
+		BasedOnRevision: world.Revision,
+		Actions: []Action{{
+			ID: "restore", Kind: ActionRestoreSnapshot, Target: "app-data",
+			Workload: "app", Node: "base", Volume: &ref, Snapshot: "backup-1",
+		}},
+	}
+	kernel := Kernel{Policy: DefaultPolicy()}
+	descriptor := AgentDescriptor{ID: "storage-agent", Role: "protect and recover data"}
+
+	err := kernel.Authorize(descriptor, scenario.Goal, world, proposal)
+	if err == nil || !strings.Contains(err.Error(), "restore-volume approval") {
+		t.Fatalf("restore proceeded without approval: %v", err)
+	}
+
+	world.Approvals["restore"] = &Approval{
+		ID: "restore", GoalID: scenario.Goal.ID, Scope: "restore-volume",
+		IssuedBy: "operator:test", Granted: true,
+	}
+	if err := kernel.Authorize(descriptor, scenario.Goal, world, proposal); err != nil {
+		t.Fatalf("approved restore was refused: %v", err)
+	}
+}
+
+// Only a snapshot this cluster took and verified may be restored. An operator
+// cannot name arbitrary content and have it written over live data.
+func TestRestoreRejectsUnrecordedSnapshot(t *testing.T) {
+	scenario := statefulScenario(t)
+	world := statefulWorld(t, scenario.Goal)
+	world.Volumes["app-data"].Owner = ""
+	world.Allocations["app-0"].Volumes = nil
+	world.Approvals["restore"] = &Approval{
+		ID: "restore", GoalID: scenario.Goal.ID, Scope: "restore-volume",
+		IssuedBy: "operator:test", Granted: true,
+	}
+
+	ref := VolumeRef{Name: "app-data", MountPath: "/var/lib/app"}
+	proposal := Proposal{
+		ID: "p1", AgentID: "storage-agent", GoalID: scenario.Goal.ID,
+		BasedOnRevision: world.Revision,
+		Actions: []Action{{
+			ID: "restore", Kind: ActionRestoreSnapshot, Target: "app-data",
+			Workload: "app", Node: "base", Volume: &ref, Snapshot: "invented",
+		}},
+	}
+	err := (Kernel{Policy: DefaultPolicy()}).Authorize(
+		AgentDescriptor{ID: "storage-agent"}, scenario.Goal, world, proposal)
+	if err == nil || !strings.Contains(err.Error(), "never recorded") {
+		t.Fatalf("kernel restored a snapshot it never took: %v", err)
+	}
+}
+
+// A snapshot id recorded twice with different content means one of them is not
+// what the operator thinks it is.
+func TestConflictingSnapshotChecksumIsRefused(t *testing.T) {
+	scenario := statefulScenario(t)
+	world := statefulWorld(t, scenario.Goal)
+
+	world, err := Project(world, Evidence{
+		Kind: EvidenceVolumeSnapshotted, Target: "app-data",
+		Observed: map[string]string{"snapshot": "backup-1", "checksum": "abc123"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Project(world, Evidence{
+		Kind: EvidenceVolumeSnapshotted, Target: "app-data",
+		Observed: map[string]string{"snapshot": "backup-1", "checksum": "different"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "different checksum") {
+		t.Fatalf("conflicting snapshot contents were accepted: %v", err)
+	}
+}
+
+// A snapshot without a checksum cannot be verified at restore time, which makes
+// it a guess rather than a backup.
+func TestSnapshotEvidenceRequiresChecksum(t *testing.T) {
+	scenario := statefulScenario(t)
+	world := statefulWorld(t, scenario.Goal)
+
+	_, err := Project(world, Evidence{
+		Kind: EvidenceVolumeSnapshotted, Target: "app-data",
+		Observed: map[string]string{"snapshot": "backup-1"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "id and checksum") {
+		t.Fatalf("a snapshot without a checksum was recorded: %v", err)
+	}
+}
+
+// The storage agent may protect and recover data but may not place or start
+// workloads. Backup authority and execution authority stay separate.
+func TestStorageAgentCannotStartWorkloads(t *testing.T) {
+	grants := DefaultPolicy().Grants["storage-agent"]
+	for _, forbidden := range []ActionKind{
+		ActionCreateAllocation, ActionStartAllocation, ActionDeleteAllocation,
+		ActionAttachVolume, ActionDetachVolume,
+	} {
+		if grants[forbidden] {
+			t.Errorf("storage agent was granted %s", forbidden)
+		}
+	}
+	for _, required := range []ActionKind{ActionSnapshotVolume, ActionRestoreSnapshot} {
+		if !grants[required] {
+			t.Errorf("storage agent is missing %s", required)
+		}
+	}
+}
