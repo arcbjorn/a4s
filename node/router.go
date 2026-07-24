@@ -110,6 +110,7 @@ type CompositeRuntime struct {
 	Secrets    *Secrets
 	Volumes    *Volumes
 	Databases  *DatabaseManager
+	Agents     *Agents
 }
 
 func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (control.Evidence, error) {
@@ -144,6 +145,11 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 			return control.Evidence{}, fmt.Errorf("node has no database capability")
 		}
 		return c.Databases.Execute(ctx, action)
+	case control.ActionGrantTools, control.ActionDrainAllocation:
+		if c.Agents == nil {
+			return control.Evidence{}, fmt.Errorf("node has no agent capability")
+		}
+		return c.Agents.Execute(ctx, action)
 	case control.ActionDeleteAllocation:
 		if c.Containers == nil {
 			return control.Evidence{}, fmt.Errorf("node has no container capability")
@@ -165,6 +171,12 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 			if releaseErr := c.Secrets.Release(action.Target); releaseErr != nil {
 				return control.Evidence{}, releaseErr
 			}
+		}
+		// A deleted agent must not leave its tool envelope behind. A later
+		// allocation reusing the identifier would otherwise inherit capabilities
+		// nobody granted it.
+		if c.Agents != nil {
+			c.Agents.Release(action.Target)
 		}
 		return evidence, nil
 	default:
