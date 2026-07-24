@@ -8,6 +8,7 @@ import "fmt"
 const (
 	EvidenceImagePresent      = "image.present"
 	EvidenceAllocationCreated = "allocation.created"
+	EvidenceSecretMounted     = "secret.mounted"
 	EvidenceNetworkAttached   = "network.attached"
 	EvidenceNetworkDetached   = "network.detached"
 	EvidenceAllocationRunning = "allocation.running"
@@ -80,6 +81,23 @@ func projectInto(world *World, evidence Evidence) error {
 			Phase: AllocationCreated,
 		}
 		node.Used = node.Used.Add(resources)
+
+	case EvidenceSecretMounted:
+		allocation, ok := world.Allocations[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, evidence.Target)
+		}
+		name := evidence.Observed["secret"]
+		version := evidence.Observed["version"]
+		if name == "" || version == "" {
+			return fmt.Errorf("evidence %q must observe a secret name and version", evidence.Kind)
+		}
+		if allocation.Secrets == nil {
+			allocation.Secrets = make(map[string]string)
+		}
+		// Only the version is recorded. The projection is serialized into the
+		// durable log, so anything stored here is stored forever.
+		allocation.Secrets[name] = version
 
 	case EvidenceNetworkAttached:
 		allocation, ok := world.Allocations[evidence.Target]
