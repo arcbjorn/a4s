@@ -178,6 +178,20 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			Observed: map[string]string{"node": action.Node},
 		}, nil
 
+	case ActionVerifyBackup:
+		if action.Volume == nil || action.Snapshot == "" {
+			return Evidence{}, fmt.Errorf("verify backup requires a volume reference and snapshot id")
+		}
+		if _, ok := e.world.Volumes[action.Volume.Name]; !ok {
+			return Evidence{}, fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		// The in-memory data plane has no bytes to restore, so it reports the
+		// snapshot as verified to exercise the control path.
+		return Evidence{
+			Kind: EvidenceBackupVerified, Target: action.Volume.Name,
+			Observed: map[string]string{"snapshot": action.Snapshot, "verified": "true"},
+		}, nil
+
 	case ActionPruneSnapshots:
 		if action.Volume == nil {
 			return Evidence{}, fmt.Errorf("prune snapshots requires a volume reference")
@@ -400,6 +414,12 @@ func simulateAction(world *World, action Action) error {
 			volume.Generation++
 			volume.Handoff = nil
 		}
+
+	case ActionVerifyBackup:
+		if action.Volume == nil || action.Snapshot == "" {
+			return fmt.Errorf("verify backup requires a volume reference and snapshot id")
+		}
+		// Verification never mutates the volume, so simulation does nothing.
 
 	case ActionPruneSnapshots:
 		if action.Volume == nil {
