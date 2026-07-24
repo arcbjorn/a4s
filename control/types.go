@@ -75,6 +75,10 @@ type World struct {
 	Allocations map[string]*Allocation `json:"allocations,omitempty"`
 	Routes      map[string]*Route      `json:"routes,omitempty"`
 	Approvals   map[string]*Approval   `json:"approvals,omitempty"`
+	// KnownGood records, per workload, the last image digest observed serving.
+	// A rollout can only roll back to a version this cluster actually saw
+	// working, never to one that merely looks older.
+	KnownGood map[string]string `json:"known_good,omitempty"`
 }
 
 // Now returns the snapshot's evaluation time, falling back to the wall clock
