@@ -41,8 +41,8 @@ func (s *Scenario) NormalizeAndValidate() error {
 	if w.Privileged {
 		return fmt.Errorf("privileged workloads are outside the v1alpha1 safety policy")
 	}
-	if w.Stateful {
-		return fmt.Errorf("stateful workloads require the future volume ownership protocol")
+	if err := validateVolumes(w); err != nil {
+		return err
 	}
 	if err := validateSecrets(w.Secrets); err != nil {
 		return err
@@ -82,6 +82,9 @@ func (s *Scenario) NormalizeAndValidate() error {
 func (w *World) normalize() {
 	if w.Nodes == nil {
 		w.Nodes = make(map[string]*Node)
+	}
+	if w.Volumes == nil {
+		w.Volumes = make(map[string]*Volume)
 	}
 	if w.Allocations == nil {
 		w.Allocations = make(map[string]*Allocation)
@@ -155,6 +158,45 @@ func validateSecrets(refs []SecretRef) error {
 		}
 		if seenPaths[ref.MountPath] {
 			return fmt.Errorf("two secrets share mount path %q", ref.MountPath)
+		}
+		seenNames[ref.Name] = true
+		seenPaths[ref.MountPath] = true
+	}
+	return nil
+}
+
+// validateVolumes enforces what a stateful workload may declare.
+//
+// A workload with volumes is single-writer by construction: more than one
+// replica writing the same local volume is data corruption, not a scaling
+// strategy. Refusing it here is far cheaper than detecting it later.
+func validateVolumes(w WorkloadSpec) error {
+	if len(w.Volumes) == 0 {
+		if w.Stateful {
+			return fmt.Errorf("a stateful workload must declare its volumes")
+		}
+		return nil
+	}
+	if w.Replicas != 1 {
+		return fmt.Errorf("a workload with volumes must have exactly one replica, not %d", w.Replicas)
+	}
+	seenNames := make(map[string]bool, len(w.Volumes))
+	seenPaths := make(map[string]bool, len(w.Volumes))
+	for _, ref := range w.Volumes {
+		if !namePattern.MatchString(ref.Name) {
+			return fmt.Errorf("volume name %q must be lowercase DNS-style text", ref.Name)
+		}
+		if !strings.HasPrefix(ref.MountPath, "/") {
+			return fmt.Errorf("volume %q mount path must be absolute", ref.Name)
+		}
+		if strings.Contains(ref.MountPath, "..") {
+			return fmt.Errorf("volume %q mount path must not contain %q", ref.Name, "..")
+		}
+		if seenNames[ref.Name] {
+			return fmt.Errorf("volume %q is referenced twice", ref.Name)
+		}
+		if seenPaths[ref.MountPath] {
+			return fmt.Errorf("two volumes share mount path %q", ref.MountPath)
 		}
 		seenNames[ref.Name] = true
 		seenPaths[ref.MountPath] = true
