@@ -7,6 +7,19 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Node enrollment: a challenge-response handshake in which a node proves
+  possession of its enrolled Ed25519 key before the server issues any
+  capability. Refusals are generic on the wire so node identities cannot be
+  enumerated, while the server log records the real cause.
+- Node-facing TCP listener, connection registry, and `RegistryExecutor` that
+  routes each capability to the node an action names.
+- `a4s keygen` for generating Ed25519 keypairs with restrictive permissions,
+  and `a4s server --listen` / `a4s node --server` for real network operation.
+- Known-good image tracking recorded from readiness evidence, so a rollback
+  target is always a version the cluster actually observed serving.
+- `RollbackRequired`, raised when a replacement is observed failing. The goal
+  blocks and names the known-good digest rather than an agent silently running
+  a version the operator did not request.
 - Target leases (`control.LeaseManager`) enforced before the first mutation, so
   two proposals built against the same revision cannot interleave on one
   allocation. Leases expire, so an abandoned holder does not block a target.
@@ -17,7 +30,6 @@ release or compatibility guarantee yet.
   budget by proposing the stop anyway.
 - Long-running server package and `a4s server` command holding durable history,
   a projection rebuilt from it on every start, and goal admission.
-
 - `stop_allocation` and `delete_allocation` actions with kill deadline,
   snapshot cleanup, and capacity release.
 - Real process, TCP, and HTTP readiness probes (`node.RuntimeObserver`).
@@ -35,8 +47,7 @@ release or compatibility guarantee yet.
   restart recovery, node survival during an outage, replay after node restart,
   and failed readiness blocking a goal.
 - Pure, idempotent world projection from evidence (`control.Project`).
-- `Prober` interface and `OptimisticProber` stand-in separating readiness
-  observation from action execution.
+- `Prober` interface separating readiness observation from action execution.
 - `observation.recorded` event for independently produced probe evidence.
 - Per-message node dispatch responses.
 
@@ -78,7 +89,7 @@ release or compatibility guarantee yet.
 
 ### Known limitations
 
-- No live server or controller-to-node transport.
+- No live server or controller-to-node transport at the time of this release.
 - Linux adapter has cross-built but not run against a live containerd in this
   project history.
 - Networking, storage, secrets, probes, rollback, and complete lifecycle are
