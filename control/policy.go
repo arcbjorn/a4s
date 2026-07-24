@@ -41,6 +41,7 @@ func DefaultPolicy() Policy {
 			// in separate capability sets.
 			"storage-agent": {
 				ActionSnapshotVolume:  true,
+				ActionDatabaseBackup:  true,
 				ActionBackupSnapshot:  true,
 				ActionRestoreSnapshot: true,
 				ActionQuiesceVolume:   true,
@@ -250,6 +251,14 @@ func validateAction(goal Goal, world World, action Action) error {
 		if !ok {
 			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
 		}
+		// A raw filesystem snapshot of a running database is inconsistent: its
+		// files change under the copy, and a restore of it may not start. A
+		// database must be backed up with database_backup instead.
+		if goal.Workload.Engine != "" {
+			return fmt.Errorf(
+				"volume %q backs a %s database; use database_backup for a consistent copy",
+				action.Volume.Name, goal.Workload.Engine)
+		}
 		// A snapshot taken from a live writer may be internally inconsistent,
 		// and an operator would later trust it for restore.
 		if volume.Owner != "" {
@@ -323,6 +332,27 @@ func validateAction(goal Goal, world World, action Action) error {
 		if action.Node != volume.Handoff.To {
 			return fmt.Errorf("adoption node %q is not the handoff target %q",
 				action.Node, volume.Handoff.To)
+		}
+
+	case ActionDatabaseBackup:
+		if action.Volume == nil {
+			return fmt.Errorf("database backup requires a volume reference")
+		}
+		if action.Snapshot == "" {
+			return fmt.Errorf("database backup requires a backup label")
+		}
+		if goal.Workload.Engine == "" {
+			return fmt.Errorf("database backup is only for database workloads")
+		}
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		// Unlike a filesystem snapshot, a database backup runs against the live
+		// database. The engine produces a consistent copy while serving, so it
+		// must be attached and running, not detached.
+		if volume.Owner == "" {
+			return fmt.Errorf("database volume %q must be attached to back it up", action.Volume.Name)
 		}
 
 	case ActionVerifyBackup:
