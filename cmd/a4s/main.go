@@ -19,6 +19,7 @@ import (
 	"github.com/arcbjorn/a4s/control"
 	"github.com/arcbjorn/a4s/eventlog"
 	a4snode "github.com/arcbjorn/a4s/node"
+	"github.com/arcbjorn/a4s/reason"
 	"github.com/arcbjorn/a4s/server"
 )
 
@@ -146,6 +147,12 @@ func diagnose(args []string) error {
 	goalID := flags.String("goal", "", "goal id to diagnose")
 	file := flags.String("file", "", "optional scenario supplying node inventory")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
+	// Deterministic mode is an explicit escape hatch rather than the default,
+	// so an operator debugging an explanation can remove the model from the
+	// picture without unsetting credentials.
+	deterministic := flags.Bool("deterministic", false,
+		"explain without consulting a model, even if one is configured")
+	model := flags.String("model", reason.DefaultModel, "model to consult")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -175,11 +182,41 @@ func diagnose(args []string) error {
 		return err
 	}
 
-	result := control.LogDiagnoser{}.Diagnose(*goalID, events, projector.World())
-	if *jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(result)
+	world := projector.World()
+	if *deterministic {
+		result := control.LogDiagnoser{}.Diagnose(*goalID, events, world)
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(result)
+		}
+		fmt.Print(result)
+		return nil
 	}
-	fmt.Print(result)
+
+	// The goal supplies the objective and workload shape a diagnosis reasons
+	// over. Without a scenario there is still a useful explanation to give, so
+	// an id-only goal is enough rather than an error.
+	goal := control.Goal{ID: *goalID}
+	if *file != "" {
+		scenario, err := loadScenario(*file)
+		if err != nil {
+			return err
+		}
+		if scenario.Goal.ID == *goalID {
+			goal = scenario.Goal
+		}
+	}
+
+	diagnoser := reason.New(reason.NewAnthropic(), *model)
+	audited := diagnoser.ExplainAudited(context.Background(), goal, world, events)
+
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(audited)
+	}
+	fmt.Print(audited.Diagnosis)
+	// Provenance is printed rather than optional: an explanation whose origin
+	// is unknown cannot be audited, and a thin answer is only explicable once
+	// an operator can see it came from a fallback.
+	fmt.Printf("\nsource: %s\n", audited.Provenance)
 	return nil
 }
 
