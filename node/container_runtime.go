@@ -4,9 +4,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/arcbjorn/a4s/control"
 )
+
+// DefaultKillDeadline bounds how long a task may take to exit after being
+// signalled before it is killed.
+const DefaultKillDeadline = 30 * time.Second
 
 // ContainerSpec is the small, runtime-neutral contract between the a4s node
 // daemon and a concrete container runtime. It intentionally exposes less
@@ -31,7 +36,32 @@ type ContainerBackend interface {
 	Pull(context.Context, string) (string, error)
 	Create(context.Context, ContainerSpec) (bool, error)
 	Start(context.Context, string, string) (BackendTask, error)
+	// Stop signals the task and waits up to the kill deadline before killing it.
+	// It reports the observed exit code and whether the task was already absent.
+	Stop(context.Context, string, time.Duration) (BackendStop, error)
+	// Delete removes the container and its snapshot. It must succeed when the
+	// container is already absent so a replayed delete stays idempotent.
+	Delete(context.Context, string) (bool, error)
+	// Inspect reports observed runtime state, which the node uses to detect
+	// crashed tasks and orphans without trusting its own prior beliefs.
+	Inspect(context.Context, string) (BackendState, error)
 	Close() error
+}
+
+// BackendStop is the observed result of stopping a task.
+type BackendStop struct {
+	ExitCode    uint32
+	AlreadyGone bool
+	Killed      bool
+}
+
+// BackendState is observed container state, used for readiness probing,
+// crash detection, and orphan discovery.
+type BackendState struct {
+	Exists   bool
+	Running  bool
+	PID      uint32
+	ExitCode uint32
 }
 
 type ContainerRuntime struct {
@@ -114,9 +144,51 @@ func (r *ContainerRuntime) Execute(ctx context.Context, action control.Action) (
 			},
 		}, nil
 
+	case control.ActionStopAllocation:
+		if action.Target == "" {
+			return control.Evidence{}, fmt.Errorf("stop allocation requires target")
+		}
+		stopped, err := r.backend.Stop(ctx, action.Target, DefaultKillDeadline)
+		if err != nil {
+			return control.Evidence{}, fmt.Errorf("stop allocation %q: %w", action.Target, err)
+		}
+		return control.Evidence{
+			Kind:   control.EvidenceAllocationStopped,
+			Target: action.Target,
+			Observed: map[string]string{
+				"exit_code":    fmt.Sprintf("%d", stopped.ExitCode),
+				"already_gone": fmt.Sprintf("%t", stopped.AlreadyGone),
+				"killed":       fmt.Sprintf("%t", stopped.Killed),
+			},
+		}, nil
+
+	case control.ActionDeleteAllocation:
+		if action.Target == "" {
+			return control.Evidence{}, fmt.Errorf("delete allocation requires target")
+		}
+		deleted, err := r.backend.Delete(ctx, action.Target)
+		if err != nil {
+			return control.Evidence{}, fmt.Errorf("delete allocation %q: %w", action.Target, err)
+		}
+		return control.Evidence{
+			Kind:   control.EvidenceAllocationDeleted,
+			Target: action.Target,
+			Observed: map[string]string{
+				"deleted": fmt.Sprintf("%t", deleted),
+			},
+		}, nil
+
 	default:
 		return control.Evidence{}, fmt.Errorf("container runtime does not support action kind %q", action.Kind)
 	}
+}
+
+// Inspect exposes observed container state for probing and reconciliation.
+func (r *ContainerRuntime) Inspect(ctx context.Context, id string) (BackendState, error) {
+	if r == nil || r.backend == nil {
+		return BackendState{}, fmt.Errorf("container runtime is not initialized")
+	}
+	return r.backend.Inspect(ctx, id)
 }
 
 func (r *ContainerRuntime) Close() error {
