@@ -247,6 +247,26 @@ the restored copy and verifies it again before swapping it in. Restoring a
 corrupt snapshot would destroy the only remaining copy and replace it with
 something unusable, which is worse than the failure being restored from.
 
+### `verify_backup`
+
+A backup nobody has restored is a guess. `verify_backup` proves a snapshot is
+recoverable by restoring it into scratch space, checksumming the result, and
+discarding it.
+
+It never touches the live volume, so it is safe to run on a schedule against a
+volume in active use. A restore test that could damage the data it protects
+would be worse than no test. Verification needs no approval, because it changes
+nothing.
+
+It sources the local snapshot when present and the off-host backup otherwise,
+covering whichever copy a real recovery would use. A failure is evidence too: it
+records the backup as not verified, with a reason, which is exactly what an
+operator needs before depending on it. A success records when the backup was
+proven recoverable.
+
+The storage agent proposes re-verification for the volume whose last check is
+most overdue, one at a time. `StaleBackups` reports which volumes are due.
+
 ### `prune_snapshots`
 
 Snapshots accumulate without bound, and a full disk on a volume node is itself a
@@ -447,7 +467,7 @@ gateway refuses the new one. No concrete gateway backend is implemented yet.
 | `placement-agent` | `pull_image`, `create_allocation`, `create_volume`, `attach_volume`, `mount_secret`, `attach_network`, `start_allocation` |
 | `network-agent` | `publish_route` |
 | `rollout-agent` | `stop_allocation`, `delete_allocation`, `detach_volume` |
-| `storage-agent` | `snapshot_volume`, `backup_snapshot`, `restore_snapshot`, `quiesce_volume`, `transfer_volume`, `adopt_volume`, `prune_snapshots` |
+| `storage-agent` | `snapshot_volume`, `backup_snapshot`, `restore_snapshot`, `quiesce_volume`, `transfer_volume`, `adopt_volume`, `prune_snapshots`, `verify_backup` |
 
 An agent cannot acquire another action by returning it in its descriptor or
 proposal.
@@ -525,6 +545,7 @@ Implemented evidence kinds:
 | `volume.transferred` | Volumes | The target proved it holds the snapshot |
 | `volume.adopted` | Volumes | Ownership moved and the generation advanced |
 | `volume.snapshots_pruned` | Volumes | Records which snapshots were removed |
+| `volume.backup_verified` | Volumes | Records whether a backup was proven recoverable |
 | `secret.mounted` | Secrets | Records the mounted secret version, never the material |
 | `network.attached` | Network | Records the allocation's own address |
 | `network.detached` | Network | Clears the address on teardown |
