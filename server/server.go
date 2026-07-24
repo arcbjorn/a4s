@@ -151,6 +151,44 @@ func (s *Server) History() []eventlog.Record {
 	return s.log.Records()
 }
 
+// Events returns the recorded control events in order.
+func (s *Server) Events() []control.Event {
+	records := s.History()
+	events := make([]control.Event, 0, len(records))
+	for _, record := range records {
+		events = append(events, record.Event)
+	}
+	return events
+}
+
+// Explain reconstructs why a target is in its current state from durable
+// history. It reads the log and mutates nothing.
+func (s *Server) Explain(target string) control.Explanation {
+	return control.Explain(s.Events(), target)
+}
+
+// Diagnose explains why a goal is not converging. The diagnoser holds no
+// capability grants, so this is safe to run at any time.
+func (s *Server) Diagnose(goalID string, diagnoser control.Diagnoser) control.Diagnosis {
+	if diagnoser == nil {
+		diagnoser = control.LogDiagnoser{}
+	}
+	return diagnoser.Diagnose(goalID, s.Events(), s.World())
+}
+
+// Plan reports what reconciliation would do to the current world without
+// touching anything.
+func (s *Server) Plan(goalID string) (control.Plan, error) {
+	s.mu.Lock()
+	goal, ok := s.goals[goalID]
+	s.mu.Unlock()
+	if !ok {
+		return control.Plan{}, fmt.Errorf("goal %q was never accepted", goalID)
+	}
+	kernel := control.Kernel{Policy: control.DefaultPolicy()}
+	return control.DryRun(kernel, s.projector.World(), goal, s.agents...), nil
+}
+
 // Status summarizes the server for an operator.
 type Status struct {
 	Revision    uint64    `json:"revision"`
