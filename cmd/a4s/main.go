@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -56,6 +55,8 @@ func runNode(args []string) error {
 	keyID := flags.String("key-id", "", "trusted server signing key id")
 	publicKeyPath := flags.String("public-key", "", "path to base64 Ed25519 public key")
 	ledgerPath := flags.String("ledger", "/var/lib/a4s/node-ledger.jsonl", "durable idempotency ledger")
+	desiredPath := flags.String("desired-state", "/var/lib/a4s/desired-state.jsonl", "durable desired allocation state")
+	superviseInterval := flags.Duration("supervise-interval", 10*time.Second, "local reconciliation interval (0 disables)")
 	containerdAddress := flags.String("containerd", "/run/containerd/containerd.sock", "containerd socket")
 	containerdNamespace := flags.String("namespace", "a4s", "containerd namespace")
 	snapshotter := flags.String("snapshotter", "", "containerd snapshotter override")
@@ -87,46 +88,50 @@ func runNode(args []string) error {
 		return err
 	}
 	defer ledger.Close()
+	desired, err := a4snode.OpenDesiredState(*desiredPath)
+	if err != nil {
+		return err
+	}
 	dispatcher := a4snode.Dispatcher{
 		NodeID:  *nodeID,
 		Keys:    map[string]ed25519.PublicKey{*keyID: publicKey},
 		Runtime: runtime,
 		Ledger:  ledger,
+		Desired: desired,
 		Now:     time.Now,
 	}
 
-	decoder := json.NewDecoder(os.Stdin)
-	decoder.DisallowUnknownFields()
-	encoder := json.NewEncoder(os.Stdout)
+	// Supervision runs alongside the action stream so a crashed workload is
+	// restarted even while the server is unreachable.
+	supervisor := a4snode.NewSupervisor(runtime, desired)
+	supervisorCtx, stopSupervisor := context.WithCancel(ctx)
+	defer stopSupervisor()
+	go superviseLoop(supervisorCtx, supervisor, *superviseInterval)
+
+	return a4snode.Serve(ctx, &dispatcher, os.Stdin, os.Stdout)
+}
+
+// superviseLoop periodically reconciles observed local state toward the node's
+// last server-authorized desired state.
+func superviseLoop(ctx context.Context, supervisor *a4snode.Supervisor, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
-		var signed a4snode.SignedAction
-		if err := decoder.Decode(&signed); err != nil {
-			if err == io.EOF {
-				return nil
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			observations, err := supervisor.Reconcile(ctx)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "a4s: supervise:", err)
+				continue
 			}
-			// A malformed frame desynchronizes the stream, so the reader cannot
-			// safely continue. Every other failure is reported per message.
-			return fmt.Errorf("decode signed action: %w", err)
-		}
-		// A rejected or failed action must not terminate the node. The daemon
-		// reports the failure and stays available for subsequent envelopes.
-		result, err := dispatcher.Dispatch(ctx, signed)
-		if err != nil {
-			response := a4snode.DispatchResponse{
-				EnvelopeID: signed.Envelope().ID,
-				Error:      err.Error(),
+			for _, evidence := range observations {
+				fmt.Fprintf(os.Stderr, "a4s: supervise %s %s %v\n", evidence.Kind, evidence.Target, evidence.Observed)
 			}
-			if encodeErr := encoder.Encode(response); encodeErr != nil {
-				return fmt.Errorf("encode dispatch error: %w", encodeErr)
-			}
-			continue
-		}
-		response := a4snode.DispatchResponse{
-			EnvelopeID: signed.Envelope().ID,
-			Result:     &result,
-		}
-		if err := encoder.Encode(response); err != nil {
-			return fmt.Errorf("encode dispatch result: %w", err)
 		}
 	}
 }
