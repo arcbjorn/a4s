@@ -29,6 +29,9 @@ type File struct {
 	path    string
 	handle  *os.File
 	records []Record
+	// truncated records the line number of an incomplete trailing record
+	// removed at open time. Zero means the log was intact.
+	truncated int
 }
 
 func Open(path string) (*File, error) {
@@ -139,6 +142,78 @@ func (f *File) ReplayEvidence() ([]control.Evidence, error) {
 	return evidence, nil
 }
 
+// replay rebuilds the in-memory records from the file, distinguishing a crash
+// artifact from corruption.
+//
+// A record is appended and fsynced as one write, but a machine that loses power
+// mid-write can still leave a partial final line. That line is not evidence of
+// tampering: it is the write that never completed. Refusing to open the log
+// because of it would mean a single badly-timed power loss prevents the control
+// plane from starting at all, with every prior record intact and verifiable.
+//
+// So an unreadable *trailing* line is truncated away, while anything wrong
+// earlier in the file stays fatal. The distinction matters: a corrupt record
+// with valid records after it cannot be explained by an interrupted append, and
+// silently dropping it would discard history the chain says exists.
+// truncateTrailing removes an undecodable final line, reporting whether it did.
+//
+// It only acts when the bad line is genuinely last. A line that fails to decode
+// with more data after it was not interrupted by a crash — something rewrote
+// the middle of an append-only file — and that must surface as corruption
+// rather than be quietly discarded along with everything after it.
+func (f *File) truncateTrailing(scanner *bufio.Scanner, validBytes int64, line int) (bool, error) {
+	if scanner.Scan() {
+		return false, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return false, nil
+	}
+	if err := f.handle.Truncate(validBytes); err != nil {
+		return true, fmt.Errorf("truncate incomplete event log record: %w", err)
+	}
+	if err := f.handle.Sync(); err != nil {
+		return true, fmt.Errorf("sync truncated event log: %w", err)
+	}
+	f.truncated = line
+	return true, nil
+}
+
+// dropTrailingBytes removes bytes after the last complete record.
+//
+// This catches the shapes the scanner treats as a clean end of file: a trailing
+// blank line, or a final line with no newline that happened to be empty. They
+// come from the same interrupted-write cause as a partial record.
+func (f *File) dropTrailingBytes(validBytes int64) error {
+	info, err := f.handle.Stat()
+	if err != nil {
+		return fmt.Errorf("stat event log: %w", err)
+	}
+	if info.Size() == validBytes {
+		return nil
+	}
+	if err := f.handle.Truncate(validBytes); err != nil {
+		return fmt.Errorf("truncate incomplete event log record: %w", err)
+	}
+	if err := f.handle.Sync(); err != nil {
+		return fmt.Errorf("sync truncated event log: %w", err)
+	}
+	if f.truncated == 0 {
+		f.truncated = len(f.records) + 1
+	}
+	return nil
+}
+
+// Truncated reports the line number of an incomplete trailing record removed at
+// open time, or zero if the log was intact.
+//
+// An operator needs to know this happened: the control plane recovered, but one
+// action may have been dispatched without its outcome ever being recorded.
+func (f *File) Truncated() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.truncated
+}
+
 func (f *File) replay() error {
 	if _, err := f.handle.Seek(0, 0); err != nil {
 		return fmt.Errorf("seek event log: %w", err)
@@ -147,10 +222,21 @@ func (f *File) replay() error {
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	previous := ""
 	line := 0
+	// validBytes is where the last complete, verified record ends. A trailing
+	// partial write is truncated back to here.
+	validBytes := int64(0)
 	for scanner.Scan() {
 		line++
+		raw := scanner.Bytes()
+		// The scanner strips the newline, so account for it when measuring how
+		// much of the file is known good.
+		lineBytes := int64(len(raw)) + 1
+
 		var record Record
-		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+		if err := json.Unmarshal(raw, &record); err != nil {
+			if partial, truncErr := f.truncateTrailing(scanner, validBytes, line); partial {
+				return truncErr
+			}
 			return fmt.Errorf("decode event log line %d: %w", line, err)
 		}
 		if record.Sequence != uint64(line) || record.Event.Sequence != record.Sequence {
@@ -168,9 +254,16 @@ func (f *File) replay() error {
 		}
 		f.records = append(f.records, record)
 		previous = record.Hash
+		validBytes += lineBytes
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read event log: %w", err)
+	}
+	// A trailing newline with nothing after it leaves the scanner having read a
+	// complete final record, so validBytes already covers the whole file. A
+	// mismatch here means trailing bytes the loop never turned into a record.
+	if err := f.dropTrailingBytes(validBytes); err != nil {
+		return err
 	}
 	_, err := f.handle.Seek(0, 2)
 	return err
