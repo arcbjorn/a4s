@@ -109,6 +109,7 @@ type CompositeRuntime struct {
 	Networks   *Network
 	Secrets    *Secrets
 	Volumes    *Volumes
+	Databases  *DatabaseManager
 }
 
 func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (control.Evidence, error) {
@@ -129,11 +130,20 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 		}
 		return c.Secrets.Execute(ctx, action)
 	case control.ActionCreateVolume, control.ActionAttachVolume,
-		control.ActionDetachVolume, control.ActionSnapshotVolume:
+		control.ActionDetachVolume, control.ActionSnapshotVolume,
+		control.ActionRestoreSnapshot, control.ActionBackupSnapshot,
+		control.ActionQuiesceVolume, control.ActionTransferVolume,
+		control.ActionAdoptVolume, control.ActionPruneSnapshots,
+		control.ActionVerifyBackup:
 		if c.Volumes == nil {
 			return control.Evidence{}, fmt.Errorf("node has no volume capability")
 		}
 		return c.Volumes.Execute(ctx, action)
+	case control.ActionDatabaseBackup:
+		if c.Databases == nil {
+			return control.Evidence{}, fmt.Errorf("node has no database capability")
+		}
+		return c.Databases.Execute(ctx, action)
 	case control.ActionDeleteAllocation:
 		if c.Containers == nil {
 			return control.Evidence{}, fmt.Errorf("node has no container capability")
@@ -187,6 +197,11 @@ func (c *CompositeRuntime) Close() error {
 	}
 	if c.Volumes != nil {
 		if closeErr := c.Volumes.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	if c.Databases != nil {
+		if closeErr := c.Databases.Close(); err == nil {
 			err = closeErr
 		}
 	}
