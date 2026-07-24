@@ -243,6 +243,67 @@ per dimension, since spending all of any one ceiling stops progress.
 Using `!Fits` for consumption would grant one extra unit on every dimension to
 every agent.
 
+## The runtime contract
+
+`a4s.agent/v1` is what an agent image implements. The node serves it on a Unix
+socket; the image calls it. Everything an agent may do passes through this
+surface.
+
+It is a Unix socket rather than a port because an agent's authority is
+per-instance. A TCP listener would be reachable by every workload on the node
+and possibly off it, turning a per-instance credential into a cluster-wide
+attack surface.
+
+### Identity is issued, never asserted
+
+Every budget ceiling and tool envelope is keyed by allocation. If a runtime
+named its own allocation, any instance could spend another's budget or borrow
+its capabilities by claiming to be it — which would make every gate in this
+document decorative.
+
+So the node mints a token when the allocation is created, and the request
+handler resolves token to allocation before any handler runs. **No endpoint
+accepts an allocation id.** There is no field to abuse, and unknown fields are
+refused outright so a runtime built against a different contract fails loudly
+rather than having its intent silently dropped.
+
+The token is written owner-readable to a per-allocation file, treated like
+secret material. It is deliberately not an environment variable, which would put
+a live credential into process listings and crash dumps. Re-issuing on restart
+invalidates the previous token, and deleting an allocation revokes it.
+
+### Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/identity` | Who am I, what queue, what tools, what have I spent |
+| `POST /v1/task/claim` | Take the next task, if permitted one |
+| `POST /v1/task/ack` | Complete a task |
+| `POST /v1/task/requeue` | Return work this instance cannot finish |
+| `POST /v1/spend` | Report consumption; the reply says whether to continue |
+| `POST /v1/tool/authorize` | Ask permission before invoking a tool |
+
+The queue an instance pulls from is resolved by the node from what the control
+plane authorized, never named in the request. An agent naming its own queue
+could drain another workload's backlog.
+
+### The loop an image runs
+
+```text
+read token -> identity -> claim -> work, authorizing each tool call
+                            |         and reporting spend
+                            v
+                      ack (or requeue)
+```
+
+Draining and exhaustion come back as an empty claim with a reason rather than an
+error, because they are ordinary lifecycle states: the agent should stop asking,
+not retry.
+
+A well-behaved runtime honors `continue: false` from a spend report. The node
+does not depend on that — the tool gate refuses an exhausted instance regardless,
+which is what makes the ceiling a property rather than a convention.
+
 ## Drain before stop
 
 An agent instance holds task context that a stateless replica does not. Stopping
@@ -379,10 +440,11 @@ budget reserved, `grant_tools`, `start_allocation`, then independent
 
 ## What is not built yet
 
-- A real agent runtime implementing `a4s.agent/v1`. The contract is defined and
-  bounded, and the node enforces it; no image implements it. The runtime reports
-  consumption through `Agents.Spend` and passes `Agents.AuthorizeToolCall` before
-  each tool call.
+- An agent image. The node serves `a4s.agent/v1` and enforces every rule behind
+  it, but no published image implements the loop yet. Writing one needs no new
+  a4s work.
+- Model-provider calls from inside the runtime. a4s bounds and meters them; it
+  does not proxy them, so the image talks to its provider directly.
 - A cluster-wide queue. Delivery is node-local, so two nodes running the same
   agent workload each serve their own tasks. Sharing one backlog needs a broker
   the node can reach, and nothing requires it yet.

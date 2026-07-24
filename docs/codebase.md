@@ -77,6 +77,7 @@ The node package owns the host mutation trust boundary.
 | `probe.go` | Readiness measurement and per-kind observer routing |
 | `provider.go` | Model-provider egress measurement, caching, and expiry |
 | `queue.go` | Durable work queue, leased claims, and the agent claim gate |
+| `runtime_api.go` | Workload-facing `a4s.agent/v1` surface and runtime credentials |
 | `*_test.go` | Signature, replay, tamper, contract, and durability tests |
 
 Dependency direction:

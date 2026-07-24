@@ -66,6 +66,10 @@ contract.
 - A composite readiness observer routing each probe kind to the capability that
   owns it, and an agent probe measuring provider reachability, remaining budget,
   and container liveness.
+- The `a4s.agent/v1` workload-facing runtime API on a Unix socket: claim, ack,
+  requeue, spend, tool authorization, and identity. Allocation identity comes
+  from a node-issued token resolved before any handler runs, so no endpoint
+  accepts an allocation id and one instance cannot act as another.
 - A durable node work queue with leased claims, bounded redelivery, stalled-task
   reporting, and measured depth. Claims are gated on the instance being metered,
   funded, not draining, and not already holding work, which is what makes a drain

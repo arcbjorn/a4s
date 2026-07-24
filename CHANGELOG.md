@@ -49,6 +49,21 @@ release or compatibility guarantee yet.
   leakage between agents comes from shared runtime state, not a shared kernel
   namespace, so envelopes, workspaces, and credentials are per instance and a
   deleted allocation's envelope is released.
+- The `a4s.agent/v1` runtime API, the surface an agent image implements. It
+  serves claim, ack, requeue, spend, tool authorization, and identity on a Unix
+  socket. Every enforcement point built earlier now has a caller.
+- Runtime identity is issued rather than asserted. The node mints a
+  per-allocation token at creation and resolves it before any handler runs, so no
+  endpoint accepts an allocation id. Without this every per-allocation budget and
+  envelope would be bypassable by naming another instance.
+- The API is a Unix socket rather than a port, since a per-instance credential on
+  a TCP listener would become a cluster-wide attack surface. Tokens are written
+  owner-readable as files rather than passed as environment variables, which
+  surface in process listings and crash dumps. Re-issuing invalidates the old
+  token, and deleting an allocation revokes it.
+- Unknown request fields are refused rather than ignored, so a runtime built
+  against a different contract fails loudly instead of having its intent dropped,
+  and request bodies are size-bounded against an untrusted caller.
 - A durable node work queue. `Queue.Depth` drove agent scaling but nothing
   measured it, and `HoldTask`/`ReleaseTask` were never called, so a drain always
   observed an empty task slot and could stop an instance mid-work. Delivery now

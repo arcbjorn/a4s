@@ -115,6 +115,31 @@ Budget ceilings are a safety control, not a cost feature: an unbounded agent is
 an unbounded actor. The kernel refuses a workload whose ceilings are absent or
 zero, and refuses to start one that has already exhausted its budget.
 
+### The workload-facing runtime API
+
+Every other node surface talks to the control plane, which is authenticated and
+trusted. `a4s.agent/v1` talks to the agent, which is neither. It is the only
+place in a4s where an untrusted party initiates a request, so it is the boundary
+most worth attacking.
+
+Three properties hold it:
+
+- **Identity is issued, not asserted.** The node mints a per-allocation token at
+  creation and resolves it before any handler runs. No endpoint accepts an
+  allocation id, so an agent has no way to name another instance's budget,
+  envelope, or task slot. Without this, every per-allocation control in this
+  document would be bypassable by claiming a different identity.
+- **It is not reachable off-host.** A Unix socket, never a port. A per-instance
+  credential on a TCP listener would become a cluster-wide attack surface.
+- **The token is treated as material.** Owner-readable file, not an environment
+  variable, since env vars surface in process listings and crash dumps.
+  Re-issuing invalidates the previous token; deleting an allocation revokes it,
+  so a credential never outlives its workload.
+
+Requests carrying unknown fields are refused rather than ignored, and bodies are
+size-bounded so an untrusted caller cannot exhaust node memory without spending
+a token.
+
 ### Kernel
 
 The kernel is trusted to authenticate the agent identity supplied by its caller,
