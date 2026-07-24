@@ -72,18 +72,23 @@ tool-envelope grant before it starts:
 go run ./cmd/a4s simulate --file examples/agent-workload.json
 ```
 
-Expected reconciliation:
+Expected reconciliation for the web service, with the actor column omitted. The
+route is published only after a prober measures the allocation ready, so
+readiness is observed rather than assumed:
 
 ```text
-goal.accepted
+goal.accepted         operator
 proposal.created      placement-agent
 proposal.approved     policy-kernel
 action.dispatched     pull_image
 action.completed      pull_image
 action.dispatched     create_allocation
 action.completed      create_allocation
+action.dispatched     attach_network
+action.completed      attach_network
 action.dispatched     start_allocation
 action.completed      start_allocation
+observation.recorded  allocation.ready
 proposal.created      network-agent
 proposal.approved     policy-kernel
 action.dispatched     publish_route

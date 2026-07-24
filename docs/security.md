@@ -366,7 +366,10 @@ Material is sealed to a node's X25519 key, derived from the Ed25519 identity it
 already uses for enrollment, so an operator manages one key per node. The
 control plane distributes material it cannot itself read, and a stolen sealed
 file is useless without that node's key. Name, version, and node are bound into
-the ciphertext, so a renamed file cannot impersonate another secret.
+the ciphertext, so a renamed file cannot impersonate another secret. `a4s seal`
+performs this encryption; it reads the material from a file rather than an
+argument, because a command line is visible in shell history and process
+listings.
 
 The node decrypts into a tmpfs directory at mode `0400` and binds it read-only,
 `nosuid`, `nodev`, `noexec` into the container. Deleting an allocation removes

@@ -211,8 +211,11 @@ security system.
 
 ### Developer tooling
 
-- `validate`, `simulate`, `node`, `server`, `keygen`, `plan`, `explain`,
-  `diagnose`, `version`, and `help` CLI commands.
+- `validate`, `simulate`, `node`, `server`, `keygen`, `seal`, `plan`, `explain`,
+  `diagnose`, `approve`, `history`, `version`, and `help` CLI commands.
+- `seal` encrypts secret material to a node's public identity, so the sealed
+  file is readable only by the node it was sealed for and never transits the
+  control plane in the clear.
 - Race-tested unit and contract tests.
 - Linux amd64 cross-build verification.
 - Generic web-service example with an explicit public-route approval.

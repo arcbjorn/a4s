@@ -7,6 +7,14 @@ release or compatibility guarantee yet.
 
 ### Fixed
 
+- Documentation drifted from behavior in three places. The README's expected
+  reconciliation omitted the `attach_network` pair and the `observation.recorded`
+  step, so the first output a reader compares against did not match a real run,
+  and it was labeled ambiguously after the agent-workload command while showing
+  web-service output. The status inventory listed ten CLI commands when thirteen
+  exist, missing `approve`, `history`, and `seal`. `seal` appeared only in `a4s
+  help`, so the command that seals secret material was absent from the security
+  model that describes the sealing.
 - A torn final write no longer makes the event log unopenable. A machine losing
   power mid-append left a partial line, and replay aborted on the whole file —
   so a single badly-timed crash stopped the control plane from starting, with
