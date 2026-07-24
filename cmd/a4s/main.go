@@ -459,6 +459,7 @@ func runNode(args []string) error {
 	netnsDir := flags.String("netns-dir", "/var/run/a4s/netns", "allocation network namespace directory")
 	volumeRoot := flags.String("volume-root", "/var/lib/a4s/volumes", "directory holding durable volumes")
 	volumeState := flags.String("volume-state", "/var/lib/a4s/volume-state.jsonl", "durable volume ownership state")
+	backupRoot := flags.String("backup-root", "", "off-host path for snapshot backups (empty disables backup)")
 	secretDir := flags.String("secret-dir", "/var/lib/a4s/secrets", "directory of sealed secrets for this node")
 	secretRoot := flags.String("secret-root", "/run/a4s/secrets", "tmpfs directory for decrypted material")
 	gatewayAdmin := flags.String("gateway-admin", "", "Caddy admin API address (empty disables the gateway)")
@@ -524,6 +525,15 @@ func runNode(args []string) error {
 		return err
 	}
 	defer volumes.Close()
+	if *backupRoot != "" {
+		// The store must live outside the volume root, or a host loss takes the
+		// data and its backups together.
+		store, err := a4snode.NewDirectoryBackupStore(*backupRoot, *volumeRoot)
+		if err != nil {
+			return err
+		}
+		volumes.WithBackupStore(store)
+	}
 	runtime.VolumeMountsFor = func(allocation string) []a4snode.VolumeMountSpec {
 		return volumes.Mounts(allocation, volumeRefsFor(allocation, desired))
 	}
