@@ -561,3 +561,55 @@ Rules:
 Enrollment establishes *who* the peer is. It does not encrypt the channel. The
 transport is intended to run over an already-encrypted tailnet; on an untrusted
 network it requires TLS beneath it.
+
+## Operator introspection
+
+Three read-only capabilities fall out of recording reasoning and authorization
+alongside mutation. None of them can change anything.
+
+### Explanation
+
+`Explain` reconstructs the causal chain for one target. Relevance is transitive:
+an event matters if it names the target, or if it belongs to a proposal that
+acted on the target. That second hop recovers the agent's reasoning and the
+kernel's authorization, which name the proposal rather than the target.
+
+A reconciliation loop that stores only desired and observed state cannot answer
+"why does this exist" after the fact, because the decision was never durable.
+Here it is.
+
+Derived outcomes:
+
+| State | Meaning |
+|---|---|
+| `serving` | Last observed ready or reachable |
+| `pending` | Work dispatched with no completing evidence; the crash window |
+| `failed` | Last decisive event was a failure or blockage |
+| `removed` | Deliberately stopped or deleted |
+| `unknown` | No decisive outcome recorded |
+
+### Planning
+
+`DryRun` reports what reconciliation would do without touching anything. It runs
+the real agents and the real kernel against a cloned world, so a plan cannot
+disagree with execution through drift between two code paths.
+
+Simulation optimistically assumes a started allocation becomes ready, because
+the kernel must be able to authorize a whole plan before its first mutation.
+Anything planned after that assumption is marked contingent. Publishing a route
+depends on a probe measuring the workload as ready, and a plan that promised the
+route unconditionally would be lying about what it knows.
+
+### Diagnosis
+
+`Diagnoser` turns recorded history into an explanation of why a goal is not
+converging. Findings are ordered most-specific first, and an action dispatched
+without a completion is reported before anything else, because it is the only
+finding implying the recorded world may disagree with the host.
+
+A blockage often reports only that no agent could act, while the denial that
+preceded it holds the specific reason. Diagnosis prefers the specific one.
+
+The diagnoser is the one place where model-backed reasoning is unambiguously
+safe. It reads events and produces text: no capability grants, no proposals, no
+mutation. A wrong diagnosis misleads an operator; it cannot break anything.
