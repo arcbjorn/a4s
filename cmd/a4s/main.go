@@ -7,9 +7,11 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -62,6 +64,12 @@ func run(args []string) error {
 		return approve(args[1:])
 	case "history":
 		return history(args[1:])
+	case "submit":
+		return submit(args[1:])
+	case "status":
+		return status(args[1:])
+	case "events":
+		return remoteEvents(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -325,6 +333,8 @@ func runServer(args []string) error {
 	keyID := flags.String("key-id", "control-1", "identifier for this server signing key")
 	signingKeyPath := flags.String("signing-key", "", "path to the base64 Ed25519 private signing key")
 	nodeKeyDir := flags.String("node-keys", "", "directory of <node-id>.pub enrolled node keys")
+	operatorKeyDir := flags.String("operator-keys", "", "directory of <key-id>.pub operator keys")
+	apiListen := flags.String("api", "", "address to serve the operator API on (empty disables it)")
 	logLevel := flags.String("log-level", "info", "log verbosity: debug, info, warn, or error")
 	logFormat := flags.String("log-format", "text", "log format: text or json")
 	if err := flags.Parse(args); err != nil {
@@ -351,8 +361,25 @@ func runServer(args []string) error {
 		goal = &scenario.Goal
 	}
 
-	instance, openErr := server.Open(server.Config{EventLog: *eventLog, Base: base},
-		control.RolloutAgent{}, control.PlacementAgent{}, control.NetworkAgent{})
+	// Operator keys are what let the server accept an approval or an API call.
+	// Without them the control plane still reconciles, but no new authority can
+	// enter it, which is the correct posture for a server nobody has told who
+	// its operators are.
+	operatorKeys := map[string]ed25519.PublicKey{}
+	if *operatorKeyDir != "" {
+		loaded, err := loadNodeKeys(*operatorKeyDir)
+		if err != nil {
+			return fmt.Errorf("load operator keys: %w", err)
+		}
+		operatorKeys = loaded
+	}
+	if *apiListen != "" && len(operatorKeys) == 0 {
+		return fmt.Errorf("operator-keys is required to serve the API")
+	}
+
+	instance, openErr := server.Open(server.Config{
+		EventLog: *eventLog, Base: base, OperatorKeys: operatorKeys,
+	}, control.RolloutAgent{}, control.PlacementAgent{}, control.NetworkAgent{})
 	if openErr != nil {
 		return openErr
 	}
@@ -419,15 +446,44 @@ func runServer(args []string) error {
 		slog.String("addr", listener.Addr().String()),
 		slog.String("key_id", *keyID))
 
+	metrics := obs.NewMetrics()
+	if *apiListen != "" {
+		api := server.NewAPI(instance, server.APIConfig{Logger: logger, Metrics: metrics})
+		httpServer := &http.Server{
+			Addr:    *apiListen,
+			Handler: api.Handler(),
+			// Timeouts bound how long one caller can hold a connection, so a
+			// slow or stalled client cannot accumulate against the control
+			// plane until it runs out of file descriptors.
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      60 * time.Second,
+			IdleTimeout:       2 * time.Minute,
+		}
+		go func() {
+			logger.Info("serving operator API", slog.String("addr", *apiListen))
+			if err := httpServer.ListenAndServe(); err != nil &&
+				!errors.Is(err, http.ErrServerClosed) {
+				logger.Error("operator API stopped", slog.Any("error", err))
+			}
+		}()
+		defer func() {
+			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelShutdown()
+			_ = httpServer.Shutdown(shutdownCtx)
+		}()
+	}
+
 	executor := a4snode.NewRegistryExecutor(registry, *keyID, signingKey)
-	return reconcileLoop(ctx, logger, instance, executor, registry)
+	return reconcileLoop(ctx, logger, instance, executor, registry, metrics)
 }
 
 // reconcileLoop drives accepted goals whenever nodes are connected. A goal that
 // cannot converge is reported and retried rather than terminating the server,
 // because the cause is usually a node that has not connected yet.
 func reconcileLoop(ctx context.Context, logger *slog.Logger, instance *server.Server,
-	executor *a4snode.RegistryExecutor, registry *a4snode.Registry) error {
+	executor *a4snode.RegistryExecutor, registry *a4snode.Registry,
+	metrics *obs.Metrics) error {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -436,11 +492,14 @@ func reconcileLoop(ctx context.Context, logger *slog.Logger, instance *server.Se
 			logger.Info("shutting down")
 			return nil
 		case <-ticker.C:
+			metrics.SetGauge("a4s_connected_nodes", int64(len(registry.Nodes())))
 			if len(registry.Nodes()) == 0 {
 				continue
 			}
 			for _, goal := range instance.Goals() {
+				metrics.Count("a4s_reconciliations_total")
 				if err := instance.Reconcile(goal.ID, executor); err != nil {
+					metrics.Count("a4s_reconcile_failures_total")
 					logger.Warn("reconcile failed",
 						slog.String("goal", goal.ID), slog.Any("error", err))
 					continue
@@ -855,6 +914,8 @@ Usage:
            [--gateway-admin http://127.0.0.1:2019 --acme-email you@example.com]
   a4s server --event-log /path [--file scenario.json] [--status]
              [--listen host:port --signing-key /path --node-keys /dir]
+             [--api host:port --operator-keys /dir]
+             [--log-level info] [--log-format text|json]
   a4s keygen --out /path
   a4s seal --secret NAME --version V --node ID --node-key /path --in /path --out /dir
   a4s plan --file scenario.json [--event-log /path] [--json]
@@ -866,5 +927,16 @@ Usage:
   a4s approve --scopes
   a4s history --event-log /path [--goal ID] [--target ID] [--kind KIND]
               [--since 1h] [--limit N] [--json]
+
+Remote commands speak to a running server's operator API. Each request is
+signed with the operator key, so authority originates with a person rather
+than with possession of the network path:
+
+  a4s submit --file scenario.json --server http://host:8443
+             --key-id ID --operator-key /path [--operator NAME]
+  a4s status --server http://host:8443 --key-id ID --operator-key /path [--json]
+  a4s events --server http://host:8443 --key-id ID --operator-key /path
+             [--goal ID] [--target ID] [--kind KIND] [--limit N]
+
   a4s version`)
 }

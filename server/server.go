@@ -248,6 +248,21 @@ func (s *Server) Revoke(signed control.SignedApproval) error {
 	}, "approval revoked")
 }
 
+// OperatorKeys returns the public keys permitted to sign operator statements.
+//
+// A copy is returned so a caller cannot widen the server's trust by mutating
+// the map it was handed. The server holds public keys only and can never sign
+// an operator decision itself.
+func (s *Server) OperatorKeys() map[string]ed25519.PublicKey {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make(map[string]ed25519.PublicKey, len(s.operatorKeys))
+	for id, key := range s.operatorKeys {
+		keys[id] = key
+	}
+	return keys
+}
+
 // Approvals reports operator decisions, live ones first.
 //
 // Expired and revoked grants are included rather than hidden. An operator
