@@ -52,9 +52,10 @@ The design assumes any of these can occur:
 - An unavailable node is mistaken for an empty node, duplicating durable state.
 - Secret values leak through prompts, reasoning, events, logs, or evidence.
 
-The current spike primarily addresses agent authority, stale plans, signed node
-actions, replay, and a baseline OCI profile. It does not yet address a
-compromised node or controller.
+The current implementation addresses agent authority, stale plans, concurrent
+mutation of one target, signed node actions, replay, node identity, and a
+baseline OCI profile. It does not yet address a compromised node or controller,
+and it does not encrypt the transport.
 
 ## Trust boundaries
 
@@ -74,7 +75,7 @@ operator / Git / external API
             |
       signed typed envelope
             v
-       node dispatcher         <---- local trusted keys and ledger
+       node dispatcher         <---- enrolled node identity, keys, ledger
             |
    narrow runtime capability
             v
@@ -140,7 +141,26 @@ schemas. Each a4s adapter exposes a smaller contract.
 - Five-minute maximum validity and strict expiration.
 - Thirty-second future-clock tolerance.
 - Action/envelope node consistency.
-- SHA-256 envelope digest used for idempotency conflict detection.
+- SHA-256 digest of the authorized work used for idempotency conflict detection,
+  so a retry with fresh timestamps is recognized while a key reused for
+  different work is refused.
+- Target leases, so two proposals cannot mutate one allocation concurrently.
+
+### Node enrollment
+
+- A node proves possession of its enrolled Ed25519 key over a server-chosen
+  32-byte nonce before any capability is issued to it.
+- The proof must name the same identity as the opening hello.
+- Refusals are generic on the wire, so an unenrolled peer cannot enumerate valid
+  node identities by probing.
+- The node refuses a server that names a signing key the node does not already
+  trust, so a reachable impostor cannot nominate its own key.
+- Handshakes are deadline-bounded, so a stalled peer cannot hold resources.
+
+Enrollment authenticates identity; it does not provide confidentiality or
+integrity for the channel itself. Action envelopes are individually signed, so a
+tampered envelope is still rejected, but observation and evidence traffic is
+readable to anyone on the path. Run this over the tailnet, or add TLS.
 
 ### Evidence and world integrity
 
@@ -155,7 +175,6 @@ schemas. Each a4s adapter exposes a smaller contract.
   `allocation.running`; only a prober may report `allocation.ready`. The
   component that started a workload cannot declare it healthy.
 - Unknown evidence kinds are rejected rather than ignored.
-
 - Readiness observations expire. An allocation whose readiness measurement has
   aged out stops counting toward a goal, so a dead workload cannot keep looking
   healthy on the strength of an old probe.
@@ -165,8 +184,10 @@ schemas. Each a4s adapter exposes a smaller contract.
   adapter produces.
 
 The remaining gap is that probe evidence is not yet signed by a node identity
-distinct from the controller signing key, so a compromised node can still lie
-about what it observed. That must be closed before production.
+distinct from the controller signing key. The node authenticates itself when it
+connects, but individual evidence records are not separately attributable, so a
+compromised node can still lie about what it observed. That must be closed
+before production.
 
 ### Node autonomy limits
 
