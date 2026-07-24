@@ -189,6 +189,31 @@ func (s *Server) Plan(goalID string) (control.Plan, error) {
 	return control.DryRun(kernel, s.projector.World(), goal, s.agents...), nil
 }
 
+// Directory reports which endpoints are currently serving each workload. It is
+// derived from verified evidence, so a service resolves only to instances that
+// were actually observed serving.
+func (s *Server) Directory() map[string]control.Service {
+	return control.BuildDirectory(s.projector.World(), s.workloadPorts())
+}
+
+// RouteSnapshots resolves every published route to its serving endpoints. This
+// is the complete, atomic input a gateway consumes.
+func (s *Server) RouteSnapshots() []control.RouteSnapshot {
+	return control.BuildRouteSnapshots(s.projector.World(), s.workloadPorts())
+}
+
+// StaleRoutes reports routes with no healthy endpoint, which is what an
+// operator needs when a hostname stops resolving.
+func (s *Server) StaleRoutes() []string {
+	world := s.projector.World()
+	return control.StaleAfter(world, s.workloadPorts(), world.Now())
+}
+
+// workloadPorts derives dialable ports from accepted goals.
+func (s *Server) workloadPorts() map[string]int {
+	return control.WorkloadPorts(s.Goals())
+}
+
 // Status summarizes the server for an operator.
 type Status struct {
 	Revision    uint64    `json:"revision"`
