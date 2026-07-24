@@ -15,6 +15,57 @@ import (
 // cannot stall the control loop.
 const DefaultProbeTimeout = 3 * time.Second
 
+// CompositeObserver routes each probe kind to the capability that owns it.
+//
+// Readiness means something different per workload kind, and only the owning
+// subsystem can establish it. A database is ready when its engine accepts a
+// query; an agent when it can reach its provider with budget left. Routing here
+// mirrors CompositeRuntime: the node exposes narrow capabilities rather than
+// one observer that pretends to understand every workload.
+type CompositeObserver struct {
+	// Runtime measures process, TCP, and HTTP readiness.
+	Runtime *RuntimeObserver
+	// Databases measures engine readiness by connection.
+	Databases *DatabaseManager
+	// Agents measures provider reachability and remaining budget.
+	Agents *Agents
+}
+
+func (c *CompositeObserver) ObserveReadiness(target control.ProbeTarget) (bool, map[string]string, error) {
+	switch target.Kind {
+	case control.ProbeDatabase:
+		if c.Databases == nil {
+			return false, nil, fmt.Errorf("node has no database capability for probe %q", target.Allocation)
+		}
+		return c.Databases.ObserveReadiness(target)
+	case control.ProbeAgent:
+		if c.Agents == nil {
+			return false, nil, fmt.Errorf("node has no agent capability for probe %q", target.Allocation)
+		}
+		// Provider reach and remaining budget are necessary but not sufficient:
+		// an agent whose container died satisfies both while running nothing.
+		// Every other probe kind establishes liveness first, and an agent must
+		// not be the exception.
+		if c.Runtime != nil {
+			alive, observed, err := c.Runtime.ObserveReadiness(control.ProbeTarget{
+				Allocation: target.Allocation, Kind: control.ProbeProcess,
+			})
+			if err != nil {
+				return false, observed, err
+			}
+			if !alive {
+				return false, observed, nil
+			}
+		}
+		return c.Agents.ObserveReadiness(target)
+	default:
+		if c.Runtime == nil {
+			return false, nil, fmt.Errorf("node has no runtime observer for probe %q", target.Allocation)
+		}
+		return c.Runtime.ObserveReadiness(target)
+	}
+}
+
 // RuntimeObserver measures readiness on the node where the allocation runs.
 // It is the real replacement for assuming that a started container is serving.
 //
@@ -116,6 +167,13 @@ func (o *RuntimeObserver) ObserveReadiness(target control.ProbeTarget) (bool, ma
 			observed["reason"] = "unhealthy status"
 		}
 		return ready, observed, nil
+
+	case control.ProbeDatabase, control.ProbeAgent:
+		// These kinds are owned by the database and agent capabilities. Reaching
+		// here means the observer was not composed, and reporting "unsupported"
+		// would read as a missing feature rather than a wiring mistake.
+		return false, observed, fmt.Errorf(
+			"probe kind %q must be routed to its capability, not the runtime observer", target.Kind)
 
 	default:
 		return false, observed, fmt.Errorf("unsupported probe kind %q", target.Kind)
