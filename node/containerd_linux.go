@@ -1,0 +1,170 @@
+//go:build linux
+
+package node
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/pkg/cio"
+	"github.com/containerd/containerd/v2/pkg/oci"
+	"github.com/containerd/errdefs"
+)
+
+type ContainerdConfig struct {
+	Address     string
+	Namespace   string
+	Snapshotter string
+	LogDir      string
+}
+
+type containerdBackend struct {
+	client      *containerd.Client
+	snapshotter string
+	logDir      string
+}
+
+func OpenContainerd(ctx context.Context, config ContainerdConfig) (*ContainerRuntime, error) {
+	config = defaultContainerdConfig(config)
+	if !filepath.IsAbs(config.Address) || !filepath.IsAbs(config.LogDir) {
+		return nil, fmt.Errorf("containerd address and log directory must be absolute paths")
+	}
+	if err := os.MkdirAll(config.LogDir, 0o750); err != nil {
+		return nil, fmt.Errorf("create log directory: %w", err)
+	}
+	client, err := containerd.New(config.Address, containerd.WithDefaultNamespace(config.Namespace))
+	if err != nil {
+		return nil, fmt.Errorf("connect to containerd: %w", err)
+	}
+	healthCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	serving, err := client.IsServing(healthCtx)
+	if err != nil || !serving {
+		_ = client.Close()
+		if err != nil {
+			return nil, fmt.Errorf("containerd health check: %w", err)
+		}
+		return nil, fmt.Errorf("containerd is not serving")
+	}
+	return NewContainerRuntime(&containerdBackend{
+		client:      client,
+		snapshotter: config.Snapshotter,
+		logDir:      config.LogDir,
+	}), nil
+}
+
+func defaultContainerdConfig(config ContainerdConfig) ContainerdConfig {
+	if config.Address == "" {
+		config.Address = "/run/containerd/containerd.sock"
+	}
+	if config.Namespace == "" {
+		config.Namespace = "a4s"
+	}
+	if config.LogDir == "" {
+		config.LogDir = "/var/log/a4s/allocations"
+	}
+	return config
+}
+
+func (b *containerdBackend) Pull(ctx context.Context, image string) (string, error) {
+	opts := []containerd.RemoteOpt{containerd.WithPullUnpack}
+	if b.snapshotter != "" {
+		opts = append(opts, containerd.WithPullSnapshotter(b.snapshotter))
+	}
+	pulled, err := b.client.Pull(ctx, image, opts...)
+	if err != nil {
+		return "", err
+	}
+	return pulled.Target().Digest.String(), nil
+}
+
+func (b *containerdBackend) Create(ctx context.Context, spec ContainerSpec) (bool, error) {
+	if existing, err := b.client.LoadContainer(ctx, spec.ID); err == nil {
+		labels, labelErr := existing.Labels(ctx)
+		if labelErr != nil {
+			return false, labelErr
+		}
+		if labels["a4s.io/managed"] != "true" || labels["a4s.io/workload"] != spec.Workload || labels["a4s.io/image"] != spec.Image {
+			return false, fmt.Errorf("container %q exists but is not the requested a4s allocation", spec.ID)
+		}
+		return false, nil
+	} else if !errdefs.IsNotFound(err) {
+		return false, err
+	}
+
+	image, err := b.client.GetImage(ctx, spec.Image)
+	if err != nil {
+		return false, err
+	}
+	opts := []oci.SpecOpts{
+		oci.WithImageConfig(image),
+		oci.WithHostname(spec.ID),
+		oci.WithNamespacedCgroup(),
+		oci.WithMemoryLimit(uint64(spec.Resources.MemoryMB) * 1024 * 1024),
+		oci.WithCPUCFS(int64(spec.Resources.CPUMillis)*100, 100000),
+		oci.WithPidsLimit(256),
+	}
+	if spec.NoNewPrivileges {
+		opts = append(opts, oci.WithNoNewPrivileges)
+	}
+	opts = append(opts, oci.WithCapabilities(spec.Capabilities))
+
+	_, err = b.client.NewContainer(
+		ctx,
+		spec.ID,
+		containerd.WithImage(image),
+		containerd.WithNewSnapshot(spec.SnapshotKey, image),
+		containerd.WithNewSpec(opts...),
+		containerd.WithContainerLabels(map[string]string{
+			"a4s.io/managed":  "true",
+			"a4s.io/workload": spec.Workload,
+			"a4s.io/image":    spec.Image,
+		}),
+	)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (b *containerdBackend) Start(ctx context.Context, id, logName string) (BackendTask, error) {
+	container, err := b.client.LoadContainer(ctx, id)
+	if err != nil {
+		return BackendTask{}, err
+	}
+	if task, taskErr := container.Task(ctx, nil); taskErr == nil {
+		status, statusErr := task.Status(ctx)
+		if statusErr != nil {
+			return BackendTask{}, statusErr
+		}
+		if status.Status == containerd.Running {
+			return BackendTask{PID: task.Pid(), AlreadyRunning: true}, nil
+		}
+		return BackendTask{}, fmt.Errorf("task %q exists in state %q", id, status.Status)
+	} else if !errdefs.IsNotFound(taskErr) {
+		return BackendTask{}, taskErr
+	}
+
+	logPath := filepath.Join(b.logDir, filepath.Base(logName))
+	task, err := container.NewTask(ctx, cio.LogFile(logPath))
+	if err != nil {
+		return BackendTask{}, err
+	}
+	if _, err := task.Wait(ctx); err != nil {
+		_, _ = task.Delete(ctx)
+		return BackendTask{}, err
+	}
+	if err := task.Start(ctx); err != nil {
+		_, _ = task.Delete(ctx)
+		return BackendTask{}, err
+	}
+	return BackendTask{PID: task.Pid()}, nil
+}
+
+func (b *containerdBackend) Close() error {
+	return b.client.Close()
+}
