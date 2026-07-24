@@ -7,6 +7,15 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Cross-node volume handoff following the prescribed sequence: quiesce, verified
+  snapshot, transfer, and explicit adoption. Each phase is entered only on
+  evidence from the previous one, and none can be skipped.
+- A volume mid-move cannot be attached and its workload cannot be placed, so no
+  writer can diverge from what is being transferred.
+- Adoption advances the volume generation, fencing any writer still holding the
+  origin node's view.
+- Moving a volume requires a granted `move-volume` approval.
+
 - Off-host backup: `backup_snapshot` ships a verified snapshot to a store
   outside the node, and restore falls back to it when the node's local snapshot
   is gone. That is the host-loss case backups exist for.
