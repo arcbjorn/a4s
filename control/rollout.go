@@ -128,6 +128,25 @@ func (r RolloutAgent) Propose(goal Goal, world World) (Proposal, error) {
 			candidate.ID, available-cost, floor)
 	}
 
+	// An agent instance holding a task must finish it before it stops. Killing it
+	// mid-task destroys accumulated context, which for an agent means discarding
+	// work that has already been paid for in tokens. Draining is proposed on its
+	// own so the stop is authorized against observed evidence that the instance
+	// actually released its task, rather than against an assumption that it did.
+	if goal.Workload.Runtime != nil && candidate.Task != "" && !candidate.Draining &&
+		!candidate.Exhausted() {
+		proposal.Reasoning = "drain one agent instance so it finishes its task before being retired"
+		proposal.Actions = []Action{{
+			ID: "drain-" + candidate.ID, Kind: ActionDrainAllocation,
+			Target: candidate.ID, Workload: candidate.Workload,
+			Node: candidate.Node,
+		}}
+		proposal.ExpectedEvidence = []Check{{
+			Kind: CheckAllocationDrained, Target: candidate.ID, Want: "true",
+		}}
+		return proposal, nil
+	}
+
 	stopID := "stop-" + candidate.ID
 	proposal.Actions = []Action{
 		{
@@ -170,6 +189,12 @@ func driftedAllocations(goal Goal, world World) []*Allocation {
 			allocation.Image == goal.Workload.Image &&
 			allocation.Resources == goal.Workload.Resources &&
 			nodeAllowed(goal.Constraints, *node)
+		// An agent that spent its ceiling is finished, whatever image it runs. It
+		// cannot do further work, so retiring it is what frees the budget for a
+		// replacement instance to be placed.
+		if matches && allocation.Exhausted() {
+			matches = false
+		}
 		if !matches {
 			drifted = append(drifted, allocation)
 		}
