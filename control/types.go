@@ -77,6 +77,10 @@ type Volume struct {
 	// RestoredFrom records the snapshot this volume was last restored from,
 	// which is what an operator needs to know after a recovery.
 	RestoredFrom string `json:"restored_from,omitempty"`
+	// Backups records which snapshots have been shipped off-host, by id. A
+	// snapshot that exists only on the volume's own node does not survive the
+	// loss of that node, which is the failure backups exist for.
+	Backups map[string]string `json:"backups,omitempty"`
 }
 
 // SecretRef names secret material without carrying it.
@@ -265,6 +269,7 @@ const (
 	ActionDetachVolume     ActionKind = "detach_volume"
 	ActionSnapshotVolume   ActionKind = "snapshot_volume"
 	ActionRestoreSnapshot  ActionKind = "restore_snapshot"
+	ActionBackupSnapshot   ActionKind = "backup_snapshot"
 	ActionStartAllocation  ActionKind = "start_allocation"
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
