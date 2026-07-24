@@ -7,6 +7,14 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Off-host backup: `backup_snapshot` ships a verified snapshot to a store
+  outside the node, and restore falls back to it when the node's local snapshot
+  is gone. That is the host-loss case backups exist for.
+- `DirectoryBackupStore`, which refuses a path inside the volume root because a
+  backup on the same disk as its data does not survive that disk.
+- Restore evidence records whether recovery came from a local snapshot or the
+  backup store, which is what an operator needs to know after an incident.
+
 - Volume snapshots: checksummed, immutable copies of a quiesced volume, staged
   and renamed so an interrupted run never leaves a partial tree under a name
   that looks complete.
