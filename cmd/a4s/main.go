@@ -401,6 +401,11 @@ func runNode(args []string) error {
 	containerdNamespace := flags.String("namespace", "a4s", "containerd namespace")
 	snapshotter := flags.String("snapshotter", "", "containerd snapshotter override")
 	logDir := flags.String("log-dir", "/var/log/a4s/allocations", "allocation log directory")
+	cniBinDir := flags.String("cni-bin", "/opt/cni/bin", "directory holding CNI plugin binaries")
+	cniConfDir := flags.String("cni-conf", "/etc/cni/net.d", "directory holding CNI network configuration")
+	cniNetwork := flags.String("cni-network", "a4s0", "CNI network name")
+	allocationSubnet := flags.String("subnet", "10.42.0.0/24", "node-local allocation subnet")
+	netnsDir := flags.String("netns-dir", "/var/run/a4s/netns", "allocation network namespace directory")
 	serverAddress := flags.String("server", "", "server address to connect to (empty reads stdin)")
 	identityKeyPath := flags.String("identity-key", "", "path to this node's base64 Ed25519 private key")
 	if err := flags.Parse(args); err != nil {
@@ -425,6 +430,25 @@ func runNode(args []string) error {
 		return err
 	}
 	defer runtime.Close()
+
+	// Each allocation gets its own namespace and address, so replicas of one
+	// workload can share this node without contending for a host port.
+	network, err := a4snode.OpenCNI(a4snode.CNIConfig{
+		BinDir: *cniBinDir, ConfDir: *cniConfDir, NetworkName: *cniNetwork,
+		Subnet: *allocationSubnet, NamespaceDir: *netnsDir,
+	})
+	if err != nil {
+		return err
+	}
+	defer network.Close()
+	runtime.Namespaces = func(allocation string) string {
+		attachment, err := network.Attachment(ctx, allocation)
+		if err != nil {
+			return ""
+		}
+		return attachment.Namespace
+	}
+
 	ledger, err := a4snode.OpenFileLedger(*ledgerPath)
 	if err != nil {
 		return err
@@ -435,9 +459,12 @@ func runNode(args []string) error {
 		return err
 	}
 	dispatcher := a4snode.Dispatcher{
-		NodeID:  *nodeID,
-		Keys:    map[string]ed25519.PublicKey{*keyID: publicKey},
-		Runtime: runtime,
+		NodeID: *nodeID,
+		Keys:   map[string]ed25519.PublicKey{*keyID: publicKey},
+		Runtime: &a4snode.CompositeRuntime{
+			Containers: runtime,
+			Networks:   network,
+		},
 		Ledger:  ledger,
 		Desired: desired,
 		Now:     time.Now,
