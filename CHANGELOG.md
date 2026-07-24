@@ -49,6 +49,30 @@ release or compatibility guarantee yet.
   leakage between agents comes from shared runtime state, not a shared kernel
   namespace, so envelopes, workspaces, and credentials are per instance and a
   deleted allocation's envelope is released.
+- An operator surface. Approvals existed in the world type but nothing could
+  create one, so every gated decision — public exposure, destroying durable data,
+  restoring over live data, moving a volume, granting an agent mutating tools —
+  was reachable only by hand-editing a starting world. `a4s approve` now issues
+  and revokes Ed25519-signed grants, and `a4s history` narrows recorded history
+  by goal, target, kind, or window.
+- Approvals became signed operator decisions. A grant names its issuer and
+  signing key inside the signed bytes, so it cannot be re-signed by one operator
+  while attributing itself to another. The scope set is closed and re-checked on
+  replay, because a free-form scope would let a goal or an importer invent an
+  authorization the kernel never asked for.
+- Mandatory approval expiry, bounded by a maximum lifetime. An unbounded grant
+  becomes standing permission nobody remembers issuing. Expiry is evaluated
+  against the world's observation time, alongside every other policy check.
+- Revocation is authenticated the same way granting is: withdrawing another
+  operator's approval is as consequential as issuing one. Revoked grants are kept
+  rather than deleted, so review can distinguish withdrawn from never-issued.
+- Operator decisions are appended to durable history before the projection is
+  updated. A projection updated without a durable record would vanish on restart,
+  silently withdrawing an authorization the operator was told had been granted.
+- `a4s diagnose` now uses the model-backed diagnoser when a provider is
+  configured, printing the provenance of every explanation. It had been built and
+  tested but left unreachable — the command still hardcoded the deterministic
+  path. `--deterministic` forces the old behavior.
 - The first model-backed control agent. A diagnoser explains why a goal did not
   converge, using a model where one is available. It was chosen as the first
   because it is the smallest useful surface: it proposes nothing, holds no

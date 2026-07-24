@@ -66,6 +66,11 @@ contract.
 - A composite readiness observer routing each probe kind to the capability that
   owns it, and an agent probe measuring provider reachability, remaining budget,
   and container liveness.
+- An operator surface: `a4s approve` issues and revokes Ed25519-signed grants
+  for the five gated decisions, and `a4s history` narrows recorded history by
+  goal, target, kind, or window. Approvals carry a mandatory expiry, are checked
+  against the world's observation time, and survive restart because they are
+  appended to durable history before the projection is updated.
 - The first model-backed control agent: a diagnoser that explains a
   non-converging goal. It lives in `reason`, outside the stdlib-only `control`
   package, and falls back to the deterministic `LogDiagnoser` on every failure of

@@ -278,16 +278,41 @@ An approval is a separate control object because the entity requesting an
 outcome must not authorize its own elevated risk. In the simulation, approval
 records appear in the starting world for convenience.
 
-The future API must:
+Approvals are now signed operator decisions rather than starting-world fields.
+`SignApproval` produces an Ed25519-signed grant; `VerifyApproval` is the only
+way one becomes authority. An agent has no path to either: it holds no operator
+key, and a proposal carries no signature field to smuggle one in.
 
-- Authenticate the operator or automation principal.
-- Bind the approval to an exact goal revision and scope.
-- Record issuance and optional expiry.
-- Prevent an agent, goal submitter, or imported manifest from setting approval
-  state directly.
-- Require stronger approval for destructive volume operations, host-wide
-  changes, secret-scope changes, high-blast-radius rollout, and any agent tool
-  envelope granting a mutating capability.
+What is implemented:
+
+- **Authenticated principal.** A grant names its issuer and the key that signed
+  it, both inside the signed bytes. The key id must match the key that actually
+  signed, so a grant cannot be re-signed by one operator while attributing
+  itself to another.
+- **Closed scope set.** `ApprovalScopes` enumerates the five decisions the
+  kernel gates on. A free-form scope would let a goal or an importer invent an
+  authorization the kernel never asked for, and a typo would silently grant
+  nothing while appearing to grant something. The projection re-checks the scope
+  on replay, so an ungated scope cannot be reintroduced through the log.
+- **Mandatory expiry.** Every grant records issuance and expiry, bounded by
+  `MaxApprovalLifetime`. An unbounded grant becomes standing permission nobody
+  remembers issuing. `hasApproval` checks expiry against the world's observation
+  time, so authorization is evaluated deterministically alongside every other
+  policy check.
+- **Recorded revision and reason.** The grant carries the world revision the
+  operator saw and their own words. The revision is advisory — refusing on drift
+  would make approvals unusable on a live cluster — but it is what makes a later
+  review meaningful.
+- **Authenticated revocation.** Withdrawing a grant is as consequential as
+  issuing one, so it requires the same signature. A revoked grant is kept rather
+  than deleted: an operator reviewing history needs to see that a grant existed
+  and was withdrawn, not an absence that looks like it was never issued.
+- **No signature in the log.** Evidence records that an approval was accepted
+  and by whom. Storing the signed bytes would put a replayable authorization
+  into a file meant to be readable.
+
+Remaining: a server with no configured operator keys refuses every approval,
+which is the correct default but means key distribution is still manual.
 
 ## Key management requirements
 
