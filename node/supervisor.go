@@ -28,6 +28,11 @@ const (
 type Supervisor struct {
 	Runtime *ContainerRuntime
 	Desired *DesiredState
+	// Agents reports agent spend, which the supervisor forwards as evidence. A
+	// budget the control plane never hears about cannot bound anything above the
+	// node, so metering has to reach the world view on the same schedule as
+	// every other supervised fact.
+	Agents *Agents
 	// Evidence receives observations produced by supervision so they can be
 	// forwarded to the server when it is reachable again.
 	Evidence func(control.Evidence)
@@ -81,33 +86,48 @@ func (s *Supervisor) reconcileOne(ctx context.Context, entry DesiredAllocation) 
 	if err != nil {
 		return nil, fmt.Errorf("inspect %q: %w", entry.ID, err)
 	}
+	// Spend is reported before any restart decision and regardless of whether
+	// the allocation is meant to be running. An agent that exhausted its budget
+	// and stopped is exactly the case the control plane needs to hear about, and
+	// returning early on a stopped entry would withhold it.
+	var observations []control.Evidence
+	if spend, ok := s.spendEvidence(entry.ID); ok {
+		observations = append(observations, spend)
+		s.emit(spend)
+	}
 	if !entry.Running {
 		// The server asked for this to be stopped. The node does not restart it,
 		// and does not delete it either: deletion is a separate authorized action.
-		return nil, nil
+		return observations, nil
 	}
 	if state.Running {
-		return nil, nil
+		return observations, nil
 	}
 	if !state.Exists {
 		// The container is gone entirely. Recreating it would require pulling and
 		// building a spec, which is the control plane's job, so the node reports
 		// the fact and waits rather than inventing a replacement.
-		return []control.Evidence{s.failure(entry, state, "container is absent")}, nil
+		return append(observations, s.failure(entry, state, "container is absent")), nil
 	}
 
 	now := s.now()
+	// An agent that spent its ceiling did not crash; it finished. Restarting it
+	// would burn a fresh ceiling to reach the same exhausted state, so the node
+	// reports the fact and leaves replacement to the control plane.
+	if s.Agents != nil && s.Agents.Exhausted(entry.ID) {
+		return append(observations, s.failure(entry, state, "agent budget exhausted")), nil
+	}
 	if !s.allowRestart(entry.ID, now) {
 		// Crash-loop budget exhausted. Report and stop trying so the control
 		// plane can decide, instead of hiding a broken workload behind restarts.
-		return []control.Evidence{s.failure(entry, state, "restart budget exhausted")}, nil
+		return append(observations, s.failure(entry, state, "restart budget exhausted")), nil
 	}
 
 	if _, err := s.Runtime.backend.Start(ctx, entry.ID, entry.ID+".log"); err != nil {
-		return []control.Evidence{s.failure(entry, state, "restart failed: "+err.Error())}, nil
+		return append(observations, s.failure(entry, state, "restart failed: "+err.Error())), nil
 	}
 	if err := s.Desired.recordRestart(entry.ID); err != nil {
-		return nil, err
+		return observations, err
 	}
 	restarted := control.Evidence{
 		Kind: control.EvidenceAllocationRunning, Target: entry.ID,
@@ -118,7 +138,21 @@ func (s *Supervisor) reconcileOne(ctx context.Context, entry DesiredAllocation) 
 		},
 	}
 	s.emit(restarted)
-	return []control.Evidence{restarted}, nil
+	return append(observations, restarted), nil
+}
+
+// spendEvidence reports an agent allocation's consumption, if it has any.
+func (s *Supervisor) spendEvidence(allocation string) (control.Evidence, bool) {
+	if s.Agents == nil {
+		return control.Evidence{}, false
+	}
+	evidence, ok := s.Agents.SpendEvidence(allocation)
+	if !ok {
+		return control.Evidence{}, false
+	}
+	evidence.Source = "node-supervisor"
+	evidence.ObservedAt = s.now()
+	return evidence, true
 }
 
 func (s *Supervisor) failure(entry DesiredAllocation, state BackendState, reason string) control.Evidence {
