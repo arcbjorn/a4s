@@ -2,6 +2,8 @@ package node
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -46,6 +48,12 @@ type Agents struct {
 	// an instance cannot escape a drain by finishing one task and taking
 	// another.
 	draining map[string]bool
+	// tokens maps a runtime credential to the allocation it speaks for. The
+	// runtime is untrusted: if it named its own allocation, any instance could
+	// spend another's budget or borrow another's tool envelope simply by
+	// claiming to be it. The node issues the token, so identity is established
+	// rather than asserted.
+	tokens map[string]string
 	// meters records each instance's ceiling and what it has consumed. The node
 	// holds this because the controller is too far away to stop a runaway loop:
 	// a round trip through evidence, projection, and a proposal takes longer
@@ -86,6 +94,7 @@ func NewAgents(root string) *Agents {
 		envelopes: make(map[string][]control.ToolGrant),
 		tasks:     make(map[string]string),
 		draining:  make(map[string]bool),
+		tokens:    make(map[string]string),
 		meters:    make(map[string]*meter),
 	}
 }
@@ -307,6 +316,57 @@ func clampBudget(b control.Budget) control.Budget {
 	return b
 }
 
+// ErrUnknownToken is returned when a runtime presents a credential the node did
+// not issue, or one that has been revoked.
+var ErrUnknownToken = errors.New("runtime token is not recognized")
+
+// IssueToken mints the credential an instance uses to identify itself.
+//
+// The token is the whole reason the node's gates hold. Every budget ceiling and
+// tool envelope is keyed by allocation, so a runtime that could name its own
+// allocation could spend another instance's budget or borrow its capabilities.
+// Issuing the token here means the node maps credential to identity, and the
+// runtime never gets a say in who it is.
+func (a *Agents) IssueToken(allocation string) (string, error) {
+	if allocation == "" {
+		return "", fmt.Errorf("token requires an allocation")
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate runtime token: %w", err)
+	}
+	token := hex.EncodeToString(raw)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.tokens == nil {
+		a.tokens = make(map[string]string)
+	}
+	// One live token per allocation. Re-issuing on restart invalidates the old
+	// one, so a credential that leaked from a previous incarnation stops working.
+	for existing, held := range a.tokens {
+		if held == allocation {
+			delete(a.tokens, existing)
+		}
+	}
+	a.tokens[token] = allocation
+	return token, nil
+}
+
+// Resolve maps a runtime credential to the allocation it speaks for.
+func (a *Agents) Resolve(token string) (string, error) {
+	if token == "" {
+		return "", ErrUnknownToken
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	allocation, ok := a.tokens[token]
+	if !ok {
+		return "", ErrUnknownToken
+	}
+	return allocation, nil
+}
+
 // Tools reports the envelope installed for an allocation.
 //
 // A runtime asks the node what it may call rather than deciding for itself.
@@ -426,6 +486,14 @@ func (a *Agents) Release(allocation string) {
 	delete(a.tasks, allocation)
 	delete(a.draining, allocation)
 	delete(a.meters, allocation)
+	// A revoked token must stop working immediately. Leaving it valid would let
+	// a deleted instance keep spending, and would let a later allocation reusing
+	// the identifier inherit a credential nobody issued it.
+	for token, held := range a.tokens {
+		if held == allocation {
+			delete(a.tokens, token)
+		}
+	}
 }
 
 // ObserveReadiness implements the readiness observer for agent probes.
