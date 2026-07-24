@@ -7,6 +7,21 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Secrets: opaque `SecretRef` (name, version, mount path) on workloads, a
+  `mount_secret` action, and `secret.mounted` evidence carrying only the
+  version. `SecretRef` has no field capable of holding a value.
+- Node secret broker sealing material to a node's identity with X25519 and
+  ChaCha20-Poly1305, decrypting into a tmpfs mount bound read-only into the
+  container. Vault or another backend satisfies the same interface.
+- `SecretMaterial`, which refuses to serialize and renders as `[redacted]` under
+  every formatting verb, so material cannot reach a log line or the event log.
+- `a4s seal` for sealing material to a node, reading from a file rather than an
+  argument so it never appears in shell history.
+- Redaction tests that run a real reconciliation and scan every serialized
+  artifact — goal, world, events, plan, explanation, diagnosis — for the value.
+- Kernel rules: a workload cannot start before its declared secrets are mounted,
+  and an agent cannot mount material the goal did not declare.
+
 - Service discovery: a directory mapping workload names to the endpoints
   observed serving them. Derived from verified evidence only, so an allocation
   appears solely when it has an address and unexpired readiness.
