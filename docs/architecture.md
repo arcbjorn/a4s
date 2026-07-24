@@ -9,6 +9,23 @@ An nginx container, PostgreSQL instance, background worker, static website, or
 AI runtime are all ordinary workloads. “Agentic” describes how the platform
 understands goals, makes plans, reacts to evidence, and repairs the system.
 
+### The word “agent” names two different objects
+
+A **control agent** is control-plane machinery: a registered decision-maker that
+proposes typed plans and holds `ActionKind` capability grants. This document is
+about those.
+
+An **agent workload** is scheduled cargo: a container whose cost is measured in
+tokens rather than cpu-seconds, which acts on the world through granted tools.
+It proposes nothing and holds no infrastructure capability. It is a workload
+kind alongside service, task, and database, declared by a `runtime` block the
+way a database is declared by an `engine`.
+
+The two never share an authority path, and their grant vocabularies are
+deliberately disjoint: a control agent's grants are actions the kernel executes,
+an agent workload's grants are tools that mean nothing to the kernel. See
+[agent workloads](agent-workloads.md).
+
 ## Why build this instead of another Kubernetes distribution
 
 K3s packages Kubernetes into a smaller operational unit, but its conceptual

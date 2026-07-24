@@ -92,6 +92,29 @@ Agents are never trusted, even when compiled into the server. Their process,
 model, prompt, explanation, and declared descriptor do not authorize actions.
 They receive observations, not runtime credentials.
 
+### Agent workloads
+
+An agent workload is untrusted cargo, not a control-plane actor. It holds no
+`ActionKind` grants and has no vocabulary for proposing infrastructure changes,
+so a compromised agent workload cannot escalate into the control plane. Its
+authority is exactly the `ToolGrant` envelope the kernel installed before it
+started, and it cannot widen that at runtime.
+
+Two properties carry the boundary:
+
+- Envelopes are stored per allocation on the node. A runtime asks the node what
+  it may call rather than deciding for itself, and there is no path from one
+  allocation's query to another's grants. Context leakage between agents comes
+  from shared runtime state rather than a shared kernel namespace, which is why
+  credentials, workspaces, and envelopes are per instance.
+- A mutating tool acts outside a4s, where no compensation, lease, or event log
+  reaches. Mutating envelopes therefore require a separately authenticated
+  `agent-mutating-tools` approval rather than an agent's judgement.
+
+Budget ceilings are a safety control, not a cost feature: an unbounded agent is
+an unbounded actor. The kernel refuses a workload whose ceilings are absent or
+zero, and refuses to start one that has already exhausted its budget.
+
 ### Kernel
 
 The kernel is trusted to authenticate the agent identity supplied by its caller,
@@ -238,7 +261,8 @@ The future API must:
 - Prevent an agent, goal submitter, or imported manifest from setting approval
   state directly.
 - Require stronger approval for destructive volume operations, host-wide
-  changes, secret-scope changes, and high-blast-radius rollout.
+  changes, secret-scope changes, high-blast-radius rollout, and any agent tool
+  envelope granting a mutating capability.
 
 ## Key management requirements
 

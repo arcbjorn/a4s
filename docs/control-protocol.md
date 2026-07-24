@@ -464,9 +464,9 @@ gateway refuses the new one. No concrete gateway backend is implemented yet.
 
 | Agent ID | Granted actions |
 |---|---|
-| `placement-agent` | `pull_image`, `create_allocation`, `create_volume`, `attach_volume`, `mount_secret`, `attach_network`, `start_allocation` |
+| `placement-agent` | `pull_image`, `create_allocation`, `create_volume`, `attach_volume`, `mount_secret`, `attach_network`, `grant_tools`, `start_allocation` |
 | `network-agent` | `publish_route` |
-| `rollout-agent` | `stop_allocation`, `delete_allocation`, `detach_volume` |
+| `rollout-agent` | `stop_allocation`, `delete_allocation`, `detach_volume`, `drain_allocation` |
 | `storage-agent` | `snapshot_volume`, `database_backup`, `backup_snapshot`, `restore_snapshot`, `quiesce_volume`, `transfer_volume`, `adopt_volume`, `prune_snapshots`, `verify_backup` |
 
 An agent cannot acquire another action by returning it in its descriptor or
@@ -558,6 +558,12 @@ Implemented evidence kinds:
 | `allocation.deleted` | Executor | Removes the allocation and releases its capacity once |
 | `route.reachable` | Router or gateway | Records the route |
 | `route.removed` | Router | Removes the route |
+| `agent.tools_granted` | Agents | Records that an envelope was installed, and its size only |
+| `agent.ready` | Prober | Sets readiness from provider reachability and remaining budget |
+| `agent.spent` | Node runtime | Records consumed budget; never decreases |
+| `agent.draining` | Agents | The instance stopped accepting work but still holds a task |
+| `allocation.drained` | Agents | The instance released its task and is safe to stop |
+| `queue.observed` | Queue | Records measured depth and in-flight count with an observation time |
 
 Readiness evidence carries `observed_at` and `expires_at`. An expired readiness
 observation stops satisfying a goal, because a service that was healthy when
@@ -924,3 +930,72 @@ A database workload gets a `database` probe rather than a TCP one. The engine
 opens a connection and runs a trivial query; a database still replaying its
 write-ahead log binds the port but rejects that query, so only the connection
 proves it is serving.
+
+## Agent workloads
+
+An agent workload is a workload kind, like a database. It is not a control
+agent: it proposes nothing, holds no `ActionKind` grants, and has no seat in the
+coordinator. The complete model is in [agent workloads](agent-workloads.md);
+this section covers only the protocol surface.
+
+A workload declaring a `runtime` is treated as an agent. It may not also declare
+an `engine`.
+
+Constraints, enforced at validation:
+
+- The runtime must be one the node can bound (currently `a4s.agent/v1`).
+- The model must be pinned, for the same reason the image digest is.
+- Every budget ceiling must be positive. A zero is rejected rather than read as
+  unlimited, so a forgotten field cannot grant infinite spend.
+- Every tool must declare a scope.
+
+### `grant_tools`
+
+Installs an allocation's tool envelope while it is still in `created` phase. The
+kernel refuses to grant tools to a running allocation, because that would widen
+a blast radius it already authorized.
+
+Each granted tool must match one the goal declared, compared exactly including
+scope and the mutating flag. Any envelope containing a mutating tool requires a
+granted `agent-mutating-tools` approval.
+
+This is what lets the kernel authorize an agent workload up front despite not
+knowing what the agent will decide to do: the envelope is checked before it
+starts, and the agent cannot widen it at runtime.
+
+### `drain_allocation`
+
+Tells an instance to stop accepting work and finish what it holds. It is the
+agent equivalent of quiescing a volume: the evidenced step that makes the
+following stop non-destructive.
+
+The kernel refuses `stop_allocation` on an agent holding a task unless it has
+drained and been observed holding nothing. An exhausted agent is exempt, since
+it cannot make progress and waiting would never end.
+
+### Agent readiness
+
+An agent workload gets an `agent` probe rather than a process or TCP one. An
+agent whose provider is unreachable or whose budget is spent can do no work
+while its container looks perfectly healthy, so only a provider-and-budget check
+proves it is serving.
+
+The `agent_ready` check additionally excludes draining and exhausted instances,
+which are running but not serving.
+
+### Budget and placement
+
+Budget is a resource dimension beside cpu and memory. Nodes carry
+`budget_capacity` and `budget_used`, and placement commits budget the way it
+commits memory.
+
+Provider reachability is a node fact (`providers`) and a hard placement
+constraint. An agent placed where its provider is unreachable can never become
+ready, so it is refused at placement rather than discovered at probe time.
+
+### Queues
+
+A queue-backed agent workload scales on observed depth between the goal's
+replica count and the queue's `max_workers`. The kernel recomputes that ceiling
+itself rather than trusting the placement agent's arithmetic. Depth older than
+60 seconds does not drive scaling.

@@ -36,6 +36,7 @@ containerd, networking implementations, model SDKs, and transport libraries.
 | `executor.go` | Executor interface and simulated memory data plane |
 | `engine.go` | Reconciliation coordination, event ordering, verification |
 | `engine_test.go` | End-to-end kernel safety and convergence tests |
+| `agent_workload_test.go` | Agent-workload budget, tool-grant, drain, and queue rules |
 
 Dependency direction:
 
@@ -72,6 +73,7 @@ The node package owns the host mutation trust boundary.
 | `container_runtime.go` | Runtime-neutral action-to-container contract |
 | `containerd_linux.go` | Linux containerd implementation and OCI profile |
 | `containerd_other.go` | Explicit unsupported-platform behavior |
+| `agent.go` | Per-allocation tool envelopes, task tracking, drain reporting |
 | `*_test.go` | Signature, replay, tamper, contract, and durability tests |
 
 Dependency direction:

@@ -14,13 +14,15 @@ repository.
 4. [Architecture](architecture.md) for the intended K3s replacement design.
 5. [Control protocol](control-protocol.md) for objects, state transitions,
    actions, events, signatures, and versioning.
-6. [Codebase guide](codebase.md) to find implementation ownership and extension
+6. [Agent workloads](agent-workloads.md) for the workload kind whose cost is
+   tokens, and how it differs from a control agent.
+7. [Codebase guide](codebase.md) to find implementation ownership and extension
    points.
-7. [Security model](security.md) before changing policy, identity, execution,
+8. [Security model](security.md) before changing policy, identity, execution,
    storage, networking, or secrets.
-8. [Development guide](development.md) before adding code.
-9. [Operations](operations.md) before touching a Linux host or containerd.
-10. [Roadmap](roadmap.md) for milestone order and exit criteria.
+9. [Development guide](development.md) before adding code.
+10. [Operations](operations.md) before touching a Linux host or containerd.
+11. [Roadmap](roadmap.md) for milestone order and exit criteria.
 
 The [glossary](glossary.md) defines project-specific terms. The
 [decision records](decisions/README.md) preserve architectural choices and the
@@ -51,6 +53,7 @@ Update these documents with code changes:
 | Goal, proposal, action, evidence, or event field | `control-protocol.md`, examples, status |
 | New action kind | protocol, security, codebase, tests, roadmap |
 | New control agent | architecture, protocol capability table, codebase |
+| Agent-workload runtime, budget, tool, or queue behavior | `agent-workloads.md`, protocol, security |
 | Node-runtime behavior | `node-runtime.md`, operations, security |
 | New daemon or CLI flag | README, getting started, operations |
 | Trust-boundary change | security and a decision record |
