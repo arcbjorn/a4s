@@ -357,10 +357,21 @@ The separation between `allocation.running` and `allocation.ready` is a
 security boundary, not a naming detail. The component that started a container
 is not permitted to declare that container healthy.
 
-`OptimisticProber` currently supplies readiness so the spike can converge. It is
-a deliberate stand-in and must be replaced by process, TCP, and HTTP probes
-before any real deployment. It is the single remaining place where readiness is
-assumed rather than observed.
+Readiness is supplied by a `MeasuredProber` over a `ReadinessObserver`. On a
+node that observer performs a real process, TCP, or HTTP measurement, and it
+reports readiness only from a measurement that actually succeeded. A probe that
+cannot complete yields no evidence rather than a false negative, because "could
+not measure" and "measured as unhealthy" are different facts.
+
+Every readiness observation carries `observed_at` and `expires_at`. Once an
+observation expires the allocation stops counting as ready, so a dead workload
+cannot keep satisfying a goal on the strength of an old measurement.
+
+An image observed serving is recorded as that workload's known-good version. A
+rollout that is later observed failing surfaces that digest as the rollback
+target, so a rollback always names a version this cluster actually saw working.
+Applying it changes what the operator asked for, so the goal blocks with the
+evidence rather than an agent quietly running a different version.
 
 ## Events
 
@@ -514,3 +525,39 @@ Until a stable release:
 No compatibility guarantee exists for v1alpha1 yet. Record deliberate breaking
 changes in `CHANGELOG.md` and an architectural decision record when they alter
 the trust model.
+
+## Node enrollment
+
+A node connects to the server and proves its identity before receiving any
+capability:
+
+```text
+node  -> hello      { version, node_id }
+server -> challenge { version, nonce, server_key_id }
+node  -> proof      { version, node_id, signature }
+server -> enrolled  { version, accepted, server_key_id }
+```
+
+The node signs a canonical encoding of the protocol version, its node ID, and
+the server's random 32-byte nonce. Binding the proof to a fresh nonce is what
+makes enrollment replay-resistant: a captured proof authenticates only the one
+connection it was produced for.
+
+Rules:
+
+- The server learns which node it is talking to by verification, never by
+  assertion. A `hello` is a claim; only the proof establishes identity.
+- The proof must name the same node ID as the hello, so a peer cannot claim one
+  identity and prove another.
+- A node absent from the server's enrolled key set cannot connect.
+- Refusals are generic on the wire. An unenrolled prober cannot distinguish
+  "unknown node" from "bad signature" and so cannot enumerate node identities.
+  The server log records the specific cause.
+- The node refuses a server that names a signing key the node does not already
+  trust, so a reachable impostor cannot nominate its own key.
+- A reconnecting node replaces its prior session, and the stale connection is
+  closed rather than left able to receive capabilities.
+
+Enrollment establishes *who* the peer is. It does not encrypt the channel. The
+transport is intended to run over an already-encrypted tailnet; on an untrusted
+network it requires TLS beneath it.
