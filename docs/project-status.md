@@ -50,6 +50,8 @@ contract.
   and image policy.
 - Digest-pinned image requirement.
 - Privileged workload rejection in v1alpha1.
+- Database workloads with engine-consistent backup, connection-based readiness,
+  and a raw snapshot of a running database refused.
 - Stateful workloads limited to one replica, pinned to the node holding their
   data, and never relocated on a missing heartbeat.
 - Separate authenticated approval record for public routes.
