@@ -25,6 +25,9 @@ type ProbeTarget struct {
 	Kind string `json:"kind"`
 	Port int    `json:"port,omitempty"`
 	Path string `json:"path,omitempty"`
+	// Address is the allocation's own IP. Probing this rather than loopback is
+	// what makes a measurement attributable to one replica.
+	Address string `json:"address,omitempty"`
 }
 
 const (
@@ -72,6 +75,10 @@ func (p *MeasuredProber) Probe(world World, check Check) (Evidence, bool) {
 		// Without a declared probe there is nothing to measure, and readiness
 		// must not be assumed.
 		return Evidence{}, false
+	}
+	if target.Address == "" {
+		// The world knows where the allocation actually lives.
+		target.Address = allocation.Address
 	}
 	ready, observed, err := p.Observer.ObserveReadiness(target)
 	if err != nil {
