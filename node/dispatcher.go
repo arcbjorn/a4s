@@ -71,6 +71,14 @@ type Dispatcher struct {
 	// stays purely reactive.
 	Desired *DesiredState
 	mu      sync.Mutex
+	// leases records the last accepted lease per target so the node can refuse
+	// an envelope that contradicts a live claim. Guarded by mu.
+	leases map[string]heldLease
+}
+
+type heldLease struct {
+	leaseID   string
+	expiresAt time.Time
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, signed SignedAction) (DispatchResult, error) {
@@ -99,6 +107,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, signed SignedAction) (Dispatc
 		}
 		return previous, nil
 	}
+	// A node cannot see the controller's lease table, but it can refuse an
+	// envelope that contradicts one it already accepted for the same target.
+	// This is a local backstop against a controller that lost track of its own
+	// leases, not a replacement for kernel-side exclusion.
+	if err := d.checkLease(envelope); err != nil {
+		return DispatchResult{}, err
+	}
 	evidence, err := d.Runtime.Execute(ctx, envelope.Action)
 	if err != nil {
 		return DispatchResult{}, err
@@ -111,11 +126,44 @@ func (d *Dispatcher) Dispatch(ctx context.Context, signed SignedAction) (Dispatc
 	if err := d.recordDesired(envelope.Action); err != nil {
 		return DispatchResult{}, err
 	}
+	d.noteLease(envelope)
 	result := DispatchResult{EnvelopeDigest: digest, Evidence: evidence}
 	if err := d.Ledger.Put(key, result); err != nil {
 		return DispatchResult{}, err
 	}
 	return result, nil
+}
+
+// checkLease refuses an envelope whose target is already claimed by a different
+// live lease. The node trusts the controller to allocate leases, so this only
+// catches a controller that contradicts itself within a lease's lifetime.
+func (d *Dispatcher) checkLease(envelope ActionEnvelope) error {
+	target := envelope.Action.Target
+	if target == "" || envelope.LeaseID == "" {
+		return nil
+	}
+	held, ok := d.leases[target]
+	if !ok || !d.Now().UTC().Before(held.expiresAt) {
+		return nil
+	}
+	if held.leaseID == envelope.LeaseID {
+		return nil
+	}
+	return fmt.Errorf("target %q is held by lease %q until %s",
+		target, held.leaseID, held.expiresAt.UTC().Format(time.RFC3339))
+}
+
+// noteLease records the accepted lease for a target. It expires with the
+// envelope, so a stale claim cannot block a target indefinitely.
+func (d *Dispatcher) noteLease(envelope ActionEnvelope) {
+	target := envelope.Action.Target
+	if target == "" || envelope.LeaseID == "" {
+		return
+	}
+	if d.leases == nil {
+		d.leases = make(map[string]heldLease)
+	}
+	d.leases[target] = heldLease{leaseID: envelope.LeaseID, expiresAt: envelope.ExpiresAt}
 }
 
 // attribute completes evidence with facts only the node can supply: which node
