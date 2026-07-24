@@ -47,6 +47,7 @@ func DefaultPolicy() Policy {
 				ActionTransferVolume:  true,
 				ActionAdoptVolume:     true,
 				ActionPruneSnapshots:  true,
+				ActionVerifyBackup:    true,
 			},
 		},
 	}
@@ -323,6 +324,27 @@ func validateAction(goal Goal, world World, action Action) error {
 			return fmt.Errorf("adoption node %q is not the handoff target %q",
 				action.Node, volume.Handoff.To)
 		}
+
+	case ActionVerifyBackup:
+		if action.Volume == nil {
+			return fmt.Errorf("verify backup requires a volume reference")
+		}
+		if action.Snapshot == "" {
+			return fmt.Errorf("verify backup requires a snapshot id")
+		}
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		// Only a recorded snapshot can be verified; there is nothing else whose
+		// recoverability is meaningful to check.
+		if _, known := volume.Snapshots[action.Snapshot]; !known {
+			return fmt.Errorf("snapshot %q of volume %q was never recorded",
+				action.Snapshot, action.Volume.Name)
+		}
+		// Verification is read-only: it restores into scratch space and
+		// discards. It needs no approval and can run against a live volume,
+		// which is what lets it happen on a schedule without disruption.
 
 	case ActionPruneSnapshots:
 		if action.Volume == nil {
