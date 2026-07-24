@@ -84,6 +84,8 @@ contract.
   node holding it.
 - Snapshot retention with dry-run pruning that protects the last-known-good and
   backed-up snapshots and never removes the last recovery point.
+- Scheduled restore verification that proves a backup recoverable without
+  touching the live volume, and a storage agent that re-checks stale backups.
 - Cross-node handoff gated step by step on evidence, with the origin remaining
   authoritative until the target proves it holds the data, and the node actually
   moving the bytes through the shared store.
@@ -208,8 +210,9 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 - A dedicated transfer transport. The node moves data through the shared backup
   store, so a move needs a store both nodes can reach; direct node-to-node
   streaming is not implemented.
-- Scheduled restore tests. Restore is verified when it runs, but nothing
-  exercises it on a schedule.
+- Model-backed storage scheduling. The storage agent re-verifies stale backups
+  deterministically; a cadence is driven by reconciliation frequency rather than
+  an internal timer.
 - Secret rotation without a workload restart, and a Vault-backed broker. The
   file broker and the mount path are implemented; rotation currently means
   changing the goal's version, which replaces the allocation.
