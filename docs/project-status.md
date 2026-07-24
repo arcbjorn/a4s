@@ -71,6 +71,8 @@ contract.
 - Multi-replica placement batched to bound blast radius.
 - Service discovery derived from verified evidence, and route snapshots
   resolving each route to the endpoints observed serving it.
+- Opaque secret references with node-sealed material, version-only evidence, and
+  redaction proven by scanning every serialized artifact.
 - Target leases acquired before the first mutation and released on every exit
   path, so two proposals cannot interleave on one allocation. Leases expire so
   an abandoned holder cannot block a target indefinitely.
@@ -190,7 +192,9 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 - nftables policy compilation from typed network intent.
 - Public ingress or TLS automation.
 - Volumes, snapshots, backups, or stateful ownership handoff.
-- Secret broker and runtime credential mounts.
+- Secret rotation without a workload restart, and a Vault-backed broker. The
+  file broker and the mount path are implemented; rotation currently means
+  changing the goal's version, which replaces the allocation.
 - Seccomp/AppArmor selection, user namespaces, or rootless containers.
 - Operator API and separately authenticated approval workflow.
 - Model-backed agents, agent sandboxing, or agent resource budgets.
