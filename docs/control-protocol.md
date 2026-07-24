@@ -182,6 +182,36 @@ Node behavior:
 - Create an OCI container and snapshot with hardened defaults.
 - Return `allocation.created` evidence.
 
+### `mount_secret`
+
+Required semantic fields: `id`, `kind`, `target`, `workload`, `node`, and
+`secret`.
+
+Kernel rules:
+
+- Allocation exists and is still in `created` phase. Credentials must be in
+  place before the process starts.
+- The reference must be one the goal declared, exactly: name, version, and mount
+  path. An agent cannot mount material the operator did not authorize for this
+  workload, and cannot substitute a different version.
+
+Node behavior:
+
+- Fetch node-scoped sealed material from the broker and decrypt it with the
+  node's identity key.
+- Write it to a tmpfs directory at mode `0400` and bind it read-only into the
+  container.
+- Return the existing mount as an idempotent repeat rather than re-fetching.
+- Return `secret.mounted` evidence carrying name, version, and mount path.
+
+The action carries a reference, never material, so a proposal remains safe to
+log in full and to show a model. A workload cannot start until every declared
+secret is mounted at the declared version; rotating a secret means changing the
+goal, which registers as drift.
+
+Releasing happens as part of `delete_allocation`, because a deleted workload
+must not leave credentials readable on the node.
+
 ### `attach_network`
 
 Required semantic fields: `id`, `kind`, `target`, `workload`, and `node`.
@@ -304,7 +334,7 @@ gateway refuses the new one. No concrete gateway backend is implemented yet.
 
 | Agent ID | Granted actions |
 |---|---|
-| `placement-agent` | `pull_image`, `create_allocation`, `attach_network`, `start_allocation` |
+| `placement-agent` | `pull_image`, `create_allocation`, `mount_secret`, `attach_network`, `start_allocation` |
 | `network-agent` | `publish_route` |
 | `rollout-agent` | `stop_allocation`, `delete_allocation` |
 
@@ -371,6 +401,7 @@ Implemented evidence kinds:
 | Kind | Produced by | Effect on the world |
 |---|---|---|
 | `image.present` | Executor | Marks the image present on the observed node |
+| `secret.mounted` | Secrets | Records the mounted secret version, never the material |
 | `network.attached` | Network | Records the allocation's own address |
 | `network.detached` | Network | Clears the address on teardown |
 | `allocation.created` | Executor | Creates the allocation and charges node capacity once |
