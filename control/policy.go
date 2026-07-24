@@ -33,8 +33,15 @@ func DefaultPolicy() Policy {
 				ActionStopAllocation:   true,
 				ActionDeleteAllocation: true,
 				// Releasing a volume is part of retiring an allocation, but the
-				// rollout agent may not create or snapshot one.
+				// rollout agent may not create, snapshot, or restore one.
 				ActionDetachVolume: true,
+			},
+			// The storage agent may protect and recover data but may not place
+			// or start workloads. Backup authority and execution authority stay
+			// in separate capability sets.
+			"storage-agent": {
+				ActionSnapshotVolume:  true,
+				ActionRestoreSnapshot: true,
 			},
 		},
 	}
@@ -227,8 +234,44 @@ func validateAction(goal Goal, world World, action Action) error {
 		if action.Volume == nil {
 			return fmt.Errorf("snapshot volume requires a volume reference")
 		}
-		if _, ok := world.Volumes[action.Volume.Name]; !ok {
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
 			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		// A snapshot taken from a live writer may be internally inconsistent,
+		// and an operator would later trust it for restore.
+		if volume.Owner != "" {
+			return fmt.Errorf("volume %q must be quiesced before snapshotting; it is attached to %q",
+				action.Volume.Name, volume.Owner)
+		}
+
+	case ActionRestoreSnapshot:
+		if action.Volume == nil {
+			return fmt.Errorf("restore snapshot requires a volume reference")
+		}
+		if action.Snapshot == "" {
+			return fmt.Errorf("restore snapshot requires a snapshot id")
+		}
+		volume, ok := world.Volumes[action.Volume.Name]
+		if !ok {
+			return fmt.Errorf("volume %q does not exist", action.Volume.Name)
+		}
+		// Only a snapshot this cluster took and verified may be restored. An
+		// operator cannot name arbitrary content and have it written over data.
+		if _, known := volume.Snapshots[action.Snapshot]; !known {
+			return fmt.Errorf("snapshot %q of volume %q was never recorded",
+				action.Snapshot, action.Volume.Name)
+		}
+		// Restoring over a live writer would replace the filesystem underneath
+		// a running process.
+		if volume.Owner != "" {
+			return fmt.Errorf("volume %q must be detached before restore; it is attached to %q",
+				action.Volume.Name, volume.Owner)
+		}
+		// Restore overwrites durable data irreversibly. Like destruction, it
+		// needs a separately authenticated decision rather than an agent's.
+		if !hasApproval(world, goal.ID, "restore-volume") {
+			return fmt.Errorf("restoring volume %q requires restore-volume approval", action.Volume.Name)
 		}
 
 	case ActionMountSecret:
@@ -442,6 +485,12 @@ func cloneWorld(world World) World {
 	}
 	for name, volume := range world.Volumes {
 		copyVolume := *volume
+		if volume.Snapshots != nil {
+			copyVolume.Snapshots = make(map[string]string, len(volume.Snapshots))
+			for id, checksum := range volume.Snapshots {
+				copyVolume.Snapshots[id] = checksum
+			}
+		}
 		clone.Volumes[name] = &copyVolume
 	}
 	for id, approval := range world.Approvals {
