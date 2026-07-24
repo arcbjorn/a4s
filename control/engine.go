@@ -229,8 +229,14 @@ func (e *Engine) registerProbeTarget(goal Goal, action Action) {
 	if goal.Workload.Port > 0 {
 		kind = ProbeTCP
 	}
+	// A database is ready only when it accepts a connection, which a plain TCP
+	// probe cannot distinguish from a port that is merely open.
+	if goal.Workload.Engine != "" {
+		kind = ProbeDatabase
+	}
 	e.probeTargets[action.Target] = ProbeTarget{
 		Allocation: action.Target, Kind: kind, Port: goal.Workload.Port,
+		Engine: goal.Workload.Engine,
 	}
 }
 
