@@ -82,6 +82,8 @@ contract.
   recover.
 - Off-host backup with fallback restore, so a volume survives the loss of the
   node holding it.
+- Cross-node handoff gated step by step on evidence, with the origin remaining
+  authoritative until the target proves it holds the data.
 - Target leases acquired before the first mutation and released on every exit
   path, so two proposals cannot interleave on one allocation. Leases expire so
   an abandoned holder cannot block a target indefinitely.
@@ -200,8 +202,9 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
   resolve across nodes.
 - nftables policy compilation from typed network intent.
 - Public ingress or TLS automation.
-- Ownership handoff between nodes. Snapshots, verified restore, and off-host
-  backup are implemented; moving a volume to another node is not.
+- A node-side implementation of transfer. The handoff protocol, its phase
+  gating, and the ownership change are implemented in the control plane; the
+  node does not yet copy data between hosts.
 - Scheduled restore tests. Restore is verified when it runs, but nothing
   exercises it on a schedule.
 - Secret rotation without a workload restart, and a Vault-backed broker. The
