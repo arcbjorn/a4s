@@ -7,6 +7,16 @@ release or compatibility guarantee yet.
 
 ### Added
 
+- Scheduled restore verification: a `verify_backup` action restores a snapshot
+  into scratch space, checksums it, and discards it, proving a backup is
+  recoverable without touching the live volume. A restore test that could damage
+  the data it protects would be worse than none.
+- A storage agent that proposes verifying the least recently checked backup once
+  its verification ages past an interval, and records when each backup was last
+  proven recoverable.
+- `StaleBackups`, reporting volumes overdue for verification, so an operator can
+  see their recovery posture rather than assuming it.
+
 - Snapshot retention and a `prune_snapshots` action. Pruning keeps the most
   recent N snapshots and never removes the last-known-good, a backed-up
   snapshot, or the last one standing, so a prune cannot leave a volume with no
