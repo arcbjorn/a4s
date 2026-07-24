@@ -1,5 +1,12 @@
 package control
 
+import "time"
+
+// DefaultReadinessTTL bounds how long a readiness observation is trusted. A
+// service that was healthy is not necessarily healthy now, so readiness must be
+// re-observed rather than remembered indefinitely.
+const DefaultReadinessTTL = 30 * time.Second
+
 // Prober produces evidence independently of the executor that performed the
 // mutation. Invariant: an executor may report what it did, but only a probe may
 // report that the result is actually serving. Keeping these sources separate is
@@ -10,31 +17,96 @@ type Prober interface {
 	Probe(World, Check) (Evidence, bool)
 }
 
-// OptimisticProber marks any running allocation ready and any present route
-// reachable. It exists so the spike can close the control loop without a real
-// probe implementation, and it is the deliberate stand-in for the process, TCP,
-// and HTTP probes that must replace it before any real deployment.
-type OptimisticProber struct{}
+// ProbeTarget describes what to measure for an allocation. The control plane
+// holds the intent; the node performs the measurement.
+type ProbeTarget struct {
+	Allocation string `json:"allocation"`
+	// Kind is "process", "tcp", or "http".
+	Kind string `json:"kind"`
+	Port int    `json:"port,omitempty"`
+	Path string `json:"path,omitempty"`
+}
 
-func (OptimisticProber) Probe(world World, check Check) (Evidence, bool) {
-	switch check.Kind {
-	case CheckAllocationReady:
-		allocation, ok := world.Allocations[check.Target]
-		if !ok || allocation.Phase != AllocationRunning || allocation.Ready {
-			return Evidence{}, false
-		}
-		return Evidence{
-			Kind: EvidenceAllocationReady, Target: check.Target,
-			Observed: map[string]string{"ready": "true", "source": "optimistic-prober"},
-		}, true
+const (
+	ProbeProcess = "process"
+	ProbeTCP     = "tcp"
+	ProbeHTTP    = "http"
+)
 
-	case CheckRouteReachable:
-		if world.Routes[check.Target] == nil {
-			return Evidence{}, false
-		}
-		return Evidence{}, false
+// ReadinessObserver measures whether an allocation is actually serving. It is
+// implemented on the node, where the allocation runs, and its results reach the
+// kernel as evidence rather than as a status field.
+type ReadinessObserver interface {
+	// ObserveReadiness reports whether the target is serving, plus a short
+	// description of what was measured.
+	ObserveReadiness(ProbeTarget) (bool, map[string]string, error)
+}
 
-	default:
+// MeasuredProber turns a ReadinessObserver into probe evidence. Unlike the
+// stand-in it replaces, it reports readiness only when a measurement succeeded,
+// and it stamps every observation with an expiry.
+type MeasuredProber struct {
+	Observer ReadinessObserver
+	Targets  map[string]ProbeTarget
+	TTL      time.Duration
+	Now      func() time.Time
+}
+
+func NewMeasuredProber(observer ReadinessObserver, targets map[string]ProbeTarget) *MeasuredProber {
+	return &MeasuredProber{
+		Observer: observer, Targets: targets,
+		TTL: DefaultReadinessTTL, Now: time.Now,
+	}
+}
+
+func (p *MeasuredProber) Probe(world World, check Check) (Evidence, bool) {
+	if p == nil || p.Observer == nil || check.Kind != CheckAllocationReady {
 		return Evidence{}, false
 	}
+	allocation, ok := world.Allocations[check.Target]
+	if !ok || allocation.Phase != AllocationRunning {
+		return Evidence{}, false
+	}
+	target, ok := p.Targets[check.Target]
+	if !ok {
+		// Without a declared probe there is nothing to measure, and readiness
+		// must not be assumed.
+		return Evidence{}, false
+	}
+	ready, observed, err := p.Observer.ObserveReadiness(target)
+	if err != nil {
+		// A failed measurement is not evidence of failure, only absence of
+		// evidence. The verifier treats the allocation as not ready.
+		return Evidence{}, false
+	}
+	if observed == nil {
+		observed = map[string]string{}
+	}
+	observed["ready"] = boolText(ready)
+	observed["probe"] = target.Kind
+
+	now := p.now()
+	ttl := p.TTL
+	if ttl <= 0 {
+		ttl = DefaultReadinessTTL
+	}
+	return Evidence{
+		Kind: EvidenceAllocationReady, Target: check.Target,
+		Source: "prober:" + target.Kind, ObservedAt: now,
+		ExpiresAt: now.Add(ttl), Observed: observed,
+	}, true
+}
+
+func (p *MeasuredProber) now() time.Time {
+	if p.Now == nil {
+		return time.Now()
+	}
+	return p.Now()
+}
+
+func boolText(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
