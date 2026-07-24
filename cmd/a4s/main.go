@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/arcbjorn/a4s/control"
@@ -41,6 +45,8 @@ func run(args []string) error {
 		return runNode(args[1:])
 	case "server":
 		return runServer(args[1:])
+	case "keygen":
+		return keygen(args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -55,11 +61,46 @@ func run(args []string) error {
 // runServer starts the control plane against a durable event log and reports
 // the world it recovered. Recovery is the normal startup path, so the same code
 // runs whether the log is empty or holds a full history.
+// keygen writes an Ed25519 keypair to disk. Keys are written to files with
+// restrictive permissions and never printed, because a private key echoed to a
+// terminal ends up in scrollback and shell history.
+func keygen(args []string) error {
+	flags := flag.NewFlagSet("keygen", flag.ContinueOnError)
+	out := flags.String("out", "", "path for the private key; the public key gets a .pub suffix")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *out == "" {
+		return fmt.Errorf("out is required")
+	}
+	public, private, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate key: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(*out), 0o750); err != nil {
+		return fmt.Errorf("create key directory: %w", err)
+	}
+	privateText := base64.RawStdEncoding.EncodeToString(private)
+	if err := os.WriteFile(*out, []byte(privateText+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write private key: %w", err)
+	}
+	publicText := base64.RawStdEncoding.EncodeToString(public)
+	if err := os.WriteFile(*out+".pub", []byte(publicText+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write public key: %w", err)
+	}
+	fmt.Printf("wrote %s and %s.pub\n", *out, *out)
+	return nil
+}
+
 func runServer(args []string) error {
 	flags := flag.NewFlagSet("server", flag.ContinueOnError)
 	eventLog := flags.String("event-log", "", "absolute path to the durable event log")
 	file := flags.String("file", "", "optional scenario supplying node inventory and approvals")
 	statusOnly := flags.Bool("status", false, "report recovered state and exit")
+	listen := flags.String("listen", "", "address to accept enrolled node connections on")
+	keyID := flags.String("key-id", "control-1", "identifier for this server signing key")
+	signingKeyPath := flags.String("signing-key", "", "path to the base64 Ed25519 private signing key")
+	nodeKeyDir := flags.String("node-keys", "", "directory of <node-id>.pub enrolled node keys")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -96,10 +137,126 @@ func runServer(args []string) error {
 	if *statusOnly {
 		return nil
 	}
-	// Reconciliation requires a connected node executor, which needs the
-	// authenticated transport that is not implemented yet. Refusing here is
-	// clearer than pretending to serve.
-	return fmt.Errorf("no node transport is configured; run with --status until node enrollment exists")
+	if *listen == "" {
+		return fmt.Errorf("listen is required to serve; use --status to inspect recovered state")
+	}
+	if *signingKeyPath == "" || *nodeKeyDir == "" {
+		return fmt.Errorf("signing-key and node-keys are required to serve")
+	}
+	signingKey, err := loadPrivateKey(*signingKeyPath)
+	if err != nil {
+		return err
+	}
+	nodeKeys, err := loadNodeKeys(*nodeKeyDir)
+	if err != nil {
+		return err
+	}
+
+	registry := a4snode.NewRegistry()
+	defer registry.CloseAll()
+	listener, err := a4snode.Listen("tcp", *listen, registry, a4snode.ListenerConfig{
+		NodeKeys: nodeKeys, ServerKeyID: *keyID,
+		OnError: func(err error) { fmt.Fprintln(os.Stderr, "a4s: enrollment:", err) },
+	})
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	ctx, cancel := signalContext()
+	defer cancel()
+	go func() {
+		if err := listener.Serve(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "a4s: listener:", err)
+		}
+	}()
+	fmt.Printf("accepting enrolled nodes on %s as key %q\n", listener.Addr(), *keyID)
+
+	executor := a4snode.NewRegistryExecutor(registry, *keyID, signingKey)
+	return reconcileLoop(ctx, instance, executor, registry)
+}
+
+// reconcileLoop drives accepted goals whenever nodes are connected. A goal that
+// cannot converge is reported and retried rather than terminating the server,
+// because the cause is usually a node that has not connected yet.
+func reconcileLoop(ctx context.Context, instance *server.Server,
+	executor *a4snode.RegistryExecutor, registry *a4snode.Registry) error {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("shutting down")
+			return nil
+		case <-ticker.C:
+			if len(registry.Nodes()) == 0 {
+				continue
+			}
+			for _, goal := range instance.Goals() {
+				if err := instance.Reconcile(goal.ID, executor); err != nil {
+					fmt.Fprintf(os.Stderr, "a4s: reconcile %s: %v\n", goal.ID, err)
+					continue
+				}
+				status := instance.Status()
+				fmt.Printf("goal %s converged at revision %d: %d allocations, %d routes\n",
+					goal.ID, status.Revision, status.Allocations, status.Routes)
+			}
+		}
+	}
+}
+
+// signalContext cancels on interrupt so the server shuts down cleanly rather
+// than leaving node connections half-open.
+func signalContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
+// loadPrivateKey reads a base64 Ed25519 private key from a file. Keys are never
+// accepted on the command line, where they would appear in shell history and
+// process listings.
+func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read signing key: %w", err)
+	}
+	decoded, err := decodeBase64(strings.TrimSpace(string(raw)))
+	if err != nil || len(decoded) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("signing key must be a base64-encoded Ed25519 private key")
+	}
+	return ed25519.PrivateKey(decoded), nil
+}
+
+// loadNodeKeys reads enrolled node public keys from <node-id>.pub files. A node
+// absent from this directory cannot enroll.
+func loadNodeKeys(dir string) (map[string]ed25519.PublicKey, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read node key directory: %w", err)
+	}
+	keys := make(map[string]ed25519.PublicKey)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".pub") {
+			continue
+		}
+		nodeID := strings.TrimSuffix(entry.Name(), ".pub")
+		key, err := loadPublicKey(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("node %q: %w", nodeID, err)
+		}
+		keys[nodeID] = key
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("no enrolled node keys found in %s", dir)
+	}
+	return keys, nil
+}
+
+func decodeBase64(encoded string) ([]byte, error) {
+	decoded, err := base64.RawStdEncoding.DecodeString(encoded)
+	if err != nil {
+		return base64.StdEncoding.DecodeString(encoded)
+	}
+	return decoded, nil
 }
 
 func runNode(args []string) error {
@@ -114,6 +271,8 @@ func runNode(args []string) error {
 	containerdNamespace := flags.String("namespace", "a4s", "containerd namespace")
 	snapshotter := flags.String("snapshotter", "", "containerd snapshotter override")
 	logDir := flags.String("log-dir", "/var/log/a4s/allocations", "allocation log directory")
+	serverAddress := flags.String("server", "", "server address to connect to (empty reads stdin)")
+	identityKeyPath := flags.String("identity-key", "", "path to this node's base64 Ed25519 private key")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -161,7 +320,20 @@ func runNode(args []string) error {
 	defer stopSupervisor()
 	go superviseLoop(supervisorCtx, supervisor, *superviseInterval)
 
-	return a4snode.Serve(ctx, &dispatcher, os.Stdin, os.Stdout)
+	if *serverAddress == "" {
+		// Without a server address the node reads a local stream, which remains
+		// useful for offline testing against a real containerd.
+		return a4snode.Serve(ctx, &dispatcher, os.Stdin, os.Stdout)
+	}
+	if *identityKeyPath == "" {
+		return fmt.Errorf("identity-key is required to connect to a server")
+	}
+	identityKey, err := loadPrivateKey(*identityKeyPath)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "a4s: connecting to %s as node %q\n", *serverAddress, *nodeID)
+	return a4snode.DialServer(ctx, "tcp", *serverAddress, *nodeID, identityKey, &dispatcher, 0)
 }
 
 // superviseLoop periodically reconciles observed local state toward the node's
@@ -285,5 +457,7 @@ Usage:
   a4s simulate --file scenario.json [--json] [--event-log /path] [--max-rounds N]
   a4s node --node-id ID --key-id ID --public-key /path [runtime flags]
   a4s server --event-log /path [--file scenario.json] [--status]
+             [--listen host:port --signing-key /path --node-keys /dir]
+  a4s keygen --out /path
   a4s version`)
 }
