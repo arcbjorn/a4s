@@ -56,6 +56,17 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 		if err != nil {
 			return proposal, err
 		}
+		// Durable data does not move. A workload whose volume already exists is
+		// pinned to that node, whatever placement would otherwise prefer.
+		if home := volumeHome(goal, world); home != "" {
+			pinned, ok := world.Nodes[home]
+			if !ok || !pinned.Healthy {
+				return proposal, fmt.Errorf(
+					"volume for workload %q lives on node %q, which is not available",
+					goal.Workload.Name, home)
+			}
+			node = pinned
+		}
 		allocationID := fmt.Sprintf("%s-%d", goal.Workload.Name, replica)
 		var pullID string
 		if !node.Images[goal.Workload.Image] {
@@ -77,6 +88,27 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 		proposal.Actions = append(proposal.Actions, create)
 
 		startDeps := []string{createID}
+		// Storage must be in place before the process starts, or the workload
+		// comes up and writes to an empty directory that is not its volume.
+		for _, ref := range goal.Workload.Volumes {
+			volume := ref
+			attachDeps := []string{createID}
+			if _, exists := world.Volumes[ref.Name]; !exists {
+				createVolumeID := "create-volume-" + ref.Name
+				proposal.Actions = append(proposal.Actions, Action{
+					ID: createVolumeID, Kind: ActionCreateVolume, Target: ref.Name,
+					Workload: goal.Workload.Name, Node: node.ID, Volume: &volume,
+				})
+				attachDeps = append(attachDeps, createVolumeID)
+			}
+			attachID := "attach-volume-" + ref.Name + "-" + allocationID
+			proposal.Actions = append(proposal.Actions, Action{
+				ID: attachID, Kind: ActionAttachVolume, Target: allocationID,
+				Workload: goal.Workload.Name, Node: node.ID, Volume: &volume,
+				DependsOn: attachDeps,
+			})
+			startDeps = append(startDeps, attachID)
+		}
 		// Credentials must be in place before the process starts, or the
 		// workload comes up without them and fails in a way that looks like an
 		// application bug rather than a missing mount.
@@ -197,4 +229,17 @@ func routeNode(goal Goal, world World) string {
 	}
 	sort.Strings(nodes)
 	return nodes[0]
+}
+
+// volumeHome reports the node a workload's existing volumes live on.
+//
+// Local storage stays local, so an existing volume determines placement rather
+// than the other way around. A workload with no volumes yet is placed freely.
+func volumeHome(goal Goal, world World) string {
+	for _, ref := range goal.Workload.Volumes {
+		if volume, ok := world.Volumes[ref.Name]; ok {
+			return volume.Node
+		}
+	}
+	return ""
 }
