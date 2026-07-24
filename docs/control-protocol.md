@@ -182,6 +182,51 @@ Node behavior:
 - Create an OCI container and snapshot with hardened defaults.
 - Return `allocation.created` evidence.
 
+### `create_volume`, `attach_volume`, `detach_volume`
+
+Volumes are explicit durable objects with a name, a home node, an owner, and a
+generation. The thing that must not be lost has to be nameable independently of
+the process using it.
+
+Kernel rules:
+
+- A volume is created on exactly one node. Creating the same name elsewhere
+  would silently produce two divergent copies of what the operator thinks is one
+  volume.
+- A volume may be attached to one allocation at a time. Two processes writing
+  one local filesystem is corruption, not scaling, so a workload declaring
+  volumes is limited to a single replica.
+- A volume is attached only on the node holding its data. Local storage stays
+  local.
+- A volume is released only from a stopped allocation, and only by its current
+  owner. Detaching a running writer would pull storage out from under a live
+  process.
+- An allocation holding volumes cannot be deleted until it releases them, which
+  would otherwise orphan the storage.
+- Destroying a stateful allocation requires a granted `destroy-stateful`
+  approval. Losing durable data is the one outcome reconciliation cannot undo.
+
+### Ownership fencing
+
+Every ownership change increments the volume's generation, and an allocation
+records the generation it attached at. Starting requires those to match.
+
+That is what makes a partition safe. A node that loses contact still believes it
+owns its volume; if ownership moves on, the generation advances, and the stale
+writer is refused when it tries to start. Releasing also advances the
+generation, so a writer detached while unreachable cannot resume against the
+generation it remembers.
+
+A missing heartbeat is never treated as evidence that a writer stopped. Placement
+proposes nothing for a workload whose data is unreachable rather than starting a
+second copy elsewhere.
+
+### `snapshot_volume`
+
+Snapshotting an attached volume is refused: a copy taken from a live writer may
+be internally inconsistent, and an operator would later trust it for restore.
+The volume must be quiesced first. No snapshot backend is implemented yet.
+
 ### `mount_secret`
 
 Required semantic fields: `id`, `kind`, `target`, `workload`, `node`, and
@@ -334,9 +379,9 @@ gateway refuses the new one. No concrete gateway backend is implemented yet.
 
 | Agent ID | Granted actions |
 |---|---|
-| `placement-agent` | `pull_image`, `create_allocation`, `mount_secret`, `attach_network`, `start_allocation` |
+| `placement-agent` | `pull_image`, `create_allocation`, `create_volume`, `attach_volume`, `mount_secret`, `attach_network`, `start_allocation` |
 | `network-agent` | `publish_route` |
-| `rollout-agent` | `stop_allocation`, `delete_allocation` |
+| `rollout-agent` | `stop_allocation`, `delete_allocation`, `detach_volume` |
 
 An agent cannot acquire another action by returning it in its descriptor or
 proposal.
@@ -401,6 +446,10 @@ Implemented evidence kinds:
 | Kind | Produced by | Effect on the world |
 |---|---|---|
 | `image.present` | Executor | Marks the image present on the observed node |
+| `volume.created` | Volumes | Records a durable volume and its home node |
+| `volume.attached` | Volumes | Assigns ownership and advances the generation |
+| `volume.detached` | Volumes | Releases ownership and advances the generation |
+| `volume.snapshotted` | Volumes | Records a verified snapshot id |
 | `secret.mounted` | Secrets | Records the mounted secret version, never the material |
 | `network.attached` | Network | Records the allocation's own address |
 | `network.detached` | Network | Clears the address on teardown |
