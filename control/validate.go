@@ -44,6 +44,9 @@ func (s *Scenario) NormalizeAndValidate() error {
 	if err := validateVolumes(w); err != nil {
 		return err
 	}
+	if err := validateEngine(w); err != nil {
+		return err
+	}
 	if err := validateSecrets(w.Secrets); err != nil {
 		return err
 	}
@@ -200,6 +203,34 @@ func validateVolumes(w WorkloadSpec) error {
 		}
 		seenNames[ref.Name] = true
 		seenPaths[ref.MountPath] = true
+	}
+	return nil
+}
+
+// supportedEngines are the database engines the agents know how to back up
+// consistently. An unknown engine would be backed up as a generic volume, which
+// for a running database means an inconsistent copy.
+var supportedEngines = map[string]bool{
+	"postgres": true,
+}
+
+// validateEngine enforces what a database workload may declare.
+//
+// A database is single-writer by nature and keeps its data on a volume, so it
+// inherits the stateful constraints and adds one: the engine must be one the
+// agents can back up with the database's own tooling.
+func validateEngine(w WorkloadSpec) error {
+	if w.Engine == "" {
+		return nil
+	}
+	if !supportedEngines[w.Engine] {
+		return fmt.Errorf("database engine %q is not supported", w.Engine)
+	}
+	if len(w.Volumes) == 0 {
+		return fmt.Errorf("a database workload must declare a volume for its data")
+	}
+	if w.Replicas != 1 {
+		return fmt.Errorf("a database workload must have exactly one replica, not %d", w.Replicas)
 	}
 	return nil
 }
