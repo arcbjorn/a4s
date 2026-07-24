@@ -179,6 +179,21 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 			c.Agents.Release(action.Target)
 		}
 		return evidence, nil
+	case control.ActionCreateAllocation:
+		if c.Containers == nil {
+			return control.Evidence{}, fmt.Errorf("node has no container capability")
+		}
+		evidence, err := c.Containers.Execute(ctx, action)
+		if err != nil {
+			return control.Evidence{}, err
+		}
+		// An agent allocation's ceiling is recorded from the authorized action,
+		// not from anything the runtime reports. Reserving here rather than at
+		// start means the meter exists before the agent can spend against it.
+		if c.Agents != nil && !action.Budget.IsZero() {
+			c.Agents.Reserve(action.Target, action.Budget)
+		}
+		return evidence, nil
 	default:
 		if c.Containers == nil {
 			return control.Evidence{}, fmt.Errorf("node has no container capability")
