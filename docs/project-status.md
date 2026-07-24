@@ -66,6 +66,9 @@ contract.
   recovers authoritative state instead of losing it.
 - Remote executor that binds every issued capability to the proposal that
   authorized it.
+- Per-allocation network addressing, with the kernel refusing to start a
+  networked workload that has no address.
+- Multi-replica placement batched to bound blast radius.
 - Target leases acquired before the first mutation and released on every exit
   path, so two proposals cannot interleave on one allocation. Leases expire so
   an abandoned holder cannot block a target indefinitely.
@@ -179,8 +182,11 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
   disruption budget, and known-good rollback detection are implemented;
   applying the rollback is deliberately an operator decision.
 - Garbage collection of unreferenced images and snapshots.
-- CNI, allocation network namespaces, DNS, or nftables. The router applies
-  gateway route snapshots but no gateway backend is implemented.
+- Node-local DNS, service discovery, and nftables policy compilation. CNI
+  attachment and per-allocation addressing are implemented; cross-node service
+  routing is not.
+- A concrete gateway backend. The router applies whole route snapshots to a
+  backend interface that has no implementation yet.
 - Public ingress or TLS automation.
 - Volumes, snapshots, backups, or stateful ownership handoff.
 - Secret broker and runtime credential mounts.
