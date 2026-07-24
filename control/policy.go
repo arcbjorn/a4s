@@ -3,6 +3,7 @@ package control
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type Policy struct {
@@ -226,7 +227,7 @@ func validateCreateAllocation(goal Goal, world World, action Action) error {
 	if action.Replica < 0 || action.Replica >= authorizedReplicas(goal, world) {
 		return fmt.Errorf("replica index is outside goal")
 	}
-	return validateAgentPlacement(goal, *node, action)
+	return validateAgentPlacement(goal, *node, action, world.Now())
 }
 
 func validateCreateVolume(goal Goal, world World, action Action) error {
@@ -819,9 +820,9 @@ func cloneWorld(world World) World {
 		for image, present := range node.Images {
 			copyNode.Images[image] = present
 		}
-		copyNode.Providers = make(map[string]bool, len(node.Providers))
-		for provider, reachable := range node.Providers {
-			copyNode.Providers[provider] = reachable
+		copyNode.Providers = make(map[string]ProviderReach, len(node.Providers))
+		for provider, reach := range node.Providers {
+			copyNode.Providers[provider] = reach
 		}
 		clone.Nodes[id] = &copyNode
 	}
@@ -996,7 +997,7 @@ func actionGrantsMutatingTool(action Action) bool {
 // image presence. An agent adds two facts that are just as hard: it cannot work
 // without egress to its provider, and its budget is a resource the node commits
 // the same way it commits memory.
-func validateAgentPlacement(goal Goal, node Node, action Action) error {
+func validateAgentPlacement(goal Goal, node Node, action Action, now time.Time) error {
 	runtime := goal.Workload.Runtime
 	if runtime == nil {
 		// An ordinary workload must not reserve agent budget. Allowing it would
@@ -1013,7 +1014,7 @@ func validateAgentPlacement(goal Goal, node Node, action Action) error {
 	// An agent placed where its provider is unreachable cannot become ready. It
 	// is the same class of infeasibility as a missing image, so it is refused at
 	// placement rather than discovered at probe time.
-	if !node.Providers[runtime.Provider] {
+	if !node.CanReach(runtime.Provider, now) {
 		return fmt.Errorf("node %q cannot reach provider %q", node.ID, runtime.Provider)
 	}
 	if !node.BudgetUsed.Add(action.Budget).Fits(node.BudgetCapacity) {

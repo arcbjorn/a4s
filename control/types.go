@@ -354,13 +354,48 @@ type Node struct {
 	// an observed fact rather than a configured intent. Provider egress is a
 	// scheduling constraint for agent workloads in the same way a pinned image
 	// is: an agent placed where its provider is unreachable cannot become ready.
-	Providers map[string]bool `json:"providers,omitempty"`
+	Providers map[string]ProviderReach `json:"providers,omitempty"`
 	// BudgetCapacity is the total agent budget this node may have committed at
 	// once, and BudgetUsed is what running agent allocations already hold.
 	// Bounding this per node keeps one node's agents from consuming a whole
 	// cluster's spend before any other node schedules one.
 	BudgetCapacity Budget `json:"budget_capacity,omitempty"`
 	BudgetUsed     Budget `json:"budget_used,omitempty"`
+}
+
+// ProviderReach is one measured answer to whether a node can reach a provider.
+//
+// Unlike an image, which stays present once pulled, egress is perishable: a
+// route, a credential, or a provider outage can remove it between one placement
+// and the next. So reachability carries an expiry and is never simply
+// remembered.
+type ProviderReach struct {
+	// Reachable is what the last measurement found.
+	Reachable bool `json:"reachable"`
+	// ObservedAt and ExpiresAt bound how long the measurement may be trusted.
+	ObservedAt time.Time `json:"observed_at,omitempty"`
+	ExpiresAt  time.Time `json:"expires_at,omitempty"`
+	// Detail describes a failure, so an operator can tell a DNS problem from a
+	// revoked credential without reading node logs.
+	Detail string `json:"detail,omitempty"`
+}
+
+// CanReach reports whether the node can reach a provider at the given time.
+//
+// An expired observation is not reachability. Treating a remembered measurement
+// as current would place agents onto a node that has since lost its egress,
+// which is exactly the failure the expiry exists to prevent. An unmeasured
+// provider is likewise not reachable: the scheduler must have positive evidence,
+// not an absence of bad news.
+func (n *Node) CanReach(provider string, now time.Time) bool {
+	if n == nil {
+		return false
+	}
+	reach, measured := n.Providers[provider]
+	if !measured || !reach.Reachable {
+		return false
+	}
+	return reach.ExpiresAt.IsZero() || now.Before(reach.ExpiresAt)
 }
 
 type Allocation struct {

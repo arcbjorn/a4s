@@ -214,7 +214,7 @@ func selectNode(goal Goal, world World, reserved map[string]Resources, reservedB
 		if runtime != nil {
 			// An agent cannot work where its provider is unreachable, so those
 			// nodes are infeasible rather than merely less preferred.
-			if !node.Providers[runtime.Provider] {
+			if !node.CanReach(runtime.Provider, world.Now()) {
 				unreachable++
 				continue
 			}
