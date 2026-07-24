@@ -111,6 +111,9 @@ type CompositeRuntime struct {
 	Volumes    *Volumes
 	Databases  *DatabaseManager
 	Agents     *Agents
+	// Queues are the work queues served on this node. Deleting an allocation
+	// returns whatever it held, so work outlives the worker.
+	Queues []*Queue
 }
 
 func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (control.Evidence, error) {
@@ -170,6 +173,16 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 		if c.Secrets != nil {
 			if releaseErr := c.Secrets.Release(action.Target); releaseErr != nil {
 				return control.Evidence{}, releaseErr
+			}
+		}
+		// A deleted agent must not strand the work it held. Waiting for the
+		// claim lease to lapse would leave a task undelivered for minutes when
+		// the node already knows the holder is gone.
+		for _, queue := range c.Queues {
+			if queue != nil {
+				if releaseErr := queue.ReleaseAllocation(action.Target); releaseErr != nil {
+					return control.Evidence{}, releaseErr
+				}
 			}
 		}
 		// A deleted agent must not leave its tool envelope behind. A later

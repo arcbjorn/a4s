@@ -37,6 +37,10 @@ type Supervisor struct {
 	// place an agent on a node that cannot reach its provider, so a node that
 	// never reports reachability attracts no agent workloads at all.
 	Providers *ProviderMonitor
+	// Queues are the work queues this node serves. Depth drives agent scaling,
+	// and it is measured here rather than reported by an agent, because an agent
+	// describing its own backlog could scale its own replica count.
+	Queues []*Queue
 	// NodeID attributes node-scoped observations. Provider reachability is a
 	// fact about this node rather than about any one allocation, so the evidence
 	// has to say which node measured it.
@@ -83,6 +87,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) ([]control.Evidence, error) 
 	// node that has just lost egress reports that fact in the same round it
 	// reports the agents which are about to stop being ready.
 	observations = append(observations, s.refreshProviders(ctx)...)
+	observations = append(observations, s.observeQueues()...)
 	for _, entry := range s.Desired.List() {
 		evidence, err := s.reconcileOne(ctx, entry)
 		if err != nil {
@@ -170,6 +175,25 @@ func (s *Supervisor) reconcileOne(ctx context.Context, entry DesiredAllocation) 
 	}
 	s.emit(restarted)
 	return append(observations, restarted), nil
+}
+
+// observeQueues measures the depth of every queue this node serves.
+//
+// Depth is the most perishable fact the scheduler consumes, because the workers
+// are draining it as it is read. Measuring on the supervision tick keeps the
+// observation as fresh as the control plane's own cycle.
+func (s *Supervisor) observeQueues() []control.Evidence {
+	observations := make([]control.Evidence, 0, len(s.Queues))
+	for _, queue := range s.Queues {
+		if queue == nil {
+			continue
+		}
+		evidence := queue.Evidence()
+		evidence.Source = "node-supervisor"
+		s.emit(evidence)
+		observations = append(observations, evidence)
+	}
+	return observations
 }
 
 // spendEvidence reports an agent allocation's consumption, if it has any.
