@@ -75,6 +75,7 @@ The node package owns the host mutation trust boundary.
 | `containerd_other.go` | Explicit unsupported-platform behavior |
 | `agent.go` | Per-allocation tool envelopes, budget meters, tool-call gate, drain |
 | `probe.go` | Readiness measurement and per-kind observer routing |
+| `provider.go` | Model-provider egress measurement, caching, and expiry |
 | `*_test.go` | Signature, replay, tamper, contract, and durability tests |
 
 Dependency direction:

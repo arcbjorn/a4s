@@ -49,6 +49,20 @@ release or compatibility guarantee yet.
   leakage between agents comes from shared runtime state, not a shared kernel
   namespace, so envelopes, workspaces, and credentials are per instance and a
   deleted allocation's envelope is released.
+- Measured provider reachability. `Node.Providers` was read by the scheduler but
+  never written, so in a real deployment every agent placement failed with
+  "cannot reach provider". A node-side monitor now measures egress on a timer and
+  reports `provider.reachable`.
+- Provider facts are measurements rather than flags. Egress does not stay true
+  once observed the way a pulled image does: a route, a credential, or an outage
+  removes it between placements. Each entry carries an expiry, and `CanReach`
+  treats unmeasured, unreachable, and expired identically, because the scheduler
+  needs positive current evidence rather than an absence of bad news.
+- The monitor fails closed. A timeout, a refused connection, and a 5xx all read
+  as unreachable; a 401 does not, since the question is whether the node has a
+  working path and treating an auth failure as a network failure would misreport
+  a credential problem. The projection also refuses an observation older than the
+  one it holds, so a stale success cannot overwrite a fresh failure.
 - Node-side budget enforcement. The kernel can authorize a ceiling but cannot
   enforce one: a round trip through evidence, projection, and a proposal takes
   longer than an agent needs to spend everything it has left. The node now holds

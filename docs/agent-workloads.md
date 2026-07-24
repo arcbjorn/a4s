@@ -202,6 +202,34 @@ Three enforcement points:
   not crash, it finished; restarting it would burn a fresh ceiling to reach the
   same state.
 
+### Provider reachability is measured, not configured
+
+An agent cannot work without a path to its provider, so reachability is a hard
+placement constraint. It is also the most perishable node fact in the system: a
+route, a credential, or a provider outage removes it between one placement and
+the next, and unlike a pulled image it does not stay true once observed.
+
+So `Node.Providers` holds a measurement rather than a flag. Each entry carries
+what was found, when, and when it stops being trustworthy, and `Node.CanReach`
+is the only correct way to read it. Three cases collapse to "not reachable":
+measured as unreachable, never measured at all, and measured too long ago. The
+scheduler requires positive current evidence, not an absence of bad news.
+
+The node's `ProviderMonitor` measures egress on a timer and caches the result,
+because the scheduler asks on every placement while the answer changes far more
+slowly. It fails closed: a timeout, a refused connection, and a 5xx all produce
+unreachable. A 401 does not — the question is whether this node has a working
+path, and treating an auth failure as a network failure would misreport a
+credential problem.
+
+Readiness reads the cache rather than dialling, since a probe must not block on
+a third party's response time. An expired entry reads as unreachable rather than
+triggering a synchronous check.
+
+The projection refuses an observation older than the one it holds. A stale
+success overwriting a fresh failure is the direction that places agents onto a
+node which has already lost its egress.
+
 ### Fits and Exhausts are different questions
 
 `Budget.Fits` is inclusive and answers the reservation question: may a node
@@ -319,8 +347,6 @@ budget reserved, `grant_tools`, `start_allocation`, then independent
   bounded, and the node enforces it; no image implements it. The runtime reports
   consumption through `Agents.Spend` and passes `Agents.AuthorizeToolCall` before
   each tool call.
-- Real provider reachability. `ProviderReach` is an interface with a static
-  implementation; nothing dials a provider or watches egress health yet.
 - Queue storage and delivery. `Queue` is an observed object; there is no broker
   behind it.
 - Per-instance credential derivation. Agents use the existing secret broker,

@@ -66,6 +66,11 @@ contract.
 - A composite readiness observer routing each probe kind to the capability that
   owns it, and an agent probe measuring provider reachability, remaining budget,
   and container liveness.
+- Measured provider reachability: a node-side monitor that checks egress on a
+  timer, fails closed, and reports `provider.reachable` with an expiry. Node
+  provider facts are measurements rather than flags, and unmeasured, unreachable,
+  and expired all read alike, so a node that loses egress stops attracting agent
+  placements.
 - Stateful workloads limited to one replica, pinned to the node holding their
   data, and never relocated on a missing heartbeat.
 - Separate authenticated approval record for public routes.

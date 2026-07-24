@@ -564,6 +564,7 @@ Implemented evidence kinds:
 | `agent.draining` | Agents | The instance stopped accepting work but still holds a task |
 | `allocation.drained` | Agents | The instance released its task and is safe to stop |
 | `queue.observed` | Queue | Records measured depth and in-flight count with an observation time |
+| `provider.reachable` | Provider monitor | Records measured egress to a model provider, with an expiry and failure detail |
 
 Readiness evidence carries `observed_at` and `expires_at`. An expired readiness
 observation stops satisfying a goal, because a service that was healthy when
@@ -997,6 +998,13 @@ commits memory.
 Provider reachability is a node fact (`providers`) and a hard placement
 constraint. An agent placed where its provider is unreachable can never become
 ready, so it is refused at placement rather than discovered at probe time.
+
+Unlike an image, egress does not stay true once observed, so each entry is a
+measurement carrying an expiry rather than a flag. `Node.CanReach` treats
+unmeasured, measured-unreachable, and expired identically: the scheduler needs
+positive current evidence. The node measures on a timer and reports
+`provider.reachable`; the projection refuses an observation older than the one
+it already holds.
 
 ### Queues
 
