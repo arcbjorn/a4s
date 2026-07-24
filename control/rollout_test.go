@@ -1,6 +1,7 @@
 package control
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -193,5 +194,123 @@ func TestRolloutConvergesToNewImage(t *testing.T) {
 	// Capacity must reflect one allocation, not the retired one as well.
 	if final.Nodes["base"].Used != goal.Workload.Resources {
 		t.Fatalf("rollout leaked capacity: %+v", final.Nodes["base"].Used)
+	}
+}
+
+// A version that has been observed serving becomes the rollback target. It is
+// recorded from readiness evidence, so the target is always one this cluster
+// actually saw working.
+func TestKnownGoodIsRecordedFromReadiness(t *testing.T) {
+	world := projectionWorld()
+	world, err := Project(world, createdEvidence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, Evidence{Kind: EvidenceAllocationRunning, Target: "app-0",
+		Observed: map[string]string{"node": "base"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if world.KnownGood["app"] != "" {
+		t.Fatal("a merely running version was recorded as known good")
+	}
+	world, err = Project(world, Evidence{Kind: EvidenceAllocationReady, Target: "app-0",
+		Observed: map[string]string{"ready": "true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if world.KnownGood["app"] != testImage {
+		t.Fatalf("readiness did not record a known-good image: %+v", world.KnownGood)
+	}
+}
+
+// A replacement that is still starting must not trigger a rollback, or every
+// deployment would revert before it had a chance to come up.
+func TestStartingReplacementDoesNotTriggerRollback(t *testing.T) {
+	goal := validScenario().Goal
+	goal.Workload.Image = nextImage
+	world := rolloutWorld(goal, 1, nextImage)
+	world.KnownGood = map[string]string{"app": testImage}
+	// The replacement exists and is running but has not reported readiness yet.
+	world.Allocations["app-0"].Ready = false
+	world.Allocations["app-0"].Phase = AllocationRunning
+
+	if _, failed := RollbackTarget(goal, world); failed {
+		t.Fatal("a starting replacement was treated as a failed rollout")
+	}
+}
+
+// A replacement observed crashing is a failed rollout, and the known-good image
+// must be surfaced rather than silently applied.
+func TestFailedReplacementRequestsRollback(t *testing.T) {
+	goal := validScenario().Goal
+	goal.Workload.Image = nextImage
+	world := rolloutWorld(goal, 1, nextImage)
+	world.KnownGood = map[string]string{"app": testImage}
+	world.Allocations["app-0"].Phase = AllocationStopped
+	world.Allocations["app-0"].Ready = false
+	world.Allocations["app-0"].ExitCode = 1
+
+	target, failed := RollbackTarget(goal, world)
+	if !failed || target != testImage {
+		t.Fatalf("expected a rollback to the known-good image: target=%q failed=%t", target, failed)
+	}
+
+	_, err := (RolloutAgent{}).Propose(goal, world)
+	var rollback *RollbackRequired
+	if !errors.As(err, &rollback) {
+		t.Fatalf("expected a RollbackRequired error, got %v", err)
+	}
+	if rollback.KnownGood != testImage || rollback.Failed != nextImage {
+		t.Fatalf("rollback did not name the right versions: %+v", rollback)
+	}
+}
+
+// An agent must never rewrite the goal. A required rollback blocks the goal with
+// the evidence needed to decide, rather than quietly running another version.
+func TestRollbackBlocksGoalRatherThanRewritingIt(t *testing.T) {
+	scenario := validScenario()
+	if err := scenario.NormalizeAndValidate(); err != nil {
+		t.Fatal(err)
+	}
+	goal := scenario.Goal
+	goal.Route = nil
+	goal.Workload.Image = nextImage
+
+	world := rolloutWorld(goal, 1, nextImage)
+	world.KnownGood = map[string]string{"app": testImage}
+	world.Allocations["app-0"].Phase = AllocationStopped
+	world.Allocations["app-0"].Ready = false
+	world.Allocations["app-0"].ExitCode = 137
+
+	engine := NewEngine(NewMemoryExecutor(world), RolloutAgent{}, PlacementAgent{})
+	err := engine.Run(goal, 5)
+	var rollback *RollbackRequired
+	if !errors.As(err, &rollback) {
+		t.Fatalf("expected the goal to block on a rollback decision, got %v", err)
+	}
+	blocked := false
+	for _, event := range engine.Events {
+		if event.Type == EventGoalBlocked && strings.Contains(event.Message, "last known-good image") {
+			blocked = true
+		}
+	}
+	if !blocked {
+		t.Fatalf("no blocked-goal event named the known-good image: %+v", engine.Events)
+	}
+}
+
+// Once the operator adopts the known-good image, reconciliation proceeds
+// normally instead of continuing to report a rollback.
+func TestAdoptingKnownGoodClearsRollback(t *testing.T) {
+	goal := validScenario().Goal
+	goal.Workload.Image = testImage
+	world := rolloutWorld(goal, 1, nextImage)
+	world.KnownGood = map[string]string{"app": testImage}
+	world.Allocations["app-0"].Phase = AllocationStopped
+	world.Allocations["app-0"].ExitCode = 1
+
+	if _, failed := RollbackTarget(goal, world); failed {
+		t.Fatal("a goal already naming the known-good image still requested rollback")
 	}
 }
