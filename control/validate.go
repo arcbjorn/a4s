@@ -32,8 +32,13 @@ func (s *Scenario) NormalizeAndValidate() error {
 	if w.Replicas < 1 {
 		return fmt.Errorf("workload replicas must be positive")
 	}
-	if w.Port < 1 || w.Port > 65535 {
-		return fmt.Errorf("workload port must be between 1 and 65535")
+	// An agent workload may have no inbound network at all: it reaches the world
+	// outbound through granted tools. Requiring a listening port would force
+	// every agent to expose a surface it does not need.
+	if w.Runtime == nil || w.Port != 0 {
+		if w.Port < 1 || w.Port > 65535 {
+			return fmt.Errorf("workload port must be between 1 and 65535")
+		}
 	}
 	if w.Resources.CPUMillis < 1 || w.Resources.MemoryMB < 1 {
 		return fmt.Errorf("workload resources must be positive")
@@ -45,6 +50,12 @@ func (s *Scenario) NormalizeAndValidate() error {
 		return err
 	}
 	if err := validateEngine(w); err != nil {
+		return err
+	}
+	if err := validateRuntime(w); err != nil {
+		return err
+	}
+	if err := validateQueues(s.Goal, &s.World); err != nil {
 		return err
 	}
 	if err := validateSecrets(w.Secrets); err != nil {
@@ -94,6 +105,9 @@ func (w *World) normalize() {
 	}
 	if w.Routes == nil {
 		w.Routes = make(map[string]*Route)
+	}
+	if w.Queues == nil {
+		w.Queues = make(map[string]*Queue)
 	}
 	if w.Approvals == nil {
 		w.Approvals = make(map[string]*Approval)
@@ -231,6 +245,139 @@ func validateEngine(w WorkloadSpec) error {
 	}
 	if w.Replicas != 1 {
 		return fmt.Errorf("a database workload must have exactly one replica, not %d", w.Replicas)
+	}
+	return nil
+}
+
+// supportedRuntimes are the agent runtime contracts the node knows how to bound.
+// An unknown runtime would be started as a generic container, which means its
+// budget ceilings and tool envelope would go unenforced.
+var supportedRuntimes = map[string]bool{
+	"a4s.agent/v1": true,
+}
+
+// maxToolGrants bounds an agent's tool envelope. An agent granted an unbounded
+// number of tools has an unbounded blast radius, and the point of the envelope
+// is that a human can read it before approving.
+const maxToolGrants = 32
+
+// validateRuntime enforces what an agent workload may declare.
+//
+// The rules here exist because an agent's failure modes are not a container's.
+// A container with a bad config crashes; an agent with no ceiling runs a loop
+// that costs money until someone notices. Every field checked below is one an
+// operator would otherwise discover was missing from an invoice.
+func validateRuntime(w WorkloadSpec) error {
+	if w.Runtime == nil {
+		return nil
+	}
+	r := w.Runtime
+	if !supportedRuntimes[r.Name] {
+		return fmt.Errorf("agent runtime %q is not supported", r.Name)
+	}
+	// An agent is a workload kind, and a database is another. One container
+	// cannot be both, and declaring both would leave the kernel with two
+	// contradictory sets of rules for backing it up and probing it.
+	if w.Engine != "" {
+		return fmt.Errorf("a workload cannot be both a %s database and an agent", w.Engine)
+	}
+	if !namePattern.MatchString(r.Provider) {
+		return fmt.Errorf("agent provider must be lowercase DNS-style text")
+	}
+	// A model alias that a provider can repoint is the same hazard as a floating
+	// image tag: the workload changes under the operator without a goal change.
+	if strings.TrimSpace(r.Model) == "" {
+		return fmt.Errorf("agent model must be pinned")
+	}
+	if err := validateBudget(r.Budget); err != nil {
+		return err
+	}
+	if err := validateToolGrants(r.Tools); err != nil {
+		return err
+	}
+	if r.Queue != "" && !namePattern.MatchString(r.Queue) {
+		return fmt.Errorf("agent queue name %q must be lowercase DNS-style text", r.Queue)
+	}
+	return nil
+}
+
+// validateBudget requires every ceiling to be present and positive.
+//
+// A zero ceiling is rejected rather than treated as unlimited. Unlimited is a
+// decision an operator should have to write down somewhere other than by
+// omission, and the common case of a forgotten field must not be the case that
+// grants infinite spend.
+func validateBudget(b Budget) error {
+	if b.Tokens < 1 {
+		return fmt.Errorf("agent budget must set a positive token ceiling")
+	}
+	if b.CostMillis < 1 {
+		return fmt.Errorf("agent budget must set a positive cost ceiling")
+	}
+	if b.WallSeconds < 1 {
+		return fmt.Errorf("agent budget must set a positive wall-clock ceiling")
+	}
+	if b.ToolCalls < 1 {
+		return fmt.Errorf("agent budget must set a positive tool-call ceiling")
+	}
+	return nil
+}
+
+// toolNamePattern keeps tool names to opaque handles for the same reason secret
+// names are constrained: the name reaches the durable log.
+var toolNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?$`)
+
+// validateToolGrants enforces that an agent's blast radius is explicit.
+func validateToolGrants(grants []ToolGrant) error {
+	if len(grants) > maxToolGrants {
+		return fmt.Errorf("agent declares %d tools, above the limit of %d", len(grants), maxToolGrants)
+	}
+	seen := make(map[string]bool, len(grants))
+	for _, grant := range grants {
+		if !toolNamePattern.MatchString(grant.Name) {
+			return fmt.Errorf("tool name %q must be a short lowercase handle", grant.Name)
+		}
+		// An unscoped tool is granted whatever its credential allows, which makes
+		// the declared envelope a description of nothing.
+		if strings.TrimSpace(grant.Scope) == "" {
+			return fmt.Errorf("tool %q must declare a scope", grant.Name)
+		}
+		if seen[grant.Name] {
+			return fmt.Errorf("tool %q is granted twice", grant.Name)
+		}
+		seen[grant.Name] = true
+	}
+	return nil
+}
+
+// validateQueues enforces that a declared queue is coherent with its workload.
+func validateQueues(goal Goal, world *World) error {
+	for name, queue := range world.Queues {
+		if queue == nil || queue.Name != name || !namePattern.MatchString(name) {
+			return fmt.Errorf("queue map key %q must match a valid queue name", name)
+		}
+		if queue.Depth < 0 || queue.InFlight < 0 {
+			return fmt.Errorf("queue %q cannot have negative depth or in-flight count", name)
+		}
+		// Scaling without a ceiling turns a queue spike into unbounded spend, so
+		// a queue that no worker count can bound is refused outright.
+		if queue.MaxWorkers < 1 {
+			return fmt.Errorf("queue %q must cap workers at one or more", name)
+		}
+	}
+	runtime := goal.Workload.Runtime
+	if runtime == nil || runtime.Queue == "" {
+		return nil
+	}
+	queue, ok := world.Queues[runtime.Queue]
+	if !ok {
+		return fmt.Errorf("agent workload references queue %q, which does not exist", runtime.Queue)
+	}
+	// A queue serving a different workload would let one workload's demand scale
+	// another's replicas.
+	if queue.Workload != goal.Workload.Name {
+		return fmt.Errorf("queue %q serves workload %q, not %q",
+			runtime.Queue, queue.Workload, goal.Workload.Name)
 	}
 	return nil
 }
