@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/arcbjorn/a4s/control"
 )
@@ -11,12 +12,18 @@ import (
 const testImage = "registry.example/a4s/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 type fakeBackend struct {
-	pulled    string
-	created   ContainerSpec
-	startedID string
-	startLog  string
-	closed    bool
-	pullErr   error
+	pulled       string
+	created      ContainerSpec
+	startedID    string
+	startLog     string
+	closed       bool
+	pullErr      error
+	stoppedID    string
+	stopDeadline time.Duration
+	stopResult   BackendStop
+	deletedID    string
+	deleteErr    error
+	state        BackendState
 }
 
 func (f *fakeBackend) Pull(_ context.Context, image string) (string, error) {
@@ -33,6 +40,24 @@ func (f *fakeBackend) Start(_ context.Context, id, logPath string) (BackendTask,
 	f.startedID = id
 	f.startLog = logPath
 	return BackendTask{PID: 42}, nil
+}
+
+func (f *fakeBackend) Stop(_ context.Context, id string, deadline time.Duration) (BackendStop, error) {
+	f.stoppedID = id
+	f.stopDeadline = deadline
+	return f.stopResult, nil
+}
+
+func (f *fakeBackend) Delete(_ context.Context, id string) (bool, error) {
+	f.deletedID = id
+	if f.deleteErr != nil {
+		return false, f.deleteErr
+	}
+	return true, nil
+}
+
+func (f *fakeBackend) Inspect(_ context.Context, _ string) (BackendState, error) {
+	return f.state, nil
 }
 
 func (f *fakeBackend) Close() error {
@@ -79,6 +104,31 @@ func TestContainerRuntimeContract(t *testing.T) {
 	}
 	if err := runtime.Close(); err != nil || !backend.closed {
 		t.Fatalf("close: err=%v closed=%t", err, backend.closed)
+	}
+}
+
+func TestContainerRuntimeStopAndDeleteContract(t *testing.T) {
+	backend := &fakeBackend{stopResult: BackendStop{ExitCode: 137, Killed: true}}
+	runtime := NewContainerRuntime(backend)
+	ctx := context.Background()
+
+	stop, err := runtime.Execute(ctx, control.Action{Kind: control.ActionStopAllocation, Target: "web-0"})
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if backend.stoppedID != "web-0" || backend.stopDeadline != DefaultKillDeadline {
+		t.Fatalf("stop did not pass a bounded kill deadline: id=%q deadline=%v", backend.stoppedID, backend.stopDeadline)
+	}
+	if stop.Kind != control.EvidenceAllocationStopped || stop.Observed["exit_code"] != "137" || stop.Observed["killed"] != "true" {
+		t.Fatalf("unexpected stop evidence: %+v", stop)
+	}
+
+	del, err := runtime.Execute(ctx, control.Action{Kind: control.ActionDeleteAllocation, Target: "web-0"})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if backend.deletedID != "web-0" || del.Kind != control.EvidenceAllocationDeleted {
+		t.Fatalf("unexpected delete evidence: %+v", del)
 	}
 }
 
