@@ -423,7 +423,7 @@ gateway refuses the new one. No concrete gateway backend is implemented yet.
 | `placement-agent` | `pull_image`, `create_allocation`, `create_volume`, `attach_volume`, `mount_secret`, `attach_network`, `start_allocation` |
 | `network-agent` | `publish_route` |
 | `rollout-agent` | `stop_allocation`, `delete_allocation`, `detach_volume` |
-| `storage-agent` | `snapshot_volume`, `backup_snapshot`, `restore_snapshot` |
+| `storage-agent` | `snapshot_volume`, `backup_snapshot`, `restore_snapshot`, `quiesce_volume`, `transfer_volume`, `adopt_volume` |
 
 An agent cannot acquire another action by returning it in its descriptor or
 proposal.
@@ -497,6 +497,9 @@ Implemented evidence kinds:
 | `volume.detached` | Volumes | Releases ownership and advances the generation |
 | `volume.snapshotted` | Volumes | Records a verified snapshot id and checksum |
 | `volume.backed_up` | Volumes | Records that a snapshot reached off-host storage |
+| `volume.quiesced` | Volumes | Opens a handoff; the writer has stopped |
+| `volume.transferred` | Volumes | The target proved it holds the snapshot |
+| `volume.adopted` | Volumes | Ownership moved and the generation advanced |
 | `secret.mounted` | Secrets | Records the mounted secret version, never the material |
 | `network.attached` | Network | Records the allocation's own address |
 | `network.detached` | Network | Clears the address on teardown |
@@ -807,3 +810,37 @@ outage into a wrong answer.
 Public routes get ACME certificate automation. A tailnet route has no public
 DNS, so ACME cannot issue for it; internal issuance is used instead of silently
 serving no TLS.
+
+## Cross-node volume handoff
+
+Moving durable data is the most dangerous operation in the system, so it is a
+sequence of evidenced steps rather than one action. Each phase is entered only
+on evidence from the previous one:
+
+```text
+quiesce -> snapshot -> transfer -> adopt
+```
+
+| Phase | Meaning |
+|---|---|
+| `quiesced` | No writer holds the volume; the data is at rest |
+| `snapshotted` | A verified snapshot exists to move |
+| `transferred` | The target reproduced the snapshot's checksum |
+| `adopted` | Ownership moved; the generation advanced |
+
+Rules:
+
+- A move cannot begin while an allocation holds the volume. Snapshotting a live
+  writer would capture data that is still changing.
+- The target must reproduce the snapshot's checksum before ownership moves.
+  Adopting earlier would point the cluster at a node that may hold nothing.
+- Only the declared handoff target may adopt. A third node adopting would point
+  the cluster at data nobody verified.
+- The volume cannot be attached and its workload cannot be placed while a move
+  is in progress, so no writer can diverge from what is being transferred.
+- Adoption advances the generation, fencing any writer still holding the origin
+  node's view.
+- A move requires a granted `move-volume` approval.
+
+The origin stays authoritative until adoption. A transfer that fails leaves the
+volume where it was, with the move's snapshot still usable as a local backup.
