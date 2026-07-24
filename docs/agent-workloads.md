@@ -176,6 +176,45 @@ managing hundreds of agents in one process would hold every context in one
 address space, which is precisely the leak the design has to prevent. The
 container path is both more robust and better isolated.
 
+## Where the ceiling is actually enforced
+
+The kernel authorizes a budget, but it cannot enforce one. A round trip through
+evidence, projection, and a new proposal takes longer than an agent needs to
+spend everything it has left. So the ceiling is enforced on the node, and the
+control plane learns about it afterwards.
+
+The node holds a meter per allocation, reserved from the authorized
+`create_allocation` action rather than from anything the runtime reports. An
+agent cannot raise its own limit by claiming a larger one.
+
+Three enforcement points:
+
+- `Agents.Spend` accumulates reported consumption and returns whether the
+  instance may continue. Deltas are clamped at zero, because a runtime reporting
+  negative usage would otherwise claw back spend it already declared.
+- `Agents.AuthorizeToolCall` is the gate a runtime passes before invoking a
+  tool. It refuses calls outside the envelope, refuses everything once the
+  instance is exhausted, and charges the tool-call budget on success. That last
+  part is what stops an agent thrashing between two granted tools while staying
+  cheap on every other dimension.
+- The supervisor reports the running total as `agent.spent` on each reconcile,
+  and refuses to restart an exhausted agent. An agent that spent its ceiling did
+  not crash, it finished; restarting it would burn a fresh ceiling to reach the
+  same state.
+
+### Fits and Exhausts are different questions
+
+`Budget.Fits` is inclusive and answers the reservation question: may a node
+commit this much. A reservation exactly equal to remaining capacity is fine.
+
+`Budget.Exhausts` answers the spending question and is deliberately not the
+negation of `Fits`. An instance that consumed exactly its ceiling has nothing
+left: a budget of five tool calls permits five and refuses the sixth. It is also
+per dimension, since spending all of any one ceiling stops progress.
+
+Using `!Fits` for consumption would grant one extra unit on every dimension to
+every agent.
+
 ## Drain before stop
 
 An agent instance holds task context that a stateless replica does not. Stopping
@@ -277,9 +316,11 @@ budget reserved, `grant_tools`, `start_allocation`, then independent
 ## What is not built yet
 
 - A real agent runtime implementing `a4s.agent/v1`. The contract is defined and
-  bounded; no image implements it.
-- Node-side spend metering. `agent.spent` is projected correctly, but nothing
-  measures real token consumption yet.
+  bounded, and the node enforces it; no image implements it. The runtime reports
+  consumption through `Agents.Spend` and passes `Agents.AuthorizeToolCall` before
+  each tool call.
+- Real provider reachability. `ProviderReach` is an interface with a static
+  implementation; nothing dials a provider or watches egress health yet.
 - Queue storage and delivery. `Queue` is an observed object; there is no broker
   behind it.
 - Per-instance credential derivation. Agents use the existing secret broker,

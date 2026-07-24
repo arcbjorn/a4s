@@ -49,6 +49,28 @@ release or compatibility guarantee yet.
   leakage between agents comes from shared runtime state, not a shared kernel
   namespace, so envelopes, workspaces, and credentials are per instance and a
   deleted allocation's envelope is released.
+- Node-side budget enforcement. The kernel can authorize a ceiling but cannot
+  enforce one: a round trip through evidence, projection, and a proposal takes
+  longer than an agent needs to spend everything it has left. The node now holds
+  a per-allocation meter, reserved from the authorized action rather than from
+  anything the runtime claims.
+- A tool-call gate. `AuthorizeToolCall` refuses capabilities outside the
+  envelope, refuses everything once an instance is exhausted, and charges the
+  tool-call ceiling on success, which is what stops an agent thrashing between
+  two granted tools while staying cheap on every other dimension. Refusals are
+  counted and reported, since an agent repeatedly reaching for a capability it
+  lacks is a fact an operator should see.
+- `Budget.Exhausts`, distinct from `Fits`. Reservation is inclusive: committing
+  exactly the remaining capacity is legitimate. Consumption is not: an instance
+  that spent exactly its ceiling has nothing left. Using `!Fits` for consumption
+  granted one extra unit on every dimension to every agent.
+- An agent readiness probe measuring provider reachability, remaining budget,
+  and container liveness, plus a composite observer routing each probe kind to
+  the capability that owns it. Agent workloads previously failed readiness on a
+  real node with "unsupported probe kind".
+- Supervisor-reported spend, including for stopped allocations, and refusal to
+  restart an exhausted agent. An agent that spent its ceiling did not crash, it
+  finished; restarting it would burn a fresh ceiling to reach the same state.
 - `examples/agent-workload.json` and [agent workloads](docs/agent-workloads.md).
 
 - Database workloads: a workload may declare an `engine` (postgres), which makes

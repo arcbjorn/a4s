@@ -983,6 +983,11 @@ proves it is serving.
 The `agent_ready` check additionally excludes draining and exhausted instances,
 which are running but not serving.
 
+The node enforces the ceiling locally, because the control plane is too far away
+to stop a runaway loop. A runtime reports consumption and passes a tool-call
+gate before each invocation; the supervisor forwards the running total as
+`agent.spent` and refuses to restart an exhausted instance.
+
 ### Budget and placement
 
 Budget is a resource dimension beside cpu and memory. Nodes carry

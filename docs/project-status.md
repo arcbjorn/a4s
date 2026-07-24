@@ -58,6 +58,14 @@ contract.
   as placement constraints, provider-and-budget readiness, monotonic spend
   evidence, drain-before-stop retirement, and queue-depth scaling capped by a
   worker ceiling the kernel recomputes.
+- Node-side budget enforcement: a per-allocation meter reserved from the
+  authorized action, a tool-call gate that refuses ungranted capabilities and
+  charges the tool-call ceiling, supervisor-reported spend, and refusal to
+  restart an exhausted agent. The kernel authorizes a ceiling; only the node is
+  close enough to enforce it.
+- A composite readiness observer routing each probe kind to the capability that
+  owns it, and an agent probe measuring provider reachability, remaining budget,
+  and container liveness.
 - Stateful workloads limited to one replica, pinned to the node holding their
   data, and never relocated on a missing heartbeat.
 - Separate authenticated approval record for public routes.

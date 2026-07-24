@@ -73,7 +73,8 @@ The node package owns the host mutation trust boundary.
 | `container_runtime.go` | Runtime-neutral action-to-container contract |
 | `containerd_linux.go` | Linux containerd implementation and OCI profile |
 | `containerd_other.go` | Explicit unsupported-platform behavior |
-| `agent.go` | Per-allocation tool envelopes, task tracking, drain reporting |
+| `agent.go` | Per-allocation tool envelopes, budget meters, tool-call gate, drain |
+| `probe.go` | Readiness measurement and per-kind observer routing |
 | `*_test.go` | Signature, replay, tamper, contract, and durability tests |
 
 Dependency direction:
