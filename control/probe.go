@@ -21,19 +21,25 @@ type Prober interface {
 // holds the intent; the node performs the measurement.
 type ProbeTarget struct {
 	Allocation string `json:"allocation"`
-	// Kind is "process", "tcp", or "http".
+	// Kind is "process", "tcp", "http", or "database".
 	Kind string `json:"kind"`
 	Port int    `json:"port,omitempty"`
 	Path string `json:"path,omitempty"`
 	// Address is the allocation's own IP. Probing this rather than loopback is
 	// what makes a measurement attributable to one replica.
 	Address string `json:"address,omitempty"`
+	// Engine names the database engine for a database probe.
+	Engine string `json:"engine,omitempty"`
 }
 
 const (
 	ProbeProcess = "process"
 	ProbeTCP     = "tcp"
 	ProbeHTTP    = "http"
+	// ProbeDatabase asks the engine whether it accepts connections. A TCP probe
+	// only proves the port is open, which a database that is still recovering
+	// its write-ahead log will pass while refusing every query.
+	ProbeDatabase = "database"
 )
 
 // ReadinessObserver measures whether an allocation is actually serving. It is
