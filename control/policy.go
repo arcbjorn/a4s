@@ -2,6 +2,7 @@ package control
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -55,6 +56,7 @@ func DefaultPolicy() Policy {
 				ActionTransferVolume:  true,
 				ActionAdoptVolume:     true,
 				ActionPruneSnapshots:  true,
+				ActionCollectImages:   true,
 				ActionVerifyBackup:    true,
 			},
 		},
@@ -167,6 +169,7 @@ var actionValidators = map[ActionKind]func(Goal, World, Action) error{
 	ActionDatabaseBackup:   validateDatabaseBackup,
 	ActionVerifyBackup:     validateVerifyBackup,
 	ActionPruneSnapshots:   validatePruneSnapshots,
+	ActionCollectImages:    validateCollectImages,
 	ActionBackupSnapshot:   validateBackupSnapshot,
 	ActionRestoreSnapshot:  validateRestoreSnapshot,
 	ActionMountSecret:      validateMountSecret,
@@ -481,6 +484,61 @@ func validatePruneSnapshots(goal Goal, world World, action Action) error {
 	}
 
 	return nil
+}
+
+// validateCollectImages authorizes reclaiming unreferenced image storage.
+//
+// The kernel does not enumerate what exists on the node; it authorizes the
+// operation and states the protected set. The node reports what it found and
+// what it removed, and the two are reconciled through evidence. That split
+// matters: only the node can see its own content store, and only the kernel
+// knows which images the world still depends on.
+func validateCollectImages(goal Goal, world World, action Action) error {
+	if action.Node == "" {
+		return fmt.Errorf("collect images requires a node")
+	}
+	node, ok := world.Nodes[action.Node]
+	if !ok || !node.Healthy {
+		// Collecting on an unhealthy node risks acting on a partial view of
+		// what is running, which is exactly when deleting storage is unsafe.
+		return fmt.Errorf("node %q is not healthy enough to collect images", action.Node)
+	}
+
+	// The proposed protected set must cover every image the world still
+	// depends on. Without this check an agent could propose an empty set and
+	// the node would faithfully delete images running workloads need.
+	declared := make(map[string]bool, len(action.Protected))
+	for _, image := range action.Protected {
+		declared[image] = true
+	}
+	for _, image := range world.ProtectedImages() {
+		if !declared[image] {
+			return fmt.Errorf(
+				"collect images must protect %q, which an allocation still references", image)
+		}
+	}
+	return nil
+}
+
+// ProtectedImages reports the images the world still depends on.
+//
+// This is the set garbage collection must never reclaim. It is derived from the
+// world rather than from the node's own view, because an image whose last
+// allocation is being recreated is still needed even though nothing references
+// it on disk at that instant.
+func (w World) ProtectedImages() []string {
+	protected := make(map[string]bool)
+	for _, allocation := range w.Allocations {
+		if allocation.Image != "" {
+			protected[allocation.Image] = true
+		}
+	}
+	images := make([]string, 0, len(protected))
+	for image := range protected {
+		images = append(images, image)
+	}
+	sort.Strings(images)
+	return images
 }
 
 func validateBackupSnapshot(goal Goal, world World, action Action) error {

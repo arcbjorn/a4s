@@ -625,6 +625,10 @@ const (
 	ActionTransferVolume   ActionKind = "transfer_volume"
 	ActionAdoptVolume      ActionKind = "adopt_volume"
 	ActionPruneSnapshots   ActionKind = "prune_snapshots"
+	// ActionCollectImages reclaims image and snapshot storage no allocation
+	// references. It is separate from prune_snapshots, which retains volume
+	// recovery points; this reclaims the content-addressed layers underneath.
+	ActionCollectImages    ActionKind = "collect_images"
 	ActionVerifyBackup     ActionKind = "verify_backup"
 	ActionDatabaseBackup   ActionKind = "database_backup"
 	ActionStartAllocation  ActionKind = "start_allocation"
@@ -661,8 +665,13 @@ type Action struct {
 	Engine string `json:"engine,omitempty"`
 	// Retain is how many recent snapshots a prune keeps.
 	Retain int `json:"retain,omitempty"`
-	// DryRun asks a prune to report what it would remove without removing it.
+	// DryRun asks a prune or collection to report what it would remove without
+	// removing it.
 	DryRun bool `json:"dry_run,omitempty"`
+	// Protected lists the images a collect_images action must not reclaim. The
+	// set is computed by the kernel from the world and travels inside the
+	// signed action, so a node never decides for itself what is unreferenced.
+	Protected []string `json:"protected,omitempty"`
 	// Secret names the reference to mount. An action carries the reference, not
 	// the material, so a proposal remains safe to log in full.
 	Secret *SecretRef `json:"secret,omitempty"`

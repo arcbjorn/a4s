@@ -40,6 +40,10 @@ const (
 	EvidenceAllocationDrained = "allocation.drained"
 	EvidenceQueueObserved     = "queue.observed"
 	EvidenceProviderReachable = "provider.reachable"
+	// EvidenceImagesCollected records what a garbage collection reclaimed, or
+	// in dry-run mode what it would reclaim. It observes storage rather than
+	// workloads, so it changes no allocation state.
+	EvidenceImagesCollected = "images.collected"
 	// EvidenceApprovalGranted records a verified operator decision. It is the
 	// only evidence kind that grants authority rather than observing a fact,
 	// which is why it is produced solely by signature verification.
@@ -327,6 +331,18 @@ func projectInto(world *World, evidence Evidence) error {
 		volume.Generation++
 		volume.Handoff.Phase = HandoffAdopted
 		volume.Handoff = nil
+
+	case EvidenceImagesCollected:
+		node, ok := world.Nodes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown node %q", evidence.Kind, evidence.Target)
+		}
+		// A reclaimed image is no longer present on the node, so anything that
+		// needs it must pull again. Recording that is what keeps the world from
+		// believing an image is cached when its bytes are gone.
+		for _, image := range splitLines(evidence.Observed["reclaimed"]) {
+			delete(node.Images, image)
+		}
 
 	case EvidenceSnapshotsPruned:
 		volume, ok := world.Volumes[evidence.Target]

@@ -30,6 +30,7 @@ func (StorageAgent) Descriptor() AgentDescriptor {
 			ActionSnapshotVolume, ActionDatabaseBackup, ActionBackupSnapshot,
 			ActionRestoreSnapshot, ActionQuiesceVolume, ActionTransferVolume,
 			ActionAdoptVolume, ActionPruneSnapshots, ActionVerifyBackup,
+			ActionCollectImages,
 		},
 	}
 }

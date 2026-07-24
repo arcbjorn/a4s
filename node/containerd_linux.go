@@ -329,6 +329,41 @@ func (b *containerdBackend) ListManaged(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
+// ListImages reports every image in this namespace's content store.
+//
+// Only this namespace is enumerated. Images another namespace pulled are not
+// a4s's to reclaim, and deleting them would break workloads a4s does not manage.
+func (b *containerdBackend) ListImages(ctx context.Context) ([]string, error) {
+	images, err := b.client.ListImages(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(images))
+	for _, image := range images {
+		names = append(names, image.Name())
+	}
+	return names, nil
+}
+
+// RemoveImage deletes an image record and lets containerd's own garbage
+// collector reclaim the underlying content.
+//
+// Deleting the record rather than the blobs is deliberate: content is shared
+// between images, and containerd already knows which layers are still
+// referenced. Reclaiming blobs directly would risk removing layers another
+// image depends on.
+func (b *containerdBackend) RemoveImage(ctx context.Context, name string) (bool, error) {
+	err := b.client.ImageService().Delete(ctx, name)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			// Already gone, which makes a replayed collection idempotent.
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func (b *containerdBackend) Close() error {
 	return b.client.Close()
 }

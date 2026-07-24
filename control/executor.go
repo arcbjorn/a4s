@@ -208,6 +208,19 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			Observed: map[string]string{"snapshot": action.Snapshot, "verified": "true"},
 		}, nil
 
+	case ActionCollectImages:
+		// The in-memory data plane holds no content store, so it reports a
+		// collection that reclaimed nothing. The protected set still travels
+		// with the evidence, which is what a real node would honour.
+		return Evidence{
+			Kind: EvidenceImagesCollected, Target: action.Node,
+			Observed: map[string]string{
+				"reclaimed": "",
+				"protected": strings.Join(e.world.ProtectedImages(), "\n"),
+				"dry_run":   fmt.Sprintf("%t", action.DryRun),
+			},
+		}, nil
+
 	case ActionPruneSnapshots:
 		if action.Volume == nil {
 			return Evidence{}, fmt.Errorf("prune snapshots requires a volume reference")
@@ -476,6 +489,11 @@ func simulateAction(world *World, action Action) error {
 			return fmt.Errorf("verify backup requires a volume reference and snapshot id")
 		}
 		// Verification never mutates the volume, so simulation does nothing.
+
+	case ActionCollectImages:
+		// Collecting reclaims storage the world does not reference. It changes
+		// no allocation, route, or volume state, so there is nothing to
+		// simulate: the node reports what it found through evidence.
 
 	case ActionPruneSnapshots:
 		if action.Volume == nil {

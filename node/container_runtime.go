@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -240,9 +241,81 @@ func (r *ContainerRuntime) Execute(ctx context.Context, action control.Action) (
 			},
 		}, nil
 
+	case control.ActionCollectImages:
+		return r.collectImages(ctx, action)
+
 	default:
 		return control.Evidence{}, fmt.Errorf("container runtime does not support action kind %q", action.Kind)
 	}
+}
+
+// ImageCollector is the optional backend capability that reclaims image
+// storage. It is separate from ContainerBackend so a backend that cannot
+// enumerate its content store is still a valid runtime, in the same way orphan
+// discovery is optional.
+type ImageCollector interface {
+	// ListImages reports every image reference the content store holds.
+	ListImages(context.Context) ([]string, error)
+	// RemoveImage deletes one image and reports whether it was present.
+	RemoveImage(context.Context, string) (bool, error)
+}
+
+// collectImages reclaims images the control plane does not reference.
+//
+// The protected set arrives with the authorized action rather than being
+// decided here. A node choosing for itself what is unreferenced would be acting
+// on a local view of a cluster-wide fact, and would eventually delete an image
+// the control plane was about to use.
+func (r *ContainerRuntime) collectImages(ctx context.Context,
+	action control.Action) (control.Evidence, error) {
+
+	collector, ok := r.backend.(ImageCollector)
+	if !ok {
+		return control.Evidence{}, fmt.Errorf("runtime backend cannot collect images")
+	}
+	present, err := collector.ListImages(ctx)
+	if err != nil {
+		return control.Evidence{}, fmt.Errorf("list images: %w", err)
+	}
+
+	protected := make(map[string]bool, len(action.Protected))
+	for _, image := range action.Protected {
+		protected[image] = true
+	}
+
+	var reclaimed []string
+	var skipped []string
+	for _, image := range present {
+		if protected[image] {
+			skipped = append(skipped, image)
+			continue
+		}
+		if action.DryRun {
+			// A dry run reports exactly what a real run would remove, which is
+			// what makes the evidence reviewable before anything is destroyed.
+			reclaimed = append(reclaimed, image)
+			continue
+		}
+		removed, err := collector.RemoveImage(ctx, image)
+		if err != nil {
+			return control.Evidence{}, fmt.Errorf("remove image %q: %w", image, err)
+		}
+		if removed {
+			reclaimed = append(reclaimed, image)
+		}
+	}
+	sort.Strings(reclaimed)
+	sort.Strings(skipped)
+
+	return control.Evidence{
+		Kind: control.EvidenceImagesCollected, Target: action.Node,
+		Observed: map[string]string{
+			"reclaimed": strings.Join(reclaimed, "\n"),
+			"protected": strings.Join(skipped, "\n"),
+			"dry_run":   fmt.Sprintf("%t", action.DryRun),
+			"scanned":   fmt.Sprintf("%d", len(present)),
+		},
+	}, nil
 }
 
 // Inspect exposes observed container state for probing and reconciliation.
