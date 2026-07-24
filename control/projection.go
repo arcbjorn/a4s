@@ -39,6 +39,7 @@ const (
 	EvidenceAgentDraining     = "agent.draining"
 	EvidenceAllocationDrained = "allocation.drained"
 	EvidenceQueueObserved     = "queue.observed"
+	EvidenceProviderReachable = "provider.reachable"
 )
 
 // Project applies one piece of evidence to the world and returns the updated
@@ -571,6 +572,33 @@ func projectInto(world *World, evidence Evidence) error {
 		allocation.Draining = true
 		allocation.Task = ""
 		allocation.Ready = false
+
+	case EvidenceProviderReachable:
+		node, ok := world.Nodes[evidence.Observed["node"]]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown node %q", evidence.Kind, evidence.Observed["node"])
+		}
+		provider := evidence.Target
+		if provider == "" {
+			return fmt.Errorf("evidence %q must name a provider", evidence.Kind)
+		}
+		if node.Providers == nil {
+			node.Providers = make(map[string]ProviderReach)
+		}
+		// A measurement older than the one already recorded is a reordered or
+		// replayed report. Accepting it would let a stale success overwrite a
+		// fresh failure, which is the direction that places agents onto a node
+		// that has since lost its egress.
+		if existing, seen := node.Providers[provider]; seen &&
+			!existing.ObservedAt.IsZero() && evidence.ObservedAt.Before(existing.ObservedAt) {
+			return nil
+		}
+		node.Providers[provider] = ProviderReach{
+			Reachable:  evidence.Observed["reachable"] == "true",
+			ObservedAt: evidence.ObservedAt,
+			ExpiresAt:  evidence.ExpiresAt,
+			Detail:     evidence.Observed["detail"],
+		}
 
 	case EvidenceQueueObserved:
 		if evidence.Target == "" {
