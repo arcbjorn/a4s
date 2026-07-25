@@ -28,14 +28,15 @@ func (r *recordingSource) ReplayEvidence() ([]control.Evidence, error) {
 // the real transport. Only containerd itself is faked, so the control loop,
 // signing, projection, probing, and supervision are all genuinely exercised.
 type acceptanceRig struct {
-	engine    *control.Engine
-	projector *control.DurableProjector
-	executor  *RemoteExecutor
-	backend   *supervisedBackend
-	desired   *DesiredState
-	recorded  *recordingSource
-	gateway   *recordingGateway
-	stop      func()
+	engine     *control.Engine
+	projector  *control.DurableProjector
+	executor   *RemoteExecutor
+	backend    *supervisedBackend
+	desired    *DesiredState
+	recorded   *recordingSource
+	gateway    *recordingGateway
+	dispatcher *Dispatcher
+	stop       func()
 }
 
 func acceptanceWorld() control.World {
@@ -150,7 +151,7 @@ func newAcceptanceRig(t *testing.T) *acceptanceRig {
 
 	return &acceptanceRig{
 		engine: engine, projector: projector, executor: executor, backend: backend,
-		desired: desired, recorded: recorded, gateway: gateway,
+		desired: desired, recorded: recorded, gateway: gateway, dispatcher: dispatcher,
 		stop: func() {
 			_ = fromServer.Close()
 			<-served
