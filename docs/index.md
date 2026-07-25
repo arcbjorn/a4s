@@ -23,6 +23,9 @@ repository.
 9. [Development guide](development.md) before adding code.
 10. [Operations](operations.md) before touching a Linux host or containerd.
 11. [Roadmap](roadmap.md) for milestone order and exit criteria.
+12. [Support matrix](support-matrix.md) for supported versions and platforms.
+13. [Upgrading and rolling back](upgrading.md) before moving a deployment to a
+    new build.
 
 The [glossary](glossary.md) defines project-specific terms. The
 [decision records](decisions/README.md) preserve architectural choices and the
@@ -58,7 +61,8 @@ Update these documents with code changes:
 | New daemon or CLI flag | README, getting started, operations |
 | Trust-boundary change | security and a decision record |
 | Milestone completion | project status, roadmap, README |
-| Go or containerd upgrade | `.go-version`, `go.mod`, getting started, status |
+| Go or containerd upgrade | `.go-version`, `go.mod`, getting started, status, `support-matrix.md` |
+| Release mechanics or supported platforms | `support-matrix.md`, `upgrading.md`, development |
 
 ## Porting the folder
 
@@ -67,5 +71,4 @@ does not require changing it. If the project is published under a different
 module path, change the `module` line in `go.mod`, update internal imports, run
 `go mod tidy`, and rerun the full verification matrix in the development guide.
 
-No license has been selected in this folder. Choose and add one before
-publishing or accepting third-party contributions.
+The project is licensed under Apache-2.0; see [LICENSE](../LICENSE).

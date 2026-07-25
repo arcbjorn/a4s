@@ -162,17 +162,24 @@ Security-sensitive changes should call out:
 
 ## Branch and release posture
 
-The current version is `0.2.0-dev` and the API is v1alpha1. There is no stable
-release process yet.
+The current version is `0.2.0-dev` and the API is v1alpha1.
 
-Before the first tagged release, add:
+Release mechanics are in place:
 
-- A chosen open-source or private-use license.
-- Automated CI for race tests, vet, Linux builds, and documentation links.
-- Version injection at build time instead of a source constant.
-- Release checksums and signatures.
-- Supported Go, Linux, containerd, runc, and architecture matrix.
-- Upgrade and rollback notes.
+- Apache-2.0 licensed; see [LICENSE](../LICENSE).
+- CI runs race tests, vet, gofmt, `go mod tidy`, Linux cross-builds, the
+  example simulation, fuzz smoke targets, and documentation link checks.
+- Version, commit, and build date are injected at link time. A plain
+  `go build` still self-identifies from the toolchain's VCS stamps.
+- `scripts/build-release.sh <version>` produces stamped binaries for
+  linux/darwin on amd64/arm64 with a `SHA256SUMS` file, and refuses to build
+  from a modified working tree.
+- Supported versions and platforms: [support matrix](support-matrix.md).
+- Upgrade and rollback procedure: [upgrading](upgrading.md).
+
+Signing the checksums is still a manual step; the release script prints the
+`gpg` command rather than running it, because the signing key belongs to a
+person rather than to the build.
 
 ## Keeping the project portable
 
