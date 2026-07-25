@@ -117,6 +117,9 @@ type CompositeRuntime struct {
 	// RuntimeAPI is the workload-facing surface agents call. It holds the
 	// per-allocation credential, so it participates in allocation lifecycle.
 	RuntimeAPI *RuntimeAPI
+	// Firewall installs compiled nftables policy. Optional: without it the node
+	// runs unfiltered.
+	Firewall *Firewall
 	// Resolver answers a4s service names for workloads on this node. Optional:
 	// without it the node runs, its workloads just cannot resolve each other
 	// by name.
@@ -130,6 +133,18 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 			return control.Evidence{}, fmt.Errorf("node has no routing capability")
 		}
 		return c.Routes.Execute(ctx, action)
+	case control.ActionApplyPolicy:
+		if c.Firewall == nil {
+			// A node with no firewall capability accepts the policy and
+			// enforces nothing, the same way a node without a resolver serves
+			// no names. Failing here would block convergence on a host the
+			// operator deliberately left unfiltered.
+			return control.Evidence{
+				Kind: control.EvidencePolicyApplied, Target: action.Node,
+				Observed: map[string]string{"enforced": "false"},
+			}, nil
+		}
+		return c.Firewall.Execute(ctx, action)
 	case control.ActionPublishZone:
 		if action.Zone == nil {
 			return control.Evidence{}, fmt.Errorf("publish zone requires a zone")

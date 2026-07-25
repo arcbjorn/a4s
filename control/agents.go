@@ -266,6 +266,15 @@ func (NetworkAgent) Propose(goal Goal, world World) (Proposal, error) {
 	// appeared.
 	zones := staleZones(goal, world)
 
+	// Firewall rules are installed before names are published. A workload
+	// reachable by name before its policy is enforced is briefly open to
+	// callers the operator never permitted.
+	if rules := stalePolicies(goal, world); len(rules) > 0 {
+		proposal.Reasoning = "install network policy on nodes whose rules are out of date"
+		proposal.Actions = rules
+		return proposal, nil
+	}
+
 	if goal.Route == nil || world.Routes[goal.Route.Host] != nil {
 		if len(zones) > 0 {
 			proposal.Reasoning = "publish service names to nodes whose resolver is out of date"
@@ -290,6 +299,54 @@ func (NetworkAgent) Propose(goal Goal, world World) (Proposal, error) {
 	})
 	proposal.ExpectedEvidence = []Check{{Kind: "route_reachable", Target: goal.Route.Host, Want: "true"}}
 	return proposal, nil
+}
+
+// stalePolicies proposes a compiled ruleset for every node running this
+// workload whose installed rules no longer match the declared intent.
+//
+// Only nodes holding an allocation are targeted: a ruleset for a workload that
+// is not present compiles to no local rules, so sending it would be churn.
+func stalePolicies(goal Goal, world World) []Action {
+	if goal.Workload.Policy == nil {
+		return nil
+	}
+	policy := *goal.Workload.Policy
+	if policy.Workload == "" {
+		policy.Workload = goal.Workload.Name
+	}
+	ports := map[string]int{goal.Workload.Name: goal.Workload.Port}
+
+	nodes := make([]string, 0, len(world.Nodes))
+	for id, node := range world.Nodes {
+		if node.Healthy && len(localAddresses(world, goal.Workload.Name, id)) > 0 {
+			nodes = append(nodes, id)
+		}
+	}
+	sort.Strings(nodes)
+
+	actions := make([]Action, 0, len(nodes))
+	for _, id := range nodes {
+		compiled, err := CompilePolicies(world, ports, []NetworkPolicy{policy}, id)
+		if err != nil {
+			// An intent that cannot be compiled is a goal-level error, and the
+			// kernel will report it when the action is validated. Proposing
+			// nothing here would hide it.
+			continue
+		}
+		if world.Nodes[id].PolicyFingerprint == compiled.Fingerprint() {
+			continue
+		}
+		compiledCopy := compiled
+		actions = append(actions, Action{
+			ID: "apply-policy-" + id, Kind: ActionApplyPolicy,
+			Target: id, Node: id, Workload: goal.Workload.Name, Policy: &compiledCopy,
+		})
+	}
+	// One node per round, like every other rollout step.
+	if len(actions) > 1 {
+		actions = actions[:1]
+	}
+	return actions
 }
 
 // staleZones proposes a zone for every node whose resolver has not yet been

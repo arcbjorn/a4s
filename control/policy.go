@@ -30,6 +30,9 @@ func DefaultPolicy() Policy {
 			},
 			"network-agent": {
 				ActionPublishRoute: true,
+				// Compiling and applying firewall policy is network work, and it
+				// belongs with the agent that already owns reachability.
+				ActionApplyPolicy: true,
 				// Publishing names is the same job as publishing routes: both
 				// tell the data plane where a service currently lives.
 				ActionPublishZone: true,
@@ -174,6 +177,7 @@ var actionValidators = map[ActionKind]func(Goal, World, Action) error{
 	ActionPruneSnapshots:   validatePruneSnapshots,
 	ActionCollectImages:    validateCollectImages,
 	ActionPublishZone:      validatePublishZone,
+	ActionApplyPolicy:      validateApplyPolicy,
 	ActionBackupSnapshot:   validateBackupSnapshot,
 	ActionRestoreSnapshot:  validateRestoreSnapshot,
 	ActionMountSecret:      validateMountSecret,
@@ -487,6 +491,39 @@ func validatePruneSnapshots(goal Goal, world World, action Action) error {
 		return fmt.Errorf("volume %q is being moved and cannot be pruned", action.Volume.Name)
 	}
 
+	return nil
+}
+
+// validateApplyPolicy authorizes installing a compiled firewall ruleset.
+//
+// The ruleset must be compiled for the node receiving it, because allocation
+// addresses are node-local: a ruleset built for another node would either match
+// nothing or, worse, match a different workload that happens to share an
+// address on this host.
+func validateApplyPolicy(goal Goal, world World, action Action) error {
+	if action.Node == "" {
+		return fmt.Errorf("apply policy requires a node")
+	}
+	if _, ok := world.Nodes[action.Node]; !ok {
+		return fmt.Errorf("node %q does not exist", action.Node)
+	}
+	if action.Policy == nil {
+		return fmt.Errorf("apply policy requires a compiled ruleset")
+	}
+	if action.Policy.Node != action.Node {
+		return fmt.Errorf("policy was compiled for node %q but is addressed to %q",
+			action.Policy.Node, action.Node)
+	}
+	if action.Policy.Table != PolicyTable {
+		// a4s owns exactly one table and flushes it wholesale. A ruleset naming
+		// another table would let a proposal edit firewall state outside the
+		// boundary a4s is allowed to manage.
+		return fmt.Errorf("policy must target the %q table, not %q",
+			PolicyTable, action.Policy.Table)
+	}
+	if len(action.Policy.Rules) == 0 {
+		return fmt.Errorf("compiled policy holds no rules")
+	}
 	return nil
 }
 

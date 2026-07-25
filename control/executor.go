@@ -208,6 +208,18 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			Observed: map[string]string{"snapshot": action.Snapshot, "verified": "true"},
 		}, nil
 
+	case ActionApplyPolicy:
+		if action.Policy == nil {
+			return Evidence{}, fmt.Errorf("apply policy requires a compiled ruleset")
+		}
+		return Evidence{
+			Kind: EvidencePolicyApplied, Target: action.Node,
+			Observed: map[string]string{
+				"fingerprint": action.Policy.Fingerprint(),
+				"rules":       fmt.Sprint(len(action.Policy.Rules)),
+			},
+		}, nil
+
 	case ActionPublishZone:
 		if action.Zone == nil {
 			return Evidence{}, fmt.Errorf("publish zone requires a zone")
@@ -501,6 +513,10 @@ func simulateAction(world *World, action Action) error {
 			return fmt.Errorf("verify backup requires a volume reference and snapshot id")
 		}
 		// Verification never mutates the volume, so simulation does nothing.
+
+	case ActionApplyPolicy:
+		// Installing rules changes what the host enforces, not what the world
+		// holds, so there is nothing to simulate.
 
 	case ActionPublishZone:
 		// Publishing names changes what a resolver answers, not what the world

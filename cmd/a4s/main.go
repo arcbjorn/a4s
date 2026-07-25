@@ -608,6 +608,8 @@ func runNode(args []string) error {
 	identityKeyPath := flags.String("identity-key", "", "path to this node's base64 Ed25519 private key")
 	keysetPath := flags.String("keyset", "", "controller keyset to trust (supersedes --public-key)")
 	dnsListen := flags.String("dns", "", "address to answer a4s service names on (empty disables it)")
+	nftCommand := flags.String("nft", "", "nft binary for network policy (empty disables enforcement)")
+	nftDryRun := flags.Bool("nft-dry-run", false, "compile policy without installing it")
 	logLevel := flags.String("log-level", "info", "log verbosity: debug, info, warn, or error")
 	logFormat := flags.String("log-format", "text", "log format: text or json")
 	if err := flags.Parse(args); err != nil {
@@ -757,6 +759,18 @@ func runNode(args []string) error {
 		}
 	}
 
+	// Policy enforcement is opt-in per node. A node without it runs unfiltered
+	// rather than refusing work, which keeps a host the operator deliberately
+	// left open from blocking convergence.
+	var firewall *a4snode.Firewall
+	if *nftCommand != "" {
+		firewall = a4snode.NewFirewall(a4snode.FirewallConfig{
+			Command: *nftCommand, DryRun: *nftDryRun,
+		})
+		logger.Info("network policy enforcement enabled",
+			slog.String("nft", *nftCommand), slog.Bool("dry_run", *nftDryRun))
+	}
+
 	// The resolver is what makes a service name mean the same thing from this
 	// node as from any other. It serves only the a4s zone and never forwards,
 	// so a name it does not know fails rather than escaping to public DNS.
@@ -803,6 +817,7 @@ func runNode(args []string) error {
 			Secrets:    secrets,
 			Volumes:    volumes,
 			Resolver:   resolver,
+			Firewall:   firewall,
 		},
 		Ledger:  ledger,
 		Desired: desired,
@@ -969,6 +984,7 @@ Usage:
   a4s simulate --file scenario.json [--json] [--event-log /path] [--max-rounds N]
   a4s node --node-id ID --key-id ID --public-key /path [runtime flags]
            [--dns 127.0.0.1:53] [--keyset /path/keyset.json]
+           [--nft /usr/sbin/nft] [--nft-dry-run]
            [--gateway-admin http://127.0.0.1:2019 --acme-email you@example.com]
   a4s server --event-log /path [--file scenario.json] [--status]
              [--listen host:port --signing-key /path --node-keys /dir]

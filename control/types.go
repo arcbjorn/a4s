@@ -48,6 +48,13 @@ type WorkloadSpec struct {
 	// cargo that holds tool grants and never proposes anything. The two never
 	// share an authority path.
 	Runtime *AgentRuntime `json:"runtime,omitempty"`
+	// Policy declares who may reach this workload and where it may connect.
+	//
+	// Absent means a4s installs no rules for it, which leaves the host's
+	// existing behaviour untouched. Declaring a policy is opt-in because
+	// silently firewalling a workload nobody asked to filter would break it in
+	// a way that looks like an application bug.
+	Policy *NetworkPolicy `json:"policy,omitempty"`
 }
 
 // AgentRuntime declares how an agent workload runs and what it may spend.
@@ -401,6 +408,9 @@ type Node struct {
 	// is what stops the network agent from republishing an unchanged zone every
 	// round.
 	ZoneFingerprint string `json:"zone_fingerprint,omitempty"`
+	// PolicyFingerprint is the digest of the nftables ruleset this node last
+	// installed, used the same way as ZoneFingerprint.
+	PolicyFingerprint string `json:"policy_fingerprint,omitempty"`
 	// Providers records which model providers this node can currently reach, as
 	// an observed fact rather than a configured intent. Provider egress is a
 	// scheduling constraint for agent workloads in the same way a pinned image
@@ -661,6 +671,10 @@ const (
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
 	ActionPublishRoute     ActionKind = "publish_route"
+	// ActionApplyPolicy installs a compiled nftables ruleset on a node. The
+	// ruleset is compiled by the kernel from typed intent, so what a node
+	// applies is derived from what was authorized rather than supplied raw.
+	ActionApplyPolicy ActionKind = "apply_policy"
 	// ActionPublishZone installs the service names a node's resolver answers.
 	// Like a route snapshot it carries the complete set, so a name the control
 	// plane withdrew cannot survive through incremental drift.
@@ -701,6 +715,8 @@ type Action struct {
 	// Zone carries the complete set of service names a publish_zone action
 	// installs on a node's resolver.
 	Zone *ServiceZone `json:"zone,omitempty"`
+	// Policy carries the compiled ruleset an apply_policy action installs.
+	Policy *CompiledPolicy `json:"policy,omitempty"`
 	// Protected lists the images a collect_images action must not reclaim. The
 	// set is computed by the kernel from the world and travels inside the
 	// signed action, so a node never decides for itself what is unreferenced.

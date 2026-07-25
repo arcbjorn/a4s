@@ -40,6 +40,8 @@ const (
 	EvidenceAllocationDrained = "allocation.drained"
 	EvidenceQueueObserved     = "queue.observed"
 	EvidenceProviderReachable = "provider.reachable"
+	// EvidencePolicyApplied records that a node installed a compiled ruleset.
+	EvidencePolicyApplied = "policy.applied"
 	// EvidenceZonePublished records that a node's resolver accepted a zone. It
 	// observes the resolver, not the workloads, so it changes no allocation.
 	EvidenceZonePublished = "zone.published"
@@ -334,6 +336,15 @@ func projectInto(world *World, evidence Evidence) error {
 		volume.Generation++
 		volume.Handoff.Phase = HandoffAdopted
 		volume.Handoff = nil
+
+	case EvidencePolicyApplied:
+		node, ok := world.Nodes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown node %q", evidence.Kind, evidence.Target)
+		}
+		// Recording the applied fingerprint is what lets the next round tell a
+		// node already enforcing the current policy from one that is not.
+		node.PolicyFingerprint = evidence.Observed["fingerprint"]
 
 	case EvidenceZonePublished:
 		node, ok := world.Nodes[evidence.Target]
