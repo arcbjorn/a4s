@@ -1,0 +1,65 @@
+[Unit]
+Description=a4s control plane server
+Documentation=https://github.com/arcbjorn/a4s
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/a4s server \
+    --event-log /var/lib/a4s/events.log \
+    --anchor /var/lib/a4s/anchor.jsonl \
+    --signing-key /etc/a4s/control-1 \
+    --key-id control-1 \
+    --listen 0.0.0.0:8443 \
+    --node-keys /etc/a4s/nodes \
+    --api 127.0.0.1:8080 \
+    --operator-keys /etc/a4s/operators \
+    --require-encryption \
+    --require-attestation \
+    --log-format json
+
+# SIGTERM unwinds the reconcile loop and closes node connections. Running
+# workloads are unaffected: stopping the server does not stop containerd.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5s
+
+# The server never needs root. It holds signing keys and an event log, which is
+# exactly what a dedicated unprivileged identity is for.
+User=a4s
+Group=a4s
+StateDirectory=a4s
+StateDirectoryMode=0700
+
+# The server touches its event log and its keys, and nothing else. Each of these
+# removes a path a compromised control plane could take to the rest of the host.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/a4s
+ReadOnlyPaths=/etc/a4s
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+
+[Install]
+WantedBy=multi-user.target

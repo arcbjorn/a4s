@@ -1,0 +1,55 @@
+[Unit]
+Description=a4s node agent
+Documentation=https://github.com/arcbjorn/a4s
+After=network-online.target containerd.service
+Wants=network-online.target
+Requires=containerd.service
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/a4s node \
+    --node-id %H \
+    --server control:8443 \
+    --identity-key /etc/a4s/node-identity \
+    --keyset /etc/a4s/keyset.json \
+    --containerd /run/containerd/containerd.sock \
+    --namespace a4s \
+    --ledger /var/lib/a4s/node-ledger.jsonl \
+    --desired-state /var/lib/a4s/desired-state.jsonl \
+    --log-dir /var/log/a4s/allocations \
+    --cni-bin /opt/cni/bin \
+    --subnet 10.42.0.0/24 \
+    --seccomp \
+    --log-format json
+
+# SIGTERM unwinds the dispatch loop and the supervisor. Containers keep running:
+# the node holds no workload process as a child, so stopping it is not an outage.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5s
+
+# The node runs privileged, and pretending otherwise would be worse than saying
+# so: it drives containerd, creates network namespaces, and installs nftables
+# rules. The confinement below is what remains meaningful given that.
+StateDirectory=a4s
+StateDirectoryMode=0700
+LogsDirectory=a4s/allocations
+
+ProtectHome=true
+NoNewPrivileges=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+SystemCallArchitectures=native
+
+# CAP_NET_ADMIN for namespaces and nftables, CAP_SYS_ADMIN for mounts and the
+# runtime. Everything else is dropped, so a compromised node cannot reach
+# capabilities its job never needs.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID CAP_MKNOD CAP_AUDIT_WRITE
+
+[Install]
+WantedBy=multi-user.target
