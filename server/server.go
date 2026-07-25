@@ -30,6 +30,10 @@ type Config struct {
 	// default: a server that has not been told who its operators are must not
 	// authorize public exposure or destroying data.
 	OperatorKeys map[string]ed25519.PublicKey
+	// Anchor is an absolute path to the external witness of the chain head. The
+	// hash chain catches an edit; only an outside record catches replacement of
+	// the whole store. Empty disables it, which leaves that gap open.
+	Anchor string
 }
 
 // Server owns durable history and the projection derived from it.
@@ -48,6 +52,8 @@ type Server struct {
 	// operatorKeys authenticate approvals. The server holds public keys only:
 	// it verifies operator decisions and can never make one.
 	operatorKeys map[string]ed25519.PublicKey
+	// anchor witnesses the chain head outside the store. Nil when disabled.
+	anchor *eventlog.Anchor
 }
 
 // Open starts a server, rebuilding its world from durable history.
@@ -63,10 +69,36 @@ func Open(config Config, agents ...control.Agent) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The anchor is checked before the projection is built. Rebuilding a world
+	// from a substituted log and only then noticing would mean the server had
+	// already acted on forged history.
+	var anchor *eventlog.Anchor
+	if config.Anchor != "" {
+		anchor, err = eventlog.OpenAnchor(config.Anchor)
+		if err != nil {
+			log.Close()
+			return nil, err
+		}
+		if err := anchor.Check(log); err != nil {
+			log.Close()
+			return nil, fmt.Errorf("event log failed its anchor check: %w", err)
+		}
+	}
 	projector, err := control.NewDurableProjector(config.Base, log)
 	if err != nil {
 		log.Close()
 		return nil, fmt.Errorf("rebuild world projection: %w", err)
+	}
+	if anchor != nil {
+		// Witness the recovered head so a later replacement is detectable even if
+		// nothing is appended this run.
+		head := log.Head()
+		if head.Hash != "" {
+			if err := anchor.Witness(head.Sequence, head.Hash); err != nil {
+				log.Close()
+				return nil, fmt.Errorf("witness recovered chain head: %w", err)
+			}
+		}
 	}
 	rounds := config.MaxRounds
 	if rounds <= 0 {
@@ -80,6 +112,7 @@ func Open(config Config, agents ...control.Agent) (*Server, error) {
 		log: log, projector: projector, agents: agents,
 		leases: control.NewLeaseManager(), maxRounds: rounds,
 		goals: make(map[string]control.Goal), operatorKeys: keys,
+		anchor: anchor,
 	}, nil
 }
 
@@ -141,7 +174,28 @@ func (s *Server) Reconcile(goalID string, executor control.Executor, probers ...
 	if len(probers) > 0 {
 		engine.WithProbers(probers...)
 	}
-	return engine.Run(goal, s.maxRounds)
+	err := engine.Run(goal, s.maxRounds)
+	// Witness whatever history now exists, including when the run failed: the
+	// events recorded before the failure are still history worth anchoring.
+	if anchorErr := s.witnessHead(); anchorErr != nil && err == nil {
+		err = anchorErr
+	}
+	return err
+}
+
+// witnessHead records the current chain head in the external anchor.
+func (s *Server) witnessHead() error {
+	s.mu.Lock()
+	anchor, log := s.anchor, s.log
+	s.mu.Unlock()
+	if anchor == nil || log == nil {
+		return nil
+	}
+	head := log.Head()
+	if head.Hash == "" {
+		return nil
+	}
+	return anchor.Witness(head.Sequence, head.Hash)
 }
 
 // Rebuild recomputes the world from durable history. It proves the projection
@@ -218,6 +272,16 @@ func (s *Server) recordDecision(grant control.ApprovalGrant, evidence control.Ev
 		Message: message + ": " + grant.Scope, Evidence: &evidence,
 	}); err != nil {
 		return fmt.Errorf("record operator decision: %w", err)
+	}
+	// Witnessed inline rather than through witnessHead, because callers already
+	// hold the mutex. An operator decision is exactly the kind of history worth
+	// anchoring: it is what authorizes public exposure and destroying data.
+	if s.anchor != nil {
+		if head := s.log.Head(); head.Hash != "" {
+			if err := s.anchor.Witness(head.Sequence, head.Hash); err != nil {
+				return fmt.Errorf("witness operator decision: %w", err)
+			}
+		}
 	}
 	return s.projector.Project(evidence)
 }
@@ -402,8 +466,15 @@ func (s *Server) ServiceZone(nodeID string) control.ServiceZone {
 	return control.BuildServiceZone(s.projector.World(), s.workloadPorts(), nodeID)
 }
 
+// RouteSnapshots resolves every route to its serving endpoints, weighted by any
+// canary the owning goal declares.
+//
+// The goals are passed in so a canary's traffic share is computed from the same
+// accepted goal the rollout is working toward. Weights are the kernel's
+// arithmetic over observed readiness; no agent supplies them.
 func (s *Server) RouteSnapshots() []control.RouteSnapshot {
-	return control.BuildRouteSnapshots(s.projector.World(), s.workloadPorts())
+	return control.BuildWeightedRouteSnapshots(
+		s.projector.World(), s.workloadPorts(), s.Goals())
 }
 
 // StaleRoutes reports routes with no healthy endpoint, which is what an

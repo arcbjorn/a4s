@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -348,5 +349,83 @@ func TestServerRefusesPlanForUnknownGoal(t *testing.T) {
 	if _, err := server.Plan("never-submitted"); err == nil ||
 		!strings.Contains(err.Error(), "never accepted") {
 		t.Fatalf("expected an unknown-goal error, got %v", err)
+	}
+}
+
+// openAnchoredServer starts a server whose chain head is witnessed externally.
+func openAnchoredServer(t *testing.T, logPath, anchorPath string) *Server {
+	t.Helper()
+	server, err := Open(Config{EventLog: logPath, Base: baseWorld(), Anchor: anchorPath},
+		control.PlacementAgent{}, control.NetworkAgent{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server
+}
+
+// A server that reconciled with an anchor configured restarts cleanly against
+// the log it wrote. Anchoring must not make ordinary recovery fail.
+func TestAnchoredServerRestartsCleanly(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "events.db")
+	anchorPath := filepath.Join(dir, "anchor.jsonl")
+
+	first := openAnchoredServer(t, logPath, anchorPath)
+	if err := first.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	executor := control.NewMemoryExecutor(baseWorld())
+	if err := first.Reconcile("web-public", executorOver{executor},
+		control.NewMeasuredProber(executor, map[string]control.ProbeTarget{
+			"web-0": {Allocation: "web-0", Kind: control.ProbeProcess},
+		})); err != nil {
+		t.Fatal(err)
+	}
+	events := first.Status().Events
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := openAnchoredServer(t, logPath, anchorPath)
+	defer restarted.Close()
+	if restarted.Status().Events != events {
+		t.Fatalf("restart lost history: before=%d after=%d", events, restarted.Status().Events)
+	}
+}
+
+// The point of the anchor: a substituted event log is refused at startup, before
+// the server builds a world from forged history.
+func TestAnchoredServerRefusesReplacedLog(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "events.db")
+	anchorPath := filepath.Join(dir, "anchor.jsonl")
+
+	first := openAnchoredServer(t, logPath, anchorPath)
+	if err := first.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	executor := control.NewMemoryExecutor(baseWorld())
+	if err := first.Reconcile("web-public", executorOver{executor},
+		control.NewMeasuredProber(executor, map[string]control.ProbeTarget{
+			"web-0": {Allocation: "web-0", Kind: control.ProbeProcess},
+		})); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Swap in an empty log, standing in for any forged history: its own chain
+	// verifies, so nothing inside the store reveals the substitution.
+	if err := os.Remove(logPath); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Open(Config{EventLog: logPath, Base: baseWorld(), Anchor: anchorPath},
+		control.PlacementAgent{}, control.NetworkAgent{})
+	if err == nil {
+		t.Fatal("the server accepted a replaced event log")
+	}
+	if !strings.Contains(err.Error(), "anchor") {
+		t.Fatalf("the failure did not name the anchor check: %v", err)
 	}
 }
