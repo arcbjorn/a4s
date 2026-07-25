@@ -18,6 +18,11 @@ type Runtime interface {
 type DispatchResult struct {
 	EnvelopeDigest string           `json:"envelope_digest"`
 	Evidence       control.Evidence `json:"evidence"`
+	// Attested carries the same evidence signed by this node's identity key. The
+	// plain Evidence field remains for callers that already hold the node's
+	// result locally; anything crossing to the control plane is trusted only
+	// after the attestation verifies, so the two must agree.
+	Attested *control.AttestedEvidence `json:"attested,omitempty"`
 }
 
 // DispatchResponse is the per-message reply. A rejected or failed action
@@ -66,6 +71,11 @@ type Dispatcher struct {
 	Runtime Runtime
 	Ledger  Ledger
 	Now     func() time.Time
+	// IdentityKey signs the evidence this node reports. It is the same key the
+	// node proves possession of when it enrolls, so the server already trusts its
+	// public half. Without it the node still executes, but its evidence carries
+	// no attestation and a server requiring one will refuse it.
+	IdentityKey ed25519.PrivateKey
 	// Desired records server-authorized intent so the node can keep workloads
 	// running while the server is unreachable. Optional: without it the node
 	// stays purely reactive.
@@ -121,17 +131,40 @@ func (d *Dispatcher) Dispatch(ctx context.Context, signed SignedAction) (Dispatc
 	// The node stamps its own identity and observation time. A runtime adapter
 	// reports what it did; only the node knows where it happened.
 	evidence = d.attribute(evidence, envelope.Action)
+	// Attest after attribution, never before: the signature has to cover the
+	// node id and observation time the projection will act on, or those fields
+	// could be edited in transit while the signature still verified.
+	attested, err := d.attest(evidence)
+	if err != nil {
+		return DispatchResult{}, err
+	}
 	// Record intent only after the mutation succeeded, so the node never
 	// supervises a workload the runtime failed to create.
 	if err := d.recordDesired(envelope.Action); err != nil {
 		return DispatchResult{}, err
 	}
 	d.noteLease(envelope)
-	result := DispatchResult{EnvelopeDigest: digest, Evidence: evidence}
+	result := DispatchResult{EnvelopeDigest: digest, Evidence: evidence, Attested: attested}
 	if err := d.Ledger.Put(key, result); err != nil {
 		return DispatchResult{}, err
 	}
 	return result, nil
+}
+
+// attest signs evidence with this node's identity key.
+//
+// A node without an identity key reports unattested evidence rather than
+// failing, so the stdin harness and existing tests keep working. The server
+// decides whether that is acceptable: with --require-attestation it is not.
+func (d *Dispatcher) attest(evidence control.Evidence) (*control.AttestedEvidence, error) {
+	if len(d.IdentityKey) == 0 {
+		return nil, nil
+	}
+	attested, err := control.SignEvidence(evidence, d.NodeID, d.IdentityKey)
+	if err != nil {
+		return nil, fmt.Errorf("attest evidence: %w", err)
+	}
+	return &attested, nil
 }
 
 // checkLease refuses an envelope whose target is already claimed by a different

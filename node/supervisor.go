@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"sync"
 	"time"
@@ -48,7 +49,13 @@ type Supervisor struct {
 	// Evidence receives observations produced by supervision so they can be
 	// forwarded to the server when it is reachable again.
 	Evidence func(control.Evidence)
-	Now      func() time.Time
+	// Attested receives the same observations signed by this node's identity key.
+	// Supervision evidence needs attesting as much as dispatch evidence does: it
+	// reports restarts, spend, and provider reachability, all of which the
+	// projection acts on.
+	Attested    func(control.AttestedEvidence)
+	IdentityKey ed25519.PrivateKey
+	Now         func() time.Time
 
 	MaxRestarts   int
 	RestartWindow time.Duration
@@ -228,6 +235,19 @@ func (s *Supervisor) emit(evidence control.Evidence) {
 	if s.Evidence != nil {
 		s.Evidence(evidence)
 	}
+	// Attest at the single emit point rather than at each producer, so a new
+	// supervision fact cannot reach the control plane unsigned by being added to
+	// a path that forgot to sign.
+	if s.Attested == nil || len(s.IdentityKey) == 0 {
+		return
+	}
+	attested, err := control.SignEvidence(evidence, s.NodeID, s.IdentityKey)
+	if err != nil {
+		// A node that cannot attest its own observation must not report it as
+		// though it had: an unsigned fact is indistinguishable from a forged one.
+		return
+	}
+	s.Attested(attested)
 }
 
 // allowRestart applies the crash-loop budget and backoff.

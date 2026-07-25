@@ -365,3 +365,135 @@ func TestAcceptanceUnapprovedPublicRouteIsRefused(t *testing.T) {
 		t.Fatalf("denial did not name the missing approval: %v", err)
 	}
 }
+
+// attestingRig is a dispatcher that signs its evidence, paired with an executor
+// that requires an attestation, so these tests exercise the boundary the way a
+// hardened deployment runs it.
+func attestingRig(t *testing.T) (*Dispatcher, *RemoteExecutor, ed25519.PrivateKey) {
+	t.Helper()
+	dispatcher, controlKey := denialRig(t)
+	nodePublic, nodePrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher.IdentityKey = nodePrivate
+
+	executor := NewRemoteExecutor("base", "control-1", controlKey, nil)
+	executor.NodeKeys = map[string]ed25519.PublicKey{"base": nodePublic}
+	executor.RequireAttestation = true
+	return dispatcher, executor, controlKey
+}
+
+// The headline case: evidence a node signed is accepted, and the same evidence
+// with the signature stripped is not. Without this, the transport's
+// authentication would be all that stands behind every fact the world acts on.
+func TestAcceptanceRequiresAttestedEvidence(t *testing.T) {
+	dispatcher, executor, controlKey := attestingRig(t)
+	action := acceptanceEnvelope("base").Action
+
+	result, err := dispatcher.Dispatch(context.Background(),
+		signedFor(t, controlKey, "control-1", acceptanceEnvelope("base")))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if result.Attested == nil {
+		t.Fatal("the node returned no attestation")
+	}
+	if _, err := executor.trustedEvidence(result, action); err != nil {
+		t.Fatalf("attested evidence was refused: %v", err)
+	}
+
+	stripped := result
+	stripped.Attested = nil
+	if _, err := executor.trustedEvidence(stripped, action); err == nil {
+		t.Fatal("unattested evidence was accepted while attestation was required")
+	}
+}
+
+// A node that edits its own evidence after signing it must be caught. This is
+// the compromised-node case: the runtime reported one thing and the node reports
+// another.
+func TestAcceptanceRefusesEditedAttestation(t *testing.T) {
+	dispatcher, executor, controlKey := attestingRig(t)
+	action := acceptanceEnvelope("base").Action
+
+	result, err := dispatcher.Dispatch(context.Background(),
+		signedFor(t, controlKey, "control-1", acceptanceEnvelope("base")))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	var evidence control.Evidence
+	if err := json.Unmarshal(result.Attested.EvidenceBytes, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	// Claim far more capacity was consumed than the server authorized.
+	evidence.Observed["memory_mb"] = "65536"
+	edited, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Attested.EvidenceBytes = edited
+
+	if _, err := executor.trustedEvidence(result, action); err == nil {
+		t.Fatal("evidence edited after attestation was accepted")
+	}
+}
+
+// Evidence attested by a different enrolled node must be refused even though the
+// signature verifies, or one node could answer for work another performed.
+func TestAcceptanceRefusesAttestationFromAnotherNode(t *testing.T) {
+	dispatcher, executor, controlKey := attestingRig(t)
+	action := acceptanceEnvelope("base").Action
+
+	otherPublic, otherPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The impostor is enrolled, so this is not an unknown-key rejection.
+	executor.NodeKeys["edge-9"] = otherPublic
+
+	result, err := dispatcher.Dispatch(context.Background(),
+		signedFor(t, controlKey, "control-1", acceptanceEnvelope("base")))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	var evidence control.Evidence
+	if err := json.Unmarshal(result.Attested.EvidenceBytes, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	evidence.Observed["node"] = "edge-9"
+	attested, err := control.SignEvidence(evidence, "edge-9", otherPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Attested = &attested
+
+	_, err = executor.trustedEvidence(result, action)
+	if err == nil {
+		t.Fatal("evidence attested by a different node was accepted")
+	}
+	if !strings.Contains(err.Error(), "edge-9") {
+		t.Fatalf("denial did not name the attesting node: %v", err)
+	}
+}
+
+// A captured attestation must stop being useful. Replay protection on the
+// envelope does not cover evidence, which travels in the other direction.
+func TestAcceptanceRefusesReplayedAttestation(t *testing.T) {
+	dispatcher, executor, controlKey := attestingRig(t)
+	action := acceptanceEnvelope("base").Action
+
+	result, err := dispatcher.Dispatch(context.Background(),
+		signedFor(t, controlKey, "control-1", acceptanceEnvelope("base")))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	// The same attestation, presented well after it was produced.
+	executor.Now = func() time.Time { return time.Now().Add(time.Hour) }
+	if _, err := executor.trustedEvidence(result, action); err == nil {
+		t.Fatal("a replayed attestation was accepted")
+	}
+}

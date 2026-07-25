@@ -80,6 +80,13 @@ func newAcceptanceRig(t *testing.T) *acceptanceRig {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The node's own identity key, which signs the evidence it reports. The
+	// acceptance rig requires attestation so the whole suite runs the way a
+	// hardened deployment does.
+	nodePublic, nodePrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ledger, err := OpenFileLedger(filepath.Join(dir, "ledger.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -113,6 +120,7 @@ func newAcceptanceRig(t *testing.T) *acceptanceRig {
 			Networks:   network,
 		},
 		Ledger: ledger, Desired: desired, Now: time.Now,
+		IdentityKey: nodePrivate,
 	}
 
 	toNode, fromServer := io.Pipe()
@@ -125,6 +133,8 @@ func newAcceptanceRig(t *testing.T) *acceptanceRig {
 
 	executor := NewRemoteExecutor("base", "control-1", privateKey,
 		NewStreamTransport(fromServer, toServer, nil))
+	executor.NodeKeys = map[string]ed25519.PublicKey{"base": nodePublic}
+	executor.RequireAttestation = true
 
 	recorded := &recordingSource{}
 	projector, err := control.NewDurableProjector(acceptanceWorld(), recorded)

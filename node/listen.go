@@ -243,6 +243,13 @@ type RegistryExecutor struct {
 	Key      ed25519.PrivateKey
 	TTL      time.Duration
 	Now      func() time.Time
+	// NodeKeys verify the evidence enrolled nodes report. These are the same
+	// public keys the server checks at enrollment, so no separate distribution is
+	// needed for attestation.
+	NodeKeys map[string]ed25519.PublicKey
+	// RequireAttestation refuses evidence a node did not sign.
+	RequireAttestation bool
+	AttestationMaxAge  time.Duration
 
 	mu         sync.Mutex
 	goalID     string
@@ -295,6 +302,9 @@ func (e *RegistryExecutor) executorFor(nodeID string) (*RemoteExecutor, error) {
 	}
 	executor := NewRemoteExecutor(nodeID, e.KeyID, e.Key, connection)
 	executor.TTL, executor.Now = e.TTL, e.Now
+	executor.NodeKeys = e.NodeKeys
+	executor.RequireAttestation = e.RequireAttestation
+	executor.AttestationMaxAge = e.AttestationMaxAge
 	executor.Bind(e.goalID, e.proposalID, e.revision, e.leaseID)
 	e.executors[nodeID] = executor
 	return executor, nil

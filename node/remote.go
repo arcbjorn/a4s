@@ -19,6 +19,12 @@ import (
 // five-minute ceiling the node enforces.
 const DefaultEnvelopeTTL = 60 * time.Second
 
+// DefaultAttestationMaxAge bounds how long a node's signed observation may
+// travel. It is more generous than the envelope TTL because evidence is produced
+// after the work completes and may wait for a reconnect, but still short enough
+// that a captured attestation stops being useful quickly.
+const DefaultAttestationMaxAge = 5 * time.Minute
+
 // Transport carries signed actions to a node and returns its responses. It is
 // deliberately a byte-stream contract so the same executor works over a pipe, a
 // subprocess, or a network connection over the tailnet.
@@ -46,6 +52,17 @@ type RemoteExecutor struct {
 	ProposalID string
 	Revision   uint64
 	LeaseID    string
+	// NodeKeys are the enrolled node public keys used to verify returned
+	// evidence. Without them the executor cannot check an attestation.
+	NodeKeys map[string]ed25519.PublicKey
+	// RequireAttestation refuses evidence that carries no verifiable node
+	// signature. Leave it off only for a fleet mid-upgrade; a control plane that
+	// accepts unattested evidence is trusting the transport for the one thing the
+	// transport cannot establish.
+	RequireAttestation bool
+	// AttestationMaxAge bounds how long a signed observation may travel before it
+	// is refused, which stops a captured attestation being replayed later.
+	AttestationMaxAge time.Duration
 
 	sequence atomic.Uint64
 	mu       sync.Mutex
@@ -112,7 +129,53 @@ func (e *RemoteExecutor) Execute(action control.Action) (control.Evidence, error
 	if response.Result == nil {
 		return control.Evidence{}, fmt.Errorf("node returned no result for action %q", action.ID)
 	}
-	return response.Result.Evidence, nil
+	return e.trustedEvidence(*response.Result, action)
+}
+
+// trustedEvidence returns the evidence only if it is attributable to the node
+// that was supposed to produce it.
+//
+// This is the point where a node's claim becomes the control plane's belief.
+// Without the attestation check, the transport's authentication is all that
+// stands behind every readiness, spend, and ownership fact — which means a
+// compromised node, or anything that got hold of a session, could move the world
+// by asserting whatever it liked.
+func (e *RemoteExecutor) trustedEvidence(result DispatchResult,
+	action control.Action) (control.Evidence, error) {
+
+	if len(e.NodeKeys) == 0 {
+		if e.RequireAttestation {
+			return control.Evidence{}, fmt.Errorf(
+				"attestation is required but no enrolled node keys are configured")
+		}
+		return result.Evidence, nil
+	}
+	if result.Attested == nil {
+		if e.RequireAttestation {
+			return control.Evidence{}, fmt.Errorf(
+				"node %q returned unattested evidence for action %q", e.NodeID, action.ID)
+		}
+		return result.Evidence, nil
+	}
+	evidence, err := control.VerifyEvidence(*result.Attested, e.NodeKeys, e.now(), e.attestationMaxAge())
+	if err != nil {
+		return control.Evidence{}, fmt.Errorf("evidence for action %q: %w", action.ID, err)
+	}
+	// The attestation must come from the node this executor addressed, or a
+	// different enrolled node could answer for work it never performed.
+	if result.Attested.NodeID != e.NodeID {
+		return control.Evidence{}, fmt.Errorf(
+			"evidence for action %q is attested by %q, expected %q",
+			action.ID, result.Attested.NodeID, e.NodeID)
+	}
+	return evidence, nil
+}
+
+func (e *RemoteExecutor) attestationMaxAge() time.Duration {
+	if e.AttestationMaxAge > 0 {
+		return e.AttestationMaxAge
+	}
+	return DefaultAttestationMaxAge
 }
 
 func (e *RemoteExecutor) Close() error {
