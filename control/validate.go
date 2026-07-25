@@ -33,9 +33,10 @@ func (s *Scenario) NormalizeAndValidate() error {
 		return fmt.Errorf("workload replicas must be positive")
 	}
 	// An agent workload may have no inbound network at all: it reaches the world
-	// outbound through granted tools. Requiring a listening port would force
-	// every agent to expose a surface it does not need.
-	if w.Runtime == nil || w.Port != 0 {
+	// outbound through granted tools. A scheduled job usually serves nothing
+	// either. Requiring a listening port would force both to expose a surface
+	// they do not need.
+	if (w.Runtime == nil && w.Schedule == nil) || w.Port != 0 {
 		if w.Port < 1 || w.Port > 65535 {
 			return fmt.Errorf("workload port must be between 1 and 65535")
 		}
@@ -53,6 +54,12 @@ func (s *Scenario) NormalizeAndValidate() error {
 		return err
 	}
 	if err := validateRuntime(w); err != nil {
+		return err
+	}
+	if err := validateSchedule(w); err != nil {
+		return err
+	}
+	if err := validateCanary(s.Goal); err != nil {
 		return err
 	}
 	if err := validateQueues(s.Goal, &s.World); err != nil {
@@ -384,6 +391,68 @@ func validateQueues(goal Goal, world *World) error {
 	if queue.Workload != goal.Workload.Name {
 		return fmt.Errorf("queue %q serves workload %q, not %q",
 			runtime.Queue, queue.Workload, goal.Workload.Name)
+	}
+	return nil
+}
+
+// validateSchedule checks a scheduled workload declares a usable schedule and
+// does not also claim to be a kind that contradicts it.
+func validateSchedule(w WorkloadSpec) error {
+	if w.Schedule == nil {
+		return nil
+	}
+	if err := w.Schedule.Validate(); err != nil {
+		return err
+	}
+	// A scheduled run exits when its work is done. A database is expected to keep
+	// running and is backed up while it does, so the two sets of rules for
+	// readiness and completion directly contradict each other.
+	if w.Engine != "" {
+		return fmt.Errorf("a %s database cannot be a scheduled workload", w.Engine)
+	}
+	// An agent workload drains before stopping and is retired on budget
+	// exhaustion, which is a different lifecycle from running to completion.
+	if w.Runtime != nil {
+		return fmt.Errorf("an agent workload cannot be a scheduled workload")
+	}
+	// A stateful scheduled job would need its volume handed between runs, and
+	// nothing coordinates that yet. Refusing is better than a job that silently
+	// races itself for a volume.
+	if w.Stateful || len(w.Volumes) > 0 {
+		return fmt.Errorf("a scheduled workload cannot be stateful")
+	}
+	// More completions than replicas can never be satisfied: each replica exits
+	// once per run, so the goal would be permanently unreachable.
+	if w.Schedule.RequiredCompletions() > w.Replicas {
+		return fmt.Errorf(
+			"schedule requires %d completions but the workload runs %d replicas",
+			w.Schedule.RequiredCompletions(), w.Replicas)
+	}
+	return nil
+}
+
+// validateCanary checks a canary is usable and applies to a workload that can
+// actually receive split traffic.
+func validateCanary(goal Goal) error {
+	if goal.Canary == nil {
+		return nil
+	}
+	if err := goal.Canary.Validate(); err != nil {
+		return err
+	}
+	// Splitting traffic requires a route to split. Without one there is nothing
+	// for a weight to apply to, and the canary would silently do nothing.
+	if goal.Route == nil {
+		return fmt.Errorf("a canary requires a route to shift traffic across")
+	}
+	// One replica cannot serve two versions at once, so a canary on it would jump
+	// straight from 0% to 100% and provide none of the protection it implies.
+	if goal.Workload.Replicas < 2 {
+		return fmt.Errorf("a canary needs at least two replicas, got %d", goal.Workload.Replicas)
+	}
+	// A run-to-completion job has no steady traffic to shift.
+	if goal.Workload.Schedule != nil {
+		return fmt.Errorf("a scheduled workload cannot use a canary")
 	}
 	return nil
 }

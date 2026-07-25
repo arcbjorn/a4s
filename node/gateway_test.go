@@ -272,3 +272,120 @@ func TestRouterResolvesEndpointsIntoSnapshot(t *testing.T) {
 		t.Fatalf("router did not resolve endpoints: %+v", snapshot)
 	}
 }
+
+// canarySnapshot splits traffic 10/90 between two versions.
+func canarySnapshot() []control.RouteSnapshot {
+	snapshot := servingSnapshot()
+	snapshot[0].Weighted = []control.WeightedEndpoint{
+		{
+			Endpoint: control.Endpoint{
+				Allocation: "app-0", Node: "base", Address: "10.42.0.2", Port: 8080,
+			},
+			Weight: 10, Version: "registry.example/app@sha256:new",
+		},
+		{
+			Endpoint: control.Endpoint{
+				Allocation: "app-1", Node: "base", Address: "10.42.0.3", Port: 8080,
+			},
+			Weight: 90, Version: "registry.example/app@sha256:old",
+		},
+	}
+	return snapshot
+}
+
+// A canary's weights must reach the gateway, or the control plane computes a
+// traffic split that nothing enforces.
+func TestGatewayAppliesCanaryWeights(t *testing.T) {
+	caddy := newFakeCaddy(t)
+	gateway := gatewayFor(t, caddy, nil)
+
+	if err := gateway.Apply(context.Background(), canarySnapshot()); err != nil {
+		t.Fatal(err)
+	}
+	document := caddy.last(t)
+	rendered, _ := json.Marshal(document)
+	body := string(rendered)
+
+	if !strings.Contains(body, "weighted_round_robin") {
+		t.Fatalf("gateway did not configure weighted balancing: %s", body)
+	}
+	// Both upstreams are still present, so no endpoint is dropped by weighting.
+	for _, upstream := range []string{"10.42.0.2:8080", "10.42.0.3:8080"} {
+		if !strings.Contains(body, upstream) {
+			t.Fatalf("weighting dropped upstream %s: %s", upstream, body)
+		}
+	}
+	// The weights must appear in the same order as the upstreams, or traffic goes
+	// to the version the canary meant to hold back.
+	weights := weightOrder(t, document)
+	if len(weights) != 2 || weights[0] != 10 || weights[1] != 90 {
+		t.Fatalf("weights are %v, want [10 90]", weights)
+	}
+	dials := dialOrder(t, document)
+	if len(dials) != 2 || dials[0] != "10.42.0.2:8080" || dials[1] != "10.42.0.3:8080" {
+		t.Fatalf("upstream order is %v, which does not match the weights", dials)
+	}
+}
+
+// An ordinary route carries no weights, so a gateway sees the same config it
+// always did and a canary is genuinely opt-in.
+func TestGatewayOmitsWeightsWithoutACanary(t *testing.T) {
+	caddy := newFakeCaddy(t)
+	gateway := gatewayFor(t, caddy, nil)
+
+	if err := gateway.Apply(context.Background(), servingSnapshot()); err != nil {
+		t.Fatal(err)
+	}
+	rendered, _ := json.Marshal(caddy.last(t))
+	if strings.Contains(string(rendered), "weighted_round_robin") {
+		t.Fatalf("an unweighted route configured weighted balancing: %s", rendered)
+	}
+}
+
+// handlerOf digs the reverse_proxy handler out of the rendered config.
+func handlerOf(t *testing.T, document map[string]any) map[string]any {
+	t.Helper()
+	apps, _ := document["apps"].(map[string]any)
+	httpApp, _ := apps["http"].(map[string]any)
+	servers, _ := httpApp["servers"].(map[string]any)
+	a4s, _ := servers["a4s"].(map[string]any)
+	routes, _ := a4s["routes"].([]any)
+	if len(routes) == 0 {
+		t.Fatalf("no routes in config: %+v", document)
+	}
+	route, _ := routes[0].(map[string]any)
+	handlers, _ := route["handle"].([]any)
+	if len(handlers) == 0 {
+		t.Fatalf("no handlers in route: %+v", route)
+	}
+	handler, _ := handlers[0].(map[string]any)
+	return handler
+}
+
+func weightOrder(t *testing.T, document map[string]any) []int {
+	t.Helper()
+	balancing, _ := handlerOf(t, document)["load_balancing"].(map[string]any)
+	policy, _ := balancing["selection_policy"].(map[string]any)
+	raw, _ := policy["weights"].([]any)
+	weights := make([]int, 0, len(raw))
+	for _, value := range raw {
+		number, ok := value.(float64)
+		if !ok {
+			t.Fatalf("weight %v is not a number", value)
+		}
+		weights = append(weights, int(number))
+	}
+	return weights
+}
+
+func dialOrder(t *testing.T, document map[string]any) []string {
+	t.Helper()
+	raw, _ := handlerOf(t, document)["upstreams"].([]any)
+	dials := make([]string, 0, len(raw))
+	for _, value := range raw {
+		upstream, _ := value.(map[string]any)
+		dial, _ := upstream["dial"].(string)
+		dials = append(dials, dial)
+	}
+	return dials
+}

@@ -1,0 +1,64 @@
+{
+  "goal": {
+    "api_version": "a4s.io/v1alpha1",
+    "id": "nightly-export",
+    "objective": "Export yesterday's data every night at 03:00 UTC.",
+    "workload": {
+      "name": "nightly-export",
+      "image": "ghcr.io/arcbjorn/homepage@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "replicas": 1,
+      "resources": {
+        "cpu_millis": 200,
+        "memory_mb": 256
+      },
+      "schedule": {
+        "cron": "0 3 * * *",
+        "deadline": "30m",
+        "concurrency": "forbid",
+        "retries": 2
+      }
+    },
+    "constraints": {
+      "required_labels": {
+        "pool": "base"
+      }
+    }
+  },
+  "world": {
+    "revision": 0,
+    "nodes": {
+      "base": {
+        "id": "base",
+        "labels": {
+          "pool": "base",
+          "zone": "home"
+        },
+        "capacity": {
+          "cpu_millis": 4000,
+          "memory_mb": 16384
+        },
+        "used": {
+          "cpu_millis": 500,
+          "memory_mb": 2048
+        },
+        "healthy": true
+      },
+      "nova": {
+        "id": "nova",
+        "labels": {
+          "pool": "sumi",
+          "zone": "remote"
+        },
+        "capacity": {
+          "cpu_millis": 4000,
+          "memory_mb": 8192
+        },
+        "used": {
+          "cpu_millis": 200,
+          "memory_mb": 512
+        },
+        "healthy": true
+      }
+    }
+  }
+}

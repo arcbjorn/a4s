@@ -106,6 +106,26 @@ func (g *CaddyGateway) render(snapshots []control.RouteSnapshot) ([]byte, error)
 			"handler":   "reverse_proxy",
 			"upstreams": upstreams,
 		}
+		// A canary in progress carries per-endpoint weights. Caddy's weighted
+		// round-robin takes the weights positionally, so the upstream list is
+		// rebuilt from the weighted set rather than reordered: a weight applied to
+		// the wrong upstream would send traffic to the version it was meant to
+		// hold back.
+		if weights := weightedUpstreams(snapshot); len(weights) > 0 {
+			upstreams = upstreams[:0]
+			numbers := make([]any, 0, len(snapshot.Weighted))
+			for _, endpoint := range snapshot.Weighted {
+				upstreams = append(upstreams, map[string]any{"dial": endpoint.HostPort()})
+				numbers = append(numbers, endpoint.Weight)
+			}
+			handler["upstreams"] = upstreams
+			handler["load_balancing"] = map[string]any{
+				"selection_policy": map[string]any{
+					"policy":  "weighted_round_robin",
+					"weights": numbers,
+				},
+			}
+		}
 		if len(upstreams) == 0 {
 			// A route with no serving endpoint answers 503 rather than being
 			// dropped. Dropping it would make the hostname fall through to an
@@ -198,4 +218,22 @@ func writeAtomic(path string, content []byte) error {
 		return fmt.Errorf("replace gateway config: %w", err)
 	}
 	return nil
+}
+
+// weightedUpstreams reports the weights to apply, or nothing when the snapshot
+// carries no canary split.
+//
+// A zero-weight upstream would be configured but never selected, which reads as a
+// healthy endpoint receiving no traffic for no visible reason. Anything at or
+// below zero is treated as no split at all rather than silently black-holed.
+func weightedUpstreams(snapshot control.RouteSnapshot) []control.WeightedEndpoint {
+	if len(snapshot.Weighted) < 2 {
+		return nil
+	}
+	for _, endpoint := range snapshot.Weighted {
+		if endpoint.Weight <= 0 {
+			return nil
+		}
+	}
+	return snapshot.Weighted
 }

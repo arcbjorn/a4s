@@ -16,6 +16,10 @@ type Goal struct {
 	Workload    WorkloadSpec `json:"workload"`
 	Route       *RouteSpec   `json:"route,omitempty"`
 	Constraints Constraints  `json:"constraints"`
+	// Canary declares gradual traffic shifting when this goal's image changes.
+	// Absent means a new replica takes an equal share as soon as it is ready,
+	// which is the existing behaviour.
+	Canary *Canary `json:"canary,omitempty"`
 }
 
 type WorkloadSpec struct {
@@ -55,7 +59,16 @@ type WorkloadSpec struct {
 	// silently firewalling a workload nobody asked to filter would break it in
 	// a way that looks like an application bug.
 	Policy *NetworkPolicy `json:"policy,omitempty"`
+	// Schedule declares this workload as scheduled or batch work rather than a
+	// service. A scheduled workload runs when due and completes when its
+	// container exits successfully, so an exit is a success rather than the
+	// failure it would be for a service.
+	Schedule *Schedule `json:"schedule,omitempty"`
 }
+
+// Scheduled reports whether this workload runs on a schedule rather than being
+// held up continuously.
+func (w WorkloadSpec) Scheduled() bool { return w.Schedule != nil }
 
 // AgentRuntime declares how an agent workload runs and what it may spend.
 //

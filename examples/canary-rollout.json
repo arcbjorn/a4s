@@ -1,0 +1,81 @@
+{
+  "goal": {
+    "api_version": "a4s.io/v1alpha1",
+    "id": "homepage-canary",
+    "objective": "Shift traffic to a new homepage version gradually.",
+    "workload": {
+      "name": "homepage",
+      "image": "ghcr.io/arcbjorn/homepage@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "replicas": 4,
+      "port": 8080,
+      "resources": {
+        "cpu_millis": 100,
+        "memory_mb": 128
+      }
+    },
+    "route": {
+      "host": "homepage.example.com",
+      "port": 443,
+      "exposure": "public"
+    },
+    "constraints": {
+      "required_labels": {
+        "pool": "base"
+      }
+    },
+    "canary": {
+      "steps": [
+        10,
+        50,
+        100
+      ],
+      "hold_for": "2m"
+    }
+  },
+  "world": {
+    "revision": 0,
+    "approvals": {
+      "approve-homepage-canary": {
+        "id": "approve-homepage-canary",
+        "goal_id": "homepage-canary",
+        "scope": "public-route",
+        "issued_by": "operator:arc",
+        "granted": true
+      }
+    },
+    "nodes": {
+      "base": {
+        "id": "base",
+        "labels": {
+          "pool": "base",
+          "zone": "home"
+        },
+        "capacity": {
+          "cpu_millis": 4000,
+          "memory_mb": 16384
+        },
+        "used": {
+          "cpu_millis": 500,
+          "memory_mb": 2048
+        },
+        "healthy": true
+      },
+      "nova": {
+        "id": "nova",
+        "labels": {
+          "pool": "sumi",
+          "zone": "remote"
+        },
+        "capacity": {
+          "cpu_millis": 4000,
+          "memory_mb": 8192
+        },
+        "used": {
+          "cpu_millis": 200,
+          "memory_mb": 512
+        },
+        "healthy": true
+      }
+    }
+  }
+}

@@ -81,6 +81,10 @@ type RouteSnapshot struct {
 	Port      int        `json:"port"`
 	Exposure  string     `json:"exposure"`
 	Endpoints []Endpoint `json:"endpoints"`
+	// Weighted carries per-endpoint traffic shares when a canary is in progress.
+	// It is empty for an ordinary route, so a gateway that ignores it behaves
+	// exactly as before.
+	Weighted []WeightedEndpoint `json:"weighted,omitempty"`
 }
 
 // BuildRouteSnapshots resolves every route to its currently serving endpoints.
@@ -90,7 +94,24 @@ type RouteSnapshot struct {
 // the operator asked for, turning a transient outage into a 404 from an
 // unrelated site; keeping it lets the gateway answer honestly instead.
 func BuildRouteSnapshots(world World, ports map[string]int) []RouteSnapshot {
+	return BuildWeightedRouteSnapshots(world, ports, nil)
+}
+
+// BuildWeightedRouteSnapshots resolves routes and applies canary weights.
+//
+// Goals are supplied so a route can be weighted by the canary its own goal
+// declares. A workload with no goal here, or whose goal declares no canary, gets
+// an unweighted snapshot, so this is a superset of BuildRouteSnapshots rather
+// than a different behaviour.
+func BuildWeightedRouteSnapshots(world World, ports map[string]int,
+	goals []Goal) []RouteSnapshot {
+
 	directory := BuildDirectory(world, ports)
+
+	byWorkload := make(map[string]Goal, len(goals))
+	for _, goal := range goals {
+		byWorkload[goal.Workload.Name] = goal
+	}
 
 	hosts := make([]string, 0, len(world.Routes))
 	for host := range world.Routes {
@@ -101,13 +122,38 @@ func BuildRouteSnapshots(world World, ports map[string]int) []RouteSnapshot {
 	snapshots := make([]RouteSnapshot, 0, len(hosts))
 	for _, host := range hosts {
 		route := world.Routes[host]
-		snapshots = append(snapshots, RouteSnapshot{
+		endpoints := directory[route.Workload].Endpoints
+		snapshot := RouteSnapshot{
 			Host: route.Host, Workload: route.Workload,
 			Port: route.Port, Exposure: route.Exposure,
-			Endpoints: directory[route.Workload].Endpoints,
-		})
+			Endpoints: endpoints,
+		}
+		// Weights appear only while a canary is actually splitting traffic. An
+		// unchanged route must produce an identical snapshot, or the gateway would
+		// see a new config on every reconciliation.
+		if goal, ok := byWorkload[route.Workload]; ok && goal.Canary != nil {
+			if weighted := WeightEndpoints(goal, world, endpoints); splitsTraffic(weighted) {
+				snapshot.Weighted = weighted
+			}
+		}
+		snapshots = append(snapshots, snapshot)
 	}
 	return snapshots
+}
+
+// splitsTraffic reports whether weights actually differ. Equal weights carry no
+// information a gateway does not already have from the endpoint list.
+func splitsTraffic(weighted []WeightedEndpoint) bool {
+	if len(weighted) < 2 {
+		return false
+	}
+	first := weighted[0].Weight
+	for _, endpoint := range weighted[1:] {
+		if endpoint.Weight != first {
+			return true
+		}
+	}
+	return false
 }
 
 // WorkloadPorts collects the container ports declared by accepted goals, which
