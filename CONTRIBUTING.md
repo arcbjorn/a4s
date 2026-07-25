@@ -20,5 +20,5 @@ Use Conventional Commits with subjects no longer than 50 characters. Keep one
 goal per commit. Do not include secrets, private keys, real credentials,
 sensitive inventory, or emojis.
 
-No project license has been selected yet. Resolve licensing before accepting
-third-party contributions or publishing the project broadly.
+The project is licensed under Apache-2.0; see [LICENSE](LICENSE). Contributions
+are accepted under the same license.
