@@ -102,8 +102,8 @@ jobs:
         run: go test ./control/ -run XXX -fuzz FuzzModelDiagnosisDecode -fuzztime 60s
       - name: fuzz projection
         run: go test ./control/ -run XXX -fuzz FuzzProjection -fuzztime 60s
-      - name: fuzz event log replay
-        run: go test ./eventlog/ -run XXX -fuzz FuzzReplay -fuzztime 120s
+      - name: fuzz event log open
+        run: go test ./eventlog/ -run XXX -fuzz FuzzOpen -fuzztime 120s
 
   docs:
     name: documentation links
