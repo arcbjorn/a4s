@@ -1,6 +1,7 @@
 package eventlog
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -31,10 +32,10 @@ const driverName = "sqlite"
 // command against a live log — into a short wait instead of an immediate error.
 const busyTimeout = 5 * time.Second
 
-// File is the durable, hash-chained control-plane event log.
+// File is the durable, hash-chained control-plane event log, stored as SQLite
+// in WAL mode.
 //
-// The name is kept for its callers, but the storage is SQLite in WAL mode. The
-// hash chain is retained on top of the database rather than replaced by it:
+// The hash chain is retained on top of the database rather than replaced by it:
 // SQLite protects against torn pages and partial writes, while the chain
 // protects against someone editing history through sqlite3 directly. Those are
 // different threats, and the second is the one an audit trail exists for.
@@ -48,12 +49,6 @@ type File struct {
 	head Record
 	// count is the number of records, kept for NextSequence.
 	count uint64
-	// migrated records how many records were imported from a legacy log.
-	migrated int
-	// truncated reports a trailing partial record dropped from a legacy log at
-	// import time. SQLite makes this impossible for new appends; the field
-	// remains so a migrated deployment can still report what it recovered.
-	truncated int
 }
 
 // Record is one entry in the chain.
@@ -66,10 +61,8 @@ type Record struct {
 
 // Open opens or creates an event log.
 //
-// A legacy newline-delimited log at the same path is imported automatically,
-// so an existing deployment upgrades by replacing the binary. Recovery and
-// migration are both part of the normal startup path rather than special
-// cases, which is what keeps them from rotting.
+// Replaying and verifying the chain is part of the normal startup path rather
+// than a special case, which is what keeps recovery from rotting.
 func Open(path string) (*File, error) {
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("event log path must be absolute")
@@ -78,23 +71,14 @@ func Open(path string) (*File, error) {
 		return nil, fmt.Errorf("create event log directory: %w", err)
 	}
 
-	// A legacy log is detected before the database is created, because the
-	// check is "is the existing file a jsonl log" and creating the database
-	// first would answer that question about the wrong file.
-	legacy, err := legacyLogAt(path)
-	if err != nil {
+	// An existing file that is not a database is refused before the driver sees
+	// it, so a wrong --event-log path fails with a clear message rather than a
+	// SQLite parse error.
+	if err := checkDatabaseFile(path); err != nil {
 		return nil, err
 	}
 
-	databasePath := path
-	if legacy != nil {
-		// The legacy file keeps its name. The database is created beside it and
-		// the old log is preserved, so a rollback to the previous build still
-		// finds the history it expects.
-		databasePath = path + sqliteSuffix
-	}
-
-	db, err := openDatabase(databasePath)
+	db, err := openDatabase(path)
 	if err != nil {
 		return nil, err
 	}
@@ -103,18 +87,36 @@ func Open(path string) (*File, error) {
 		return nil, err
 	}
 
-	store := &File{path: databasePath, db: db}
+	store := &File{path: path, db: db}
 	if err := store.loadHead(); err != nil {
 		db.Close()
 		return nil, err
 	}
-	if legacy != nil {
-		if err := store.importLegacy(legacy); err != nil {
-			db.Close()
-			return nil, err
-		}
-	}
 	return store, nil
+}
+
+// checkDatabaseFile rejects a non-empty file that is not a SQLite database.
+func checkDatabaseFile(path string) error {
+	handle, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open event log: %w", err)
+	}
+	defer handle.Close()
+
+	header := make([]byte, 16)
+	read, err := handle.Read(header)
+	if err != nil && read == 0 {
+		// An empty file is a fresh start.
+		return nil
+	}
+	// Every SQLite database begins with this string.
+	if !bytes.HasPrefix(header[:read], []byte("SQLite format 3")) {
+		return fmt.Errorf("%s is not a SQLite event log", path)
+	}
+	return nil
 }
 
 // openDatabase opens SQLite with the pragmas the control plane needs.
@@ -377,23 +379,7 @@ func (f *File) Verify() error {
 	return verifyChain(records)
 }
 
-// Truncated reports how many records were dropped from a legacy log during
-// import. Zero means nothing was recovered, which is the normal case.
-func (f *File) Truncated() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.truncated
-}
-
-// Migrated reports how many records were imported from a legacy log.
-func (f *File) Migrated() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.migrated
-}
-
-// Path reports where this store lives, which differs from the requested path
-// when a legacy log was migrated beside it.
+// Path reports where this store lives.
 func (f *File) Path() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

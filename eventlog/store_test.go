@@ -448,3 +448,46 @@ func TestSecondOpenerCannotForkTheChain(t *testing.T) {
 		t.Fatalf("records = %d, want 2", got)
 	}
 }
+
+// FuzzOpen asserts that arbitrary bytes at the event-log path either fail to
+// open or yield a chain that verifies. A store that opened a corrupt or forged
+// file and reported it as valid history would be the bug worth finding, and a
+// crash-only fuzz test would not catch it.
+func FuzzOpen(f *testing.F) {
+	// A genuine store, so the fuzzer starts from valid database bytes.
+	store, path := appendedStore(&testing.T{}, 3)
+	store.Close()
+	if genuine, err := os.ReadFile(path); err == nil {
+		f.Add(genuine)
+	}
+	f.Add([]byte(""))
+	f.Add([]byte("SQLite format 3\x00"))
+	f.Add([]byte("{not json"))
+	f.Add([]byte(`{"sequence":1,"hash":"x","event":{}}`))
+
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		target := filepath.Join(t.TempDir(), "events.db")
+		if err := os.WriteFile(target, raw, 0o600); err != nil {
+			t.Skip()
+		}
+		store, err := Open(target)
+		if err != nil {
+			return
+		}
+		defer store.Close()
+
+		if err := store.Verify(); err != nil {
+			t.Fatalf("an unverifiable chain opened cleanly: %v", err)
+		}
+		previous := ""
+		for index, record := range store.Records() {
+			if record.Sequence != uint64(index+1) {
+				t.Fatalf("record %d has sequence %d", index, record.Sequence)
+			}
+			if record.PreviousHash != previous {
+				t.Fatalf("record %d breaks the chain", index)
+			}
+			previous = record.Hash
+		}
+	})
+}
