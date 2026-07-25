@@ -39,8 +39,7 @@ behavior.
 - Run `go vet ./...` and `git diff --check` before handoff.
 - Update `docs/project-status.md` and affected protocol or operational docs in
   the same change.
-- Keep all project paths relative to this repository; do not depend on a parent
-  checkout.
+- Keep all project paths relative to this repository root.
 
 The complete workflow and extension checklists are in
 `docs/development.md` and `docs/codebase.md`.
