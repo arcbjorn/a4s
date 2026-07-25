@@ -136,7 +136,8 @@ stable version and no compatibility guarantee, so everything below is under
 - The full round trip verified against live containerd on linux/amd64 and
   linux/arm64, covering allocation networking, the gateway, and durable volumes.
 - CI: race tests, vet, gofmt, `go mod tidy`, Linux and arm64 cross-builds, the
-  example simulation, fuzz smoke targets, and documentation link checking.
+  example simulation, and documentation link checking. Fuzzing runs nightly with
+  long windows rather than on every push; seed corpora still run with the tests.
 - Apache-2.0 license, build-time version stamping, and a release script
   producing checksummed binaries for four platforms.
 

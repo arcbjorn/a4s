@@ -82,29 +82,6 @@ jobs:
       - name: simulate example
         run: go run ./cmd/a4s simulate --file examples/web-service.json
 
-  fuzz:
-    name: fuzz smoke
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: true
-      # Short windows on every change; these targets assert invariants rather
-      # than only checking for panics, so even a brief run has value. Longer
-      # campaigns belong in the scheduled nightly run.
-      - name: fuzz approval verification
-        run: go test ./control/ -run XXX -fuzz FuzzApprovalVerification -fuzztime 60s
-      - name: fuzz scenario validation
-        run: go test ./control/ -run XXX -fuzz FuzzScenarioValidation -fuzztime 60s
-      - name: fuzz model diagnosis decode
-        run: go test ./control/ -run XXX -fuzz FuzzModelDiagnosisDecode -fuzztime 60s
-      - name: fuzz projection
-        run: go test ./control/ -run XXX -fuzz FuzzProjection -fuzztime 60s
-      - name: fuzz event log open
-        run: go test ./eventlog/ -run XXX -fuzz FuzzOpen -fuzztime 120s
-
   docs:
     name: documentation links
     runs-on: ubuntu-latest

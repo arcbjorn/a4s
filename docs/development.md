@@ -66,6 +66,17 @@ would pass a crash-only fuzz test while being exactly the bug worth finding.
 `FuzzOpen` writes a file and opens SQLite per iteration, so it runs far slower
 than the in-memory targets; give it a longer window.
 
+CI does not fuzz on push. A short window re-explores ground the committed corpora
+already cover, and it cost five minutes of every push for findings that came from
+long runs instead. The `fuzz` workflow runs nightly with ten-minute windows per
+target and can be dispatched manually with a longer one. What still runs on every
+push is the seed corpora: `go test ./...` executes each target against its
+committed inputs in milliseconds, which is what catches a regression on an input
+already known to be interesting.
+
+Commit any crasher the nightly finds. A reproducer under `testdata/fuzz/` becomes
+a permanent test case, so the same bug cannot return unnoticed.
+
 Also run the simulation when changing control behavior:
 
 ```bash
@@ -168,7 +179,8 @@ Release mechanics are in place:
 
 - Apache-2.0 licensed; see [LICENSE](../LICENSE).
 - CI runs race tests, vet, gofmt, `go mod tidy`, Linux cross-builds, the
-  example simulation, fuzz smoke targets, and documentation link checks.
+  example simulation, and documentation link checks. Fuzzing is a separate
+  nightly workflow.
 - Version, commit, and build date are injected at link time. A plain
   `go build` still self-identifies from the toolchain's VCS stamps.
 - `scripts/build-release.sh <version>` produces stamped binaries for

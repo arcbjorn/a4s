@@ -1,0 +1,69 @@
+name: fuzz
+
+# Fuzzing runs nightly rather than on every push.
+#
+# A 60-second window on a routine change almost never finds anything: the
+# targets have already been run against these corpora, so a short campaign
+# re-explores covered ground and costs five minutes of every push. The one
+# finding that mattered came from a long run, not a smoke test.
+#
+# Seed corpora still run on every push, because `go test ./...` executes each
+# fuzz target against its committed inputs in milliseconds. That is what catches
+# a regression on a known-bad input; this workflow is what finds new ones.
+on:
+  schedule:
+    # 03:00 UTC daily.
+    - cron: "0 3 * * *"
+  # Manual runs for when a change touches a parser or an authorization path.
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Per-target fuzz duration"
+        required: false
+        default: "10m"
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.3"
+  FUZZTIME: ${{ github.event.inputs.fuzztime || '10m' }}
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One job per target so a failure names the target that found it, and a
+      # crasher in one does not cut the others short.
+      fail-fast: false
+      matrix:
+        include:
+          - package: ./control/
+            target: FuzzApprovalVerification
+          - package: ./control/
+            target: FuzzScenarioValidation
+          - package: ./control/
+            target: FuzzModelDiagnosisDecode
+          - package: ./control/
+            target: FuzzProjection
+          - package: ./eventlog/
+            target: FuzzOpen
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+      - name: fuzz
+        run: go test ${{ matrix.package }} -run XXX -fuzz ${{ matrix.target }} -fuzztime ${{ env.FUZZTIME }}
+      - name: upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crashers-${{ matrix.target }}
+          # A crasher is only useful if it survives the runner. Without this the
+          # input that found the bug is destroyed with the container.
+          path: |
+            ${{ matrix.package }}testdata/fuzz/
+          if-no-files-found: ignore
