@@ -29,8 +29,9 @@ The current CLI accepts a `Scenario` JSON document:
 ```
 
 The decoder rejects unknown fields. The scenario wrapper is a simulation and
-validation input, not the planned external server API. A future server will
-ingest goals, observations, and approvals as separately authenticated events.
+validation input, not the external API. A running server ingests goals and
+approvals as separately authenticated events through the operator API; the
+server accepts a scenario only to supply starting node inventory.
 
 ## Goal
 
@@ -102,8 +103,8 @@ A `World` is a materialized snapshot of accepted observations and approvals:
 | `routes` | Materialized service routes |
 | `approvals` | Separately authenticated operator decisions |
 
-The simulation accepts the starting world from JSON. In the intended server,
-agents never submit a replacement world. Projections rebuild it from durable
+The simulation accepts the starting world from JSON. Against a running server,
+agents never submit a replacement world: the projection is rebuilt from durable
 events and expiring observations.
 
 ### Approval
@@ -113,8 +114,11 @@ Public exposure currently requires a granted approval with scope
 `public-route` for the exact goal.
 
 The fact that simulation JSON contains both the goal and approval does not mean
-a caller may self-approve in production. The future API must authenticate and
-persist approvals separately from goals and proposals.
+a caller may self-approve in production. Against a running control plane an
+approval is a separately authenticated record: `a4s approve` issues an
+Ed25519-signed grant with a mandatory expiry, checked against the world's
+observation time and appended to durable history before the projection is
+updated.
 
 ## Agent and proposal
 

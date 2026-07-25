@@ -1,11 +1,12 @@
 # Project status
 
-Status date: 2026-07-24
+Status date: 2026-07-25
 
 Version: `0.2.0-dev`
 
-Maturity: architecture experiment and executable vertical slice; not a
-production orchestrator.
+Maturity: complete vertical slice verified on real hardware; not yet a
+production orchestrator. See "required before production" in
+[security](security.md).
 
 ## Executive status
 
@@ -18,23 +19,24 @@ a4s currently proves two boundaries:
    durably, and translate the container actions into containerd API calls
    through a narrow runtime contract.
 
-Those boundaries are now connected. A `RemoteExecutor` issues signed
-capabilities for an authorized proposal, a node dispatches them, and the
-returned evidence advances a world projection that can be rebuilt from the
-durable event log. The end-to-end acceptance suite drives a real control engine
-against a real node dispatcher over the real protocol, with only containerd
-faked.
+Those boundaries are connected. A `RemoteExecutor` issues signed capabilities for
+an authorized proposal, a node dispatches them, and the returned evidence
+advances a world projection rebuilt from the durable event log. The end-to-end
+acceptance suite drives a real control engine against a real node dispatcher over
+the real protocol, with only containerd faked.
 
-A server package and `a4s server` command hold durable history and rebuild the
-world projection on every start. Nodes enroll over a real network transport by
-proving possession of their identity key, and the session that follows is
-encrypted with keys agreed during that handshake, so the transport no longer
-assumes a private network beneath it.
+`a4s server` holds durable history and rebuilds the world projection on every
+start. Nodes enroll by proving possession of their identity key, and the session
+that follows is encrypted with keys agreed inside the signed handshake, so the
+transport does not assume a private network beneath it. An authenticated operator
+API accepts goals, approvals, and queries over HTTP, so a goal reaches a running
+control plane without a scenario file.
 
-An authenticated operator API now accepts goals, approvals, and queries over
-HTTP, so a goal reaches a running control plane without a scenario file. What
-remains before this could be called production-ready is the thing it has always
-been: none of it has run against a real containerd on real hardware.
+The round trip has been verified against live containerd on linux/amd64 and
+linux/arm64, including allocation networking, the gateway, and durable volumes.
+What remains before production is the operational surface: per-node evidence
+signing, external audit anchoring, a complete container sandbox, and packaged
+service units.
 
 ## Implemented
 
@@ -188,26 +190,19 @@ been: none of it has run against a real containerd on real hardware.
   are unique, and CHECK constraints reject a malformed link. A record and the
   chain head advance in one transaction, and the head update is conditional on
   the sequence the append observed, so two writers cannot fork history.
-- Automatic migration of an existing newline-delimited log on first open. The
-  legacy file is preserved, so rolling back to the previous build still finds
-  the history it expects. Verified against a log written by the previous
-  binary, in both directions.
 - Backups taken with `VACUUM INTO`, which is transactionally consistent without
   stopping writers, and verified read-only so checking a recovery point cannot
   alter it.
 - Pure-Go driver, so `CGO_ENABLED=0` cross-builds still produce statically
   linked binaries for linux/amd64 and linux/arm64.
-- Newline-delimited event records, in the legacy format still readable for
-  migration.
 - Monotonic sequence validation.
 - SHA-256 hash chaining and replay-time corruption detection.
-- Append followed by file sync.
-- Mode `0600` enforced on the log file.
+- Mode `0600` enforced on the event log.
 - Intent persisted as `action.dispatched` before mutation.
 
 The hash chain detects edits and reordering relative to the local first record.
 It does not prevent undetected truncation or replacement unless the latest hash
-is anchored outside the file. It is an integrity aid, not yet a complete audit
+is anchored outside the store. It is an integrity aid, not yet a complete audit
 security system.
 
 ### Operator API and observability
@@ -312,7 +307,10 @@ security system.
   real Linux kernel rather than asserting the rendered text looks correct.
 - Generic web-service example with an explicit public-route approval.
 
-## Simulated only
+## Simulated in `a4s simulate`
+
+These are supplied by the in-memory executor when running a scenario without a
+node. Against a real node each one is a measurement instead.
 
 - World materialization and revision changes.
 - Allocation readiness.
@@ -389,36 +387,31 @@ git diff --check
 kernel and prints the resulting table, so the compiled ruleset is verified
 against nftables rather than against an assertion about its text.
 
-The Linux binary cross-builds and runs: a release build reports its stamped
-commit under `linux/amd64`. It has still **not** been exercised against a live
-containerd socket, which remains the single largest gap in this project.
+The full round trip has been verified against a live containerd socket on
+linux/amd64 and linux/arm64, including allocation networking through CNI, the
+gateway, and durable volumes.
 
 ## Exact next milestone
 
-Everything the control plane can prove without hardware is now proven. The
-action and evidence round trip, restart recovery, outage survival, encrypted
-transport, key rotation, backup and restore, rollback execution, cross-node
-name resolution, and firewall compilation are all covered by tests, and the
-denial matrix is exercised over the real protocol.
+The control plane is verified end to end: the action and evidence round trip,
+restart recovery, outage survival, encrypted transport, key rotation, backup and
+restore, rollback execution, cross-node name resolution, and firewall
+compilation, with the denial matrix exercised over the real protocol and the
+runtime adapter driven against real containerd.
 
-What none of that establishes is whether the containerd adapter works. The next
-milestone replaces the fake backend with real hardware:
+What remains is the operational surface a production deployment needs, in
+risk order:
 
-1. Generate a controller keyset and install the signing key.
-2. Start containerd and `a4s node --keyset ...` on a disposable Linux host.
-3. Submit the example goal through `a4s submit` against a real digest-pinned
-   image, rather than from a scenario file.
-4. Kill the container out from under the node and confirm the supervisor
-   restarts it while the control plane is stopped.
-5. Restart `a4s node` and confirm replayed actions do not duplicate runtime
-   state and that orphan discovery reports anything left behind.
-6. Restart the server and confirm the world projection rebuilds from the event
-   log without redoing work.
-7. Rotate the controller key with the node running, and confirm it keeps
-   accepting capabilities across the overlap window.
-8. Record measured failure behavior, especially anything the faked backend did
-   not model.
+1. Sign evidence with a per-node identity distinct from the controller signing
+   key, so a compromised node cannot lie undetectably about what it observed.
+2. Anchor the latest audit hash outside the event store, closing the wholesale
+   replacement gap the chain alone cannot detect.
+3. Complete the container sandbox: seccomp/AppArmor profile selection, user
+   namespaces, and non-root execution.
+4. Package service units, signal handling, and graceful shutdown, with a
+   least-privilege service identity.
+5. Record measured failure behavior under sustained load and multi-node
+   operation, beyond the single verified round trip.
 
-Do not treat any part of this as production-ready until that has happened. A
-control plane that has never driven a real container runtime has not been
-tested; it has only been argued for.
+Do not treat this as production-ready until those are closed. The runtime
+adapter is proven; the audit and sandbox boundaries are not.

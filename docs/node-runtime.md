@@ -94,8 +94,9 @@ go build -o a4s ./cmd/a4s
 
 ./a4s node \
   --node-id edge-1 \
-  --key-id control-1 \
-  --public-key /etc/a4s/control-1.pub \
+  --server control:8443 \
+  --identity-key /etc/a4s/node-edge-1 \
+  --keyset /etc/a4s/keyset.json \
   --ledger /var/lib/a4s/node-ledger.jsonl \
   --containerd /run/containerd/containerd.sock \
   --namespace a4s \
@@ -108,17 +109,24 @@ CNI plugins must be installed at `--cni-bin`. Without a network configuration in
 `--cni-conf`, the node falls back to a node-local bridge with host-local IPAM,
 which is the minimum a workload needs to be reachable from its own node.
 
-The public-key file contains the raw 32-byte Ed25519 public key encoded as
-standard or unpadded base64. Signed-action JSON values are read from standard
-input and dispatch-result JSON values are written to standard output. This
-stream is a temporary harness, not the final node transport.
+The node enrolls by proving possession of `--identity-key`, and the handshake
+agrees session keys inside the signed payload, so the channel is authenticated
+and encrypted rather than assuming a private network beneath it. `--keyset`
+trusts a rotatable controller keyset; `--key-id` with `--public-key` trusts a
+single key instead.
+
+With `--server` empty, the node reads `SignedAction` JSON values from standard
+input and writes one `DispatchResult` per input to standard output. That harness
+is for isolating the runtime adapter, not the node transport. Key files hold the
+raw 32-byte Ed25519 key encoded as standard or unpadded base64.
 
 ## Verification
 
 The contract tests use a fake backend and assert that only hardened container
 specs cross the runtime boundary. Linux cross-compilation checks the real
-containerd API adapter. A live smoke test remains necessary on a disposable
-node when the development host does not expose a Linux containerd socket.
+containerd API adapter. The round trip has additionally been run against live
+containerd on linux/amd64 and linux/arm64; repeat that on a disposable node when
+changing the adapter, since CI cannot.
 
 ```bash
 go test -race ./...
@@ -128,20 +136,18 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/a4s ./cmd/a4s
 
 ## Deliberately missing
 
-- Mutual node authentication and an encrypted network transport. The protocol is
-  implemented and carried over a stream; only the authenticated tailnet
-  connection is missing.
 - Automatic cleanup of orphaned containerd resources. Orphans are discovered and
   reported, but removal stays an authorized action rather than a node decision.
-- Node-local DNS and cross-node service routing. Per-allocation addressing is
-  implemented; a service name does not yet resolve to healthy endpoints.
+- Snapshot garbage collection. Unreferenced images are reclaimed against a
+  kernel-computed protected set; snapshots are not.
 - Seccomp/AppArmor profile selection, user namespaces, and rootless execution.
-- Image and snapshot garbage collection.
+  The container is hardened relative to image defaults but may still run as root
+  inside its namespace.
 - Direct node-to-node transfer streaming. A volume moves between nodes through
   the shared backup store rather than a dedicated channel.
-- Cross-node service routing. A route resolves to endpoints on the node that
-  owns them; a service name does not yet resolve across the tailnet.
+- Evidence signed by a node identity distinct from the controller signing key.
+  The node authenticates when it connects, but individual evidence records are
+  not separately attributable.
+- IPv6 allocation addressing. The CNI configuration assumes IPv4.
 
-These are required before running a production workload. The next useful
-milestone is running the existing round trip against a live containerd on a
-disposable Linux host.
+These are required before running a production workload.

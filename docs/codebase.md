@@ -6,19 +6,25 @@
 .
 |-- AGENTS.md                 local engineering instructions
 |-- CHANGELOG.md              human-readable change history
+|-- CONTRIBUTING.md           contribution expectations
+|-- LICENSE                   Apache-2.0
 |-- README.md                 project entry point
 |-- cmd/a4s/                  CLI composition root
 |-- control/                  trusted control vocabulary and kernel
+|-- server/                   long-running control plane and operator API
 |-- eventlog/                 durable controller event records
 |-- node/                     signed dispatch and runtime adapters
+|-- reason/                   model-backed control agents
+|-- obs/                      structured logging and metrics
 |-- docs/                     handbook and decision records
 |-- examples/                 safe simulation inputs
+|-- scripts/                  release, doc-link, and nftables checks
+|-- .github/workflows/        CI
 |-- go.mod / go.sum           pinned Go module graph
 `-- .go-version               expected Go toolchain
 ```
 
-The project deliberately has no framework, generated source, hidden service,
-or parent-repository import.
+The project deliberately has no framework, generated source, or hidden service.
 
 ## Package ownership
 
@@ -35,10 +41,21 @@ containerd, networking implementations, model SDKs, and transport libraries.
 | `policy.go` | Capability grants, proposal authorization, plan simulation |
 | `executor.go` | Executor interface and simulated memory data plane |
 | `engine.go` | Reconciliation coordination, event ordering, verification |
-| `engine_test.go` | End-to-end kernel safety and convergence tests |
-| `agent_workload_test.go` | Agent-workload budget, tool-grant, drain, and queue rules |
+| `projection.go` | Pure, idempotent world projection from evidence |
+| `durable.go` | Projection rebuilt from recorded history |
+| `approval.go` | Operator grant issuance, expiry, and revocation |
+| `keyset.go` | Controller keyset states and rotation rules |
+| `lease.go` | Target leases with expiry, so proposals cannot interleave |
+| `rollout.go` | Drift retirement, availability floor, and rollback resolution |
+| `probe.go` | Readiness declarations and observation freshness |
+| `directory.go` / `resolve.go` | Service discovery and cluster-wide name zones |
+| `netpolicy.go` | Typed network intent compiled toward nftables |
+| `storage_agent.go` | Volume backup, restore verification, and handoff proposals |
+| `plan.go` / `explain.go` / `diagnose.go` | Dry run, causal history, and deterministic diagnosis |
 | `modelcontext.go` | Redacted model input and explanation provenance |
 | `modeldecode.go` | Strict decoding of untrusted model output |
+| `engine_test.go` | End-to-end kernel safety and convergence tests |
+| `agent_workload_test.go` | Agent-workload budget, tool-grant, drain, and queue rules |
 
 Dependency direction:
 
@@ -63,12 +80,41 @@ kernel keeps the property above: dependencies point inward, and nothing in
 reason -> control -> Go standard library only
 ```
 
+### `server`
+
+The long-running control plane. It owns the durable event log, rebuilds the
+world projection from it on every start, accepts enrolled node connections, and
+serves the authenticated operator API.
+
+| File | Responsibility |
+|---|---|
+| `server.go` | Startup, log ownership, projection rebuild, reconciliation, leases |
+| `api.go` | Operator HTTP surface and the request-body limit applied before auth |
+| `apiauth.go` | Signed-envelope verification and the single-use nonce ledger |
+| `apibody.go` | Carries the pre-read body to handlers, since the signature covers its digest |
+| `approval_test.go` | Durable approval admission and restart survival |
+
+```text
+server -> control, eventlog, node, obs
+```
+
+### `obs`
+
+Structured logging and in-process metrics for both daemons. It is separate so
+neither the kernel nor the node depends on an observability library, and so
+diagnostics never contaminate the protocol stream.
+
+| File | Responsibility |
+|---|---|
+| `log.go` | Level and format selection, refusing an unrecognized value |
+| `metrics.go` | Counters and gauges behind a closed set of outcome labels |
+| `text.go` | Prometheus text exposition rendering, without a client library |
+
 ### `eventlog`
 
 `eventlog.File` implements `control.EventSink`. It appends hash-chained records
 to SQLite in WAL mode with `synchronous=FULL`, and validates the chain on
-replay. A legacy newline-delimited log is imported automatically on first open
-and the original file is preserved, so an upgrade can be rolled back.
+replay.
 
 The chain is kept on top of the database rather than replaced by it: SQLite
 establishes that the rows are the ones committed, and the chain establishes
@@ -93,9 +139,19 @@ The node package owns the host mutation trust boundary.
 | `envelope.go` | Signed action envelope, signing, and verification |
 | `dispatcher.go` | Signature gate, idempotency gate, runtime dispatch |
 | `file_ledger.go` | Persistent successful-dispatch results |
+| `enroll.go` / `channel.go` / `x25519.go` | Authenticated enrollment and the encrypted channel |
+| `listen.go` / `remote.go` | Enrolled node sessions and short-lived capability issuance |
+| `desired.go` / `supervisor.go` | Durable authorized intent and local reconciliation |
 | `container_runtime.go` | Runtime-neutral action-to-container contract |
 | `containerd_linux.go` | Linux containerd implementation and OCI profile |
 | `containerd_other.go` | Explicit unsupported-platform behavior |
+| `cni_linux.go` / `network.go` | Allocation namespaces and addressing through CNI |
+| `dns.go` | Node-local resolver serving only the a4s zone, never forwarding |
+| `router.go` / `gateway.go` | Atomic route snapshots applied to the Caddy gateway |
+| `firewall.go` | nftables installation of the compiled ruleset |
+| `volume.go` / `snapshot.go` / `backup.go` / `handoff.go` | Fenced volumes, checksummed snapshots, off-host backup, ownership moves |
+| `secret.go` | Node-sealed secret material and tmpfs mounts |
+| `database.go` / `postgres.go` | Engine-consistent database backup and readiness |
 | `agent.go` | Per-allocation tool envelopes, budget meters, tool-call gate, drain |
 | `probe.go` | Readiness measurement and per-kind observer routing |
 | `provider.go` | Model-provider egress measurement, caching, and expiry |
@@ -124,9 +180,15 @@ Commands:
 | Command | Composition |
 |---|---|
 | `validate` | Scenario decoder and validator |
-| `simulate` | Memory executor, built-in agents, kernel, optional file event sink |
-| `node` | Public-key loader, containerd runtime, file ledger, dispatcher stream |
-| `version` | Development version string |
+| `simulate` | Memory executor, built-in agents, kernel, optional event sink |
+| `server` | Event log, projection rebuild, node listener, operator API, leases |
+| `node` | Key loader, containerd runtime, ledgers, dispatcher, supervisor, enrollment |
+| `keygen` / `keys` / `seal` | Key material: single keys, rotatable keyset, sealed secrets |
+| `plan` / `explain` / `diagnose` | Read-only introspection over the kernel and history |
+| `approve` / `history` | Signed operator grants and recorded-history queries |
+| `backup` / `restore` | Verified controller-state archives |
+| `submit` / `status` / `events` | Signed operator requests against a running server |
+| `version` | Stamped version, commit, and build date |
 
 Keep business and policy logic out of `main.go`.
 
@@ -157,18 +219,22 @@ Events observe the current revision at the instant they are recorded.
 
 ```text
 cmd node
-  -> load trusted Ed25519 public key
+  -> load trusted controller keyset or public key
   -> OpenContainerd and health check
   -> OpenFileLedger and replay
-  -> decode SignedAction from stdin
+  -> enroll with the server and agree session keys   (or read stdin)
+  -> receive SignedAction over the encrypted channel
   -> Dispatcher.Dispatch
        -> Verify signature, node, and time window
        -> check idempotency ledger
        -> ContainerRuntime.Execute
             -> ContainerBackend Pull/Create/Start
        -> append and sync successful result
-  -> encode DispatchResult to stdout
+  -> return DispatchResult per message
 ```
+
+Alongside that, the supervisor keeps durable desired state true on its own
+interval, which is what lets workloads survive a control-plane outage.
 
 The dispatcher records only successful operations. An execution error remains
 retryable. The backend must therefore make every mutation safe to repeat.
@@ -215,23 +281,30 @@ authority than a deterministic agent. Model output is untrusted proposal data.
 backend must preserve append-before-dispatch ordering, atomic sequence
 assignment, durable writes, replay validation, and exclusive-writer behavior.
 
-Before replacing the file store with SQLite, define:
+The current backend is SQLite. Anything replacing it must define:
 
 - Transaction boundaries for event append and materialized projections.
-- Single-writer ownership.
+- Single-writer ownership, and what a lost race does. Here a conditional
+  chain-head update turns it into a refused append rather than a forked history.
 - Recovery after an action is dispatched but completion is absent.
 - Backup, restore, and corruption checks.
-- How the latest audit hash is anchored outside the database.
+
+External anchoring of the latest audit hash remains unimplemented in every
+backend. The chain detects edits and reordering; only an outside anchor detects
+wholesale replacement.
 
 ## Test topology
 
 | Test group | What it protects |
 |---|---|
 | `control/engine_test.go` | End-to-end control authorization and convergence |
-| `eventlog/file_test.go` | Persistence, replay, hash chain, tamper rejection |
+| `eventlog/store_test.go` | Persistence, replay, hash chain, tamper rejection, crash durability |
+| `eventlog/backup_test.go` | Archive consistency and read-only verification |
 | `node/dispatcher_test.go` | Signature, expiry, target, deduplication |
+| `node/acceptance_denial_test.go` | The denial matrix driven over the real protocol |
 | `node/file_ledger_test.go` | Durable idempotency replay and corruption handling |
 | `node/container_runtime_test.go` | Narrow backend contract and hardened create spec |
+| `server/apiauth_test.go` | Envelope binding, nonce single-use, and read authentication |
 
 The Linux adapter is compile-checked because unit-test hosts may not be Linux
 and should not mutate a real containerd daemon. Live runtime tests belong on a

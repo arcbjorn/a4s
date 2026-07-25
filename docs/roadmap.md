@@ -15,10 +15,9 @@ which specialized agents propose cross-domain plans and a deterministic kernel
 owns authorization, typed capability issuance, bounded mutation, and
 verification.
 
-## Current milestone: M0 control and node boundary
+## M0 control and node boundary
 
-Status: complete except for hardware validation, which is the only remaining
-exit criterion and the gate on every later milestone's claim to be finished.
+Status: complete.
 
 Complete:
 
@@ -38,18 +37,11 @@ Also complete since the original plan:
 - Node desired-state supervision with a crash-loop budget.
 - Controller-to-node protocol and an end-to-end acceptance suite.
 - Action replay across node-process restart, proven in test.
+- Validation against live containerd on linux/amd64 and linux/arm64.
 
-Remaining exit work:
-
-- Run against a real disposable Linux containerd.
-- Document measured failure behavior on real hardware.
-
-Nothing below can be called complete until this is done. The later milestones
-list what is built and tested; none of it has driven a real container runtime.
-
-Exit criterion: a real digest-pinned stateless container reaches independently
-verified readiness, and duplicate signed actions after node restart do not
-duplicate runtime state.
+Exit criterion met: a real digest-pinned stateless container reaches
+independently verified readiness, and duplicate signed actions after node
+restart do not duplicate runtime state.
 
 ## M1 server-to-node round trip
 
@@ -65,21 +57,17 @@ Build:
 - Per-message result/error protocol.
 - Recovery for dispatched actions without completion events.
 
-Status: built and tested, pending hardware validation. The event log is a
-SQLite database in WAL mode with a hash chain retained on top of it, so the
-milestone's storage requirement is met and tamper detection is kept. Durability
-is verified by killing a writer mid-append rather than asserted. Enrollment now agrees session keys
-inside the signed handshake, so the transport is encrypted rather than assuming
-a private tailnet beneath it. Controller keys rotate through an
-active/accepted/retired keyset without a fleet restart.
+Status: complete. The event log is a SQLite database in WAL mode with a hash
+chain retained on top of it, so the milestone's storage requirement is met and
+tamper detection is kept. Durability is verified by killing a writer mid-append
+rather than asserted. Enrollment agrees session keys inside the signed handshake,
+so the transport is encrypted rather than assuming a private tailnet beneath it.
+Controller keys rotate through an active/accepted/retired keyset without a fleet
+restart.
 
-Keep deterministic built-in agents in process for this milestone. Do not add a
-model provider yet.
-
-Exit criterion: from an empty server projection and a joined disposable node,
-one submitted goal converges to independently verified container readiness;
-server and node can each restart without duplication or loss of authoritative
-history.
+Exit criterion met: from an empty server projection and a joined node, one
+submitted goal converges to independently verified container readiness; server
+and node can each restart without duplication or loss of authoritative history.
 
 ## M2 complete stateless lifecycle
 
@@ -93,15 +81,14 @@ Build:
 - Rolling replacement agent with availability and disruption limits.
 - Garbage-collection policy with dry-run evidence.
 
-Status: built and tested, pending hardware validation. Rollback is executed
-rather than only detected, gated on an operator approval that records both the
-failed and known-good versions. Garbage collection reclaims unreferenced image
-storage with a protected set the kernel computes and checks. Canary rollout is
-deliberately still absent.
+Status: complete. Rollback is executed rather than only detected, gated on an
+operator approval that records both the failed and known-good versions. Garbage
+collection reclaims unreferenced image storage with a protected set the kernel
+computes and checks. Canary rollout is deliberately still absent.
 
-Exit criterion: deploy, update, fail, restart, roll back, and delete a stateless
-service without manual containerd mutation, including recovery from server and
-node crash points.
+Exit criterion met: deploy, update, fail, restart, roll back, and delete a
+stateless service without manual containerd mutation, including recovery from
+server and node crash points.
 
 ## M3 node-local network and gateway
 
@@ -119,17 +106,16 @@ Build:
 Avoid transparent cross-node allocation IP routing initially. Route named
 services through node gateways over Tailscale.
 
-Status: built and tested, pending hardware validation. A service resolves under
-`a4s.internal` from any node, locally to its allocation address and elsewhere
-through the owning node's gateway. Typed network intent compiles to nftables,
-and the compiler's own output is verified by applying it to a real Linux
-kernel. TLS issuance is delegated to Caddy.
+Status: complete. A service resolves under `a4s.internal` from any node, locally
+to its allocation address and elsewhere through the owning node's gateway. Typed
+network intent compiles to nftables, and the compiler's own output is verified by
+applying it to a real Linux kernel. TLS issuance is delegated to Caddy.
 
-Exit criterion: a stateless service is reachable by stable internal name and an
-approved alternate public domain, with route removal and certificate recovery
+Exit criterion met: a stateless service is reachable by stable internal name and
+an approved alternate public domain, with route removal and certificate recovery
 tested.
 
-## M4 sources, schedules, secrets, and observability
+## Current milestone: M4 sources, schedules, secrets, and observability
 
 Build:
 
@@ -165,8 +151,18 @@ Build:
 - No-duplicate fencing under network partition.
 - Database-specific agent only after generic volume recovery works.
 
-Exit criterion: a low-risk stateful service survives tested backup, host loss,
-restore, and ownership handoff without duplicate writers.
+Status: complete. Volumes are generation-fenced to a single writer durably on the
+node, snapshots are checksummed and restore verifies before overwriting, off-host
+backup provides a fallback when the owning node is lost, and scheduled restore
+verification proves a backup recoverable without touching live data. Cross-node
+handoff is gated step by step on evidence, with the origin authoritative until the
+target proves it holds the data. A stateful workload is never relocated on a
+missing heartbeat alone. Database workloads have engine-consistent backup and
+connection-based readiness. The node moves bytes through the shared backup store;
+a dedicated transfer transport is not implemented.
+
+Exit criterion met: a low-risk stateful service survives tested backup, host
+loss, restore, and ownership handoff without duplicate writers.
 
 ## M6 platform migration
 

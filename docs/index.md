@@ -1,8 +1,6 @@
 # Documentation index
 
-This directory is the project handbook for a4s. It is written so the `a4s/`
-folder can be copied into a new repository without the original infrastructure
-repository.
+This directory is the project handbook for a4s.
 
 ## Suggested reading order
 
@@ -16,15 +14,16 @@ repository.
    actions, events, signatures, and versioning.
 6. [Agent workloads](agent-workloads.md) for the workload kind whose cost is
    tokens, and how it differs from a control agent.
-7. [Codebase guide](codebase.md) to find implementation ownership and extension
+7. [Node runtime](node-runtime.md) for the Linux data-plane boundary.
+8. [Codebase guide](codebase.md) to find implementation ownership and extension
    points.
-8. [Security model](security.md) before changing policy, identity, execution,
+9. [Security model](security.md) before changing policy, identity, execution,
    storage, networking, or secrets.
-9. [Development guide](development.md) before adding code.
-10. [Operations](operations.md) before touching a Linux host or containerd.
-11. [Roadmap](roadmap.md) for milestone order and exit criteria.
-12. [Support matrix](support-matrix.md) for supported versions and platforms.
-13. [Upgrading and rolling back](upgrading.md) before moving a deployment to a
+10. [Development guide](development.md) before adding code.
+11. [Operations](operations.md) before touching a Linux host or containerd.
+12. [Roadmap](roadmap.md) for milestone order and exit criteria.
+13. [Support matrix](support-matrix.md) for supported versions and platforms.
+14. [Upgrading and rolling back](upgrading.md) before moving a deployment to a
     new build.
 
 The [glossary](glossary.md) defines project-specific terms. The
@@ -44,8 +43,8 @@ When documents disagree, use this order:
 5. [Roadmap](roadmap.md) describes proposed sequencing, not a promise.
 
 This distinction matters because a4s is an early spike. Some architecture
-sections intentionally describe future server, networking, storage, secret,
-and gateway components.
+sections intentionally describe components that do not exist yet, such as
+multi-server consensus, canary rollout, and a Git source adapter.
 
 ## Maintainer checklist
 
@@ -64,11 +63,6 @@ Update these documents with code changes:
 | Go or containerd upgrade | `.go-version`, `go.mod`, getting started, status, `support-matrix.md` |
 | Release mechanics or supported platforms | `support-matrix.md`, `upgrading.md`, development |
 
-## Porting the folder
-
-The Go module path is currently `github.com/arcbjorn/a4s`. Copying the folder
-does not require changing it. If the project is published under a different
-module path, change the `module` line in `go.mod`, update internal imports, run
-`go mod tidy`, and rerun the full verification matrix in the development guide.
+## License
 
 The project is licensed under Apache-2.0; see [LICENSE](../LICENSE).

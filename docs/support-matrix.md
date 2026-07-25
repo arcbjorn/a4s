@@ -16,14 +16,14 @@ run by hand; it does not imply production readiness. See
 | nftables | 1.0 or later | Only when `--nft` is set. The compiled ruleset uses `inet` tables and `ct state` matching. |
 | Caddy | 2.7 or later | Only when `--gateway-admin` is set. The node drives the admin API. |
 | SQLite | embedded 3.53 | Provided by `modernc.org/sqlite`, a pure-Go implementation. No system SQLite is used and no CGO is required. |
-| libSQL / Turso | compatible | The schema and every query the store issues have been applied to a real libSQL server. Moving to Turso is a driver and DSN change, not a schema rewrite. |
+| libSQL / Turso | untested | The schema is deliberately restricted to SQL libSQL also implements, so moving should be a driver and DSN change rather than a rewrite. Not exercised against a libSQL server. |
 
 ## Platforms
 
 | Target | Server | Node | Notes |
 | --- | --- | --- | --- |
 | linux/amd64 | supported | supported | The primary target. Node features require a Linux kernel. |
-| linux/arm64 | supported | cross-built | Built and unit-tested in CI; not yet exercised against a live containerd. |
+| linux/arm64 | supported | supported | Built and unit-tested in CI, and verified against a live containerd by hand. |
 | darwin/arm64 | supported | unsupported | The operator CLI and server run; the container runtime refuses to start. |
 | darwin/amd64 | supported | unsupported | As above. |
 | windows | unsupported | unsupported | Not built and not tested. |

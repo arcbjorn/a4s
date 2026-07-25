@@ -53,16 +53,16 @@ The design assumes any of these can occur:
 - Secret values leak through prompts, reasoning, events, logs, or evidence.
 
 The current implementation addresses agent authority, stale plans, concurrent
-mutation of one target, signed node actions, replay, node identity, and a
-baseline OCI profile. It does not yet address a compromised node or controller,
-and it does not encrypt the transport.
+mutation of one target, signed node actions, replay, node identity, an encrypted
+authenticated transport, and a baseline OCI profile. It does not yet address a
+compromised node or controller.
 
 ## Trust boundaries
 
 ```text
 operator / Git / external API
             |
-       authentication                 future
+       authentication
             v
  goals + approvals + observations
             |
@@ -144,9 +144,10 @@ a token.
 
 The kernel is trusted to authenticate the agent identity supplied by its caller,
 apply kernel-owned grants, reject stale proposals, simulate the complete plan,
-and enforce deterministic policy. The current library accepts an
-`AgentDescriptor` from the engine; a future server must derive it from the
-registered agent session rather than request JSON.
+and enforce deterministic policy. The kernel accepts an `AgentDescriptor` from
+the engine, which is sound only because every agent runs in process. An
+out-of-process agent must have its descriptor derived from an authenticated
+session rather than taken from request JSON.
 
 ### Node
 
@@ -471,7 +472,7 @@ Digest pinning provides immutability, not provenance. Before production add:
 
 ## Required before production
 
-Closed since this list was written:
+Closed:
 
 - Authenticated server API and separately authenticated approvals. Operator
   requests carry a signed envelope bound to method, path, and body, made
@@ -479,7 +480,8 @@ Closed since this list was written:
 - Mutual controller/node authentication and encrypted transport.
 - Controller key rotation, through an active/accepted/retired keyset that
   rotates without a coordinated fleet restart.
-- Signed, fresh node observations and evidence, with readiness that expires.
+- Node-attributed, expiring observations. Evidence carries the reporting node's
+  identity and observation time, and stale readiness stops satisfying a goal.
 - Enforced target leases and conflict recovery.
 - Tested backup and restore, including detection of a truncated archive by
   anchoring the chain head outside the file.
@@ -488,6 +490,11 @@ Closed since this list was written:
 - Independent readiness and liveness probes.
 - CNI and network-policy enforcement compiled from typed intent, verified
   against a real kernel.
+- Single-writer stateful ownership: volumes are generation-fenced durably on the
+  node, and handoff is gated step by step on evidence.
+- Fuzzing of scenario validation, model output decoding, approval verification,
+  evidence projection, and event-store opening.
+- Validation against live containerd on linux/amd64 and linux/arm64.
 
 Still required:
 
@@ -498,14 +505,11 @@ Still required:
 - Gateway snapshot authenticity. The node applies whole snapshots, but the
   gateway does not verify their provenance independently.
 - Secret rotation without workload restart.
-- Validation against a real containerd on real hardware. Everything above is
-  proven against a faked backend, which is a claim about the control plane
-  rather than about the system.
-- Stateful ownership protocol before any durable workload.
-- Resource and request limits on all decoders and agent runtimes.
-- Fuzzing of protocol decoders, kernel authorization, event replay, and node
-  envelope verification.
-- Disposable-node penetration and failure testing.
+- Per-node evidence signing, so a compromised node cannot misreport what it
+  observed under the controller's own key.
+- Resource and request limits on the agent runtime surface. Operator API
+  decoders are already bounded before authentication.
+- Penetration and sustained-failure testing beyond the verified round trip.
 
 ## Security-review trigger
 

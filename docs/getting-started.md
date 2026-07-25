@@ -1,7 +1,6 @@
 # Getting started
 
-This guide starts at the root of the copied a4s project, where `go.mod` and
-`README.md` live.
+This guide starts at the repository root, where `go.mod` and `README.md` live.
 
 ## Prerequisites
 
@@ -24,26 +23,6 @@ macOS can build and test the control plane and can cross-compile the Linux
 adapter. `a4s node` intentionally returns an unsupported-platform error outside
 Linux.
 
-## Copy or extract the project
-
-The folder is self-contained. After copying it, confirm these files exist:
-
-```text
-README.md
-go.mod
-go.sum
-cmd/a4s/main.go
-control/
-eventlog/
-node/
-docs/
-examples/
-```
-
-The current module path is `github.com/arcbjorn/a4s`; it does not need to match
-the local directory. See the documentation index if you intend to publish
-under a different module path.
-
 ## Bootstrap dependencies
 
 ```bash
@@ -51,8 +30,9 @@ go mod download
 go mod verify
 ```
 
-No generator, database, local service, vendored tool, or parent repository is
-required for the current tests and simulation.
+No generator, external database, local service, or vendored tool is required
+for the current tests and simulation. SQLite is embedded through a pure-Go
+driver, so no system SQLite and no CGO are needed.
 
 ## Run the fast path
 
@@ -62,8 +42,8 @@ go run ./cmd/a4s validate --file examples/web-service.json
 go run ./cmd/a4s simulate --file examples/web-service.json
 ```
 
-The simulation should finish with `goal.achieved`, world revision 4, one
-allocation, and one route. It mutates only memory.
+The simulation should finish with `goal.achieved` at world revision 7, with one
+allocation, one published zone, and one route. It mutates only memory.
 
 Run the race suite before handing off a change:
 
@@ -78,13 +58,18 @@ The event-log path must be absolute. Use a new path for a clean sequence:
 ```bash
 go run ./cmd/a4s simulate \
   --file examples/web-service.json \
-  --event-log /tmp/a4s-events.jsonl \
+  --event-log /tmp/a4s-events.log \
   --json
 ```
 
-The file contains one JSON `Record` per line. Each record includes the event,
-its sequence, the prior record hash, and its own hash. Reopening the file
-replays and verifies the entire chain before accepting another append.
+The event log is a SQLite database in WAL mode. Each record holds the event, its
+sequence, the prior record hash, and its own hash. Reopening the log verifies
+the entire chain before accepting another append. Read recorded history with
+`a4s history` rather than by inspecting the database directly.
+
+```bash
+go run ./cmd/a4s history --event-log /tmp/a4s-events.log
+```
 
 Do not place secrets in a scenario, objective, event message, evidence map, or
 event-log pathname.
@@ -130,7 +115,7 @@ Use `GOARCH=arm64` for an arm64 Linux node.
 
 ## Node command
 
-The current node command is a stream harness, not a network daemon:
+The stdin stream harness, useful for isolating the runtime adapter:
 
 ```bash
 ./a4s node \
@@ -143,12 +128,22 @@ The current node command is a stream harness, not a network daemon:
   --log-dir /var/log/a4s/allocations
 ```
 
-It reads one or more `SignedAction` JSON values from standard input. It writes
-one `DispatchResult` JSON value per successful input and exits on the first
-error. The project does not yet include a key-generation or signing CLI because
-key custody belongs in the future server. Tests in `node/dispatcher_test.go`
-show how to generate an ephemeral Ed25519 key and call `node.Sign` for a local
-experiment.
+It reads one or more `SignedAction` JSON values from standard input and writes
+one `DispatchResult` JSON value per input, including for a rejected or failed
+action, so one bad envelope does not terminate the node.
+
+Generate controller keys with `a4s keygen` for a single key, or `a4s keys init`
+for a rotatable keyset the node accepts through `--keyset`:
+
+```bash
+./a4s keygen --out /etc/a4s/control-1
+./a4s keys init --keyset /etc/a4s/keyset.json --key-id control-1 --out /etc/a4s/control-1
+```
+
+In normal operation the node does not read envelopes from standard input at all:
+it enrolls with `a4s server --listen` and receives capabilities over the
+authenticated, encrypted transport. The stdin harness remains useful for
+isolating the runtime adapter.
 
 Read the node-runtime and operations documents before running this command.
 
@@ -177,7 +172,8 @@ whose scope is `public-route`.
 ### Event log fails on open
 
 The path must be absolute, writable, and either empty or a valid event chain
-created by this code. Corruption is treated as a hard failure.
+created by this code. Corruption is treated as a hard failure. A store written by
+a newer schema is also refused rather than misread: use the matching binary.
 
 ### Node command fails immediately on macOS
 

@@ -35,8 +35,9 @@ action kind. A grant permits proposal, not direct execution.
 
 ## Compensation
 
-A bounded action sequence intended to return the system to a safe state after
-partial failure. It is planned but not implemented.
+A bounded action sequence that returns the system to a safe state after partial
+failure. Rollback to a known-good image is implemented as an operator-approved
+compensation; a general per-action compensation vocabulary is not.
 
 ## Control kernel
 
@@ -72,14 +73,16 @@ returns the prior result; using the key for different content is rejected.
 
 ## Lease
 
-Exclusive, time-bounded ownership of a mutation target. Envelopes contain a
-lease ID, but lease acquisition and node enforcement are not implemented yet.
+Exclusive, time-bounded ownership of a mutation target. The kernel acquires a
+lease before the first mutation and releases it on every exit path, and the node
+refuses an envelope whose target is held under a different lease. Leases expire
+so an abandoned holder cannot block a target indefinitely.
 
 ## Materialized world
 
 The current state projection built from observations, approvals, and accepted
-events. The simulation receives it directly; the future server rebuilds it from
-durable history.
+events. The simulation receives it directly; the server rebuilds it from durable
+history on every start.
 
 ## Node
 
@@ -90,13 +93,14 @@ decisions.
 ## Observation
 
 An immutable, sourced, time-bounded fact such as node capacity, container state,
-probe result, or image presence. The full observation protocol is planned.
+probe result, or image presence. Nodes report observations as evidence over the
+enrolled transport; they are not yet signed by a per-node evidence key.
 
 ## Policy
 
 Deterministic constraints outside agent reasoning. Policy covers capabilities,
-capacity, image identity, privilege, exposure, approval, and future storage and
-secret rules.
+capacity, image identity, privilege, exposure, approval, volume ownership,
+secret references, and network intent.
 
 ## Proposal
 
@@ -125,8 +129,9 @@ exact revision they observed.
 
 ## Stream harness
 
-The current `a4s node` stdin/stdout JSON interface used to exercise signed
-dispatch before a real authenticated network transport exists.
+The `a4s node` stdin/stdout JSON interface, used to exercise signed dispatch
+against the runtime adapter in isolation. Normal operation uses the enrolled
+network transport instead.
 
 ## World
 

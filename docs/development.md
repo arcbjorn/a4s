@@ -10,8 +10,7 @@
 - Make progress in vertical slices that can be failure-tested end to end.
 - Document current behavior separately from intended architecture.
 
-Repository-local instructions also live in `AGENTS.md` so they travel with a
-copied project.
+Repository-local instructions also live in `AGENTS.md`.
 
 ## Toolchain
 
@@ -45,26 +44,27 @@ git diff --check
 
 `architecture.md` commits to keeping the kernel small enough to reason about and
 fuzz thoroughly. Run these when changing anything that parses untrusted input —
-scenario validation, model output, approvals, evidence projection, or log
-replay:
+scenario validation, model output, approvals, evidence projection, or the event
+store:
 
 ```bash
 go test ./control/ -run XXX -fuzz FuzzApprovalVerification -fuzztime 60s
 go test ./control/ -run XXX -fuzz FuzzScenarioValidation -fuzztime 60s
 go test ./control/ -run XXX -fuzz FuzzModelDiagnosisDecode -fuzztime 60s
 go test ./control/ -run XXX -fuzz FuzzProjection -fuzztime 60s
-go test ./eventlog/ -run XXX -fuzz FuzzReplay -fuzztime 300s
+go test ./eventlog/ -run XXX -fuzz FuzzOpen -fuzztime 300s
 ```
 
 Each target asserts an invariant rather than only checking for panics: that no
 input authorizes without a valid signature, that a decoded diagnosis cannot name
 something the world lacks, that validation never admits an unpinned image or a
-zero budget ceiling, and that projection never produces negative capacity or a
-double-owned volume. A decoder that survived arbitrary input by accepting it
+zero budget ceiling, that projection never produces negative capacity or a
+double-owned volume, and that no bytes at the event-log path open into a chain
+that fails to verify. A decoder that survived arbitrary input by accepting it
 would pass a crash-only fuzz test while being exactly the bug worth finding.
 
-`FuzzReplay` writes a file per iteration and runs far slower than the in-memory
-targets; give it a longer window.
+`FuzzOpen` writes a file and opens SQLite per iteration, so it runs far slower
+than the in-memory targets; give it a longer window.
 
 Also run the simulation when changing control behavior:
 
@@ -111,8 +111,8 @@ Examples:
 | Linux adapter | cross-compile plus disposable-host smoke test |
 
 Use `t.TempDir()` for files. Tests must not depend on the developer's
-containerd, home directory, parent repository, network, or wall clock unless
-they are explicitly isolated integration tests.
+containerd, home directory, network, or wall clock unless they are explicitly
+isolated integration tests.
 
 ## Dependency changes
 
@@ -140,7 +140,7 @@ behavior changes. Keep these labels precise:
 - “Production-ready” must not be used until the security blockers are closed
   and recovery is tested.
 
-Use relative links inside the project so the folder remains portable.
+Use relative links inside the project; CI checks that they resolve.
 
 ## Commit and review conventions
 
@@ -181,12 +181,12 @@ Signing the checksums is still a manual step; the release script prints the
 `gpg` command rather than running it, because the signing key belongs to a
 person rather than to the build.
 
-## Keeping the project portable
+## Keeping the project self-contained
 
 Do not introduce imports, scripts, fixtures, or docs that require files above
-the project root. If a useful integration belongs to another infrastructure
+the repository root. If a useful integration belongs to another infrastructure
 repository, keep it there or represent it here as a generic example.
 
-To test portability locally, copy the folder to a temporary directory without
-its `.git` parent and run the commands in the verification section. The final
-verification for this handoff follows that procedure.
+`scripts/check-doc-links.sh` runs in CI and fails on a relative link that is
+broken or that escapes the repository root, so this property is checked rather
+than reviewed.

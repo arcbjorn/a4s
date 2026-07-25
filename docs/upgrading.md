@@ -4,20 +4,9 @@ How to move a running a4s deployment to a new build, and how to get back if it
 goes wrong. See [support matrix](support-matrix.md) for what each build
 requires.
 
-## Migrating from a newline-delimited log
-
-Builds before this one stored the event log as newline-delimited JSON. The
-first start of a newer binary imports that log into SQLite automatically:
-
-- The chain is verified before anything is imported, so a corrupt log is
-  refused rather than laundered into a new store.
-- A torn final record from a power loss is recovered, exactly as before.
-- The database is written beside the log as `<name>.db`, and the original file
-  is left untouched, so rolling back to the previous build still works.
-
-No operator action is required, and restarting does not re-import. Take the
-backup below first regardless: it is the thing that makes the upgrade
-reversible if the import surfaces a problem nobody anticipated.
+The operator API serves plain HTTP. Every request is signed, so authenticity
+does not depend on the transport, but confidentiality does: reach it over
+localhost or an authenticated tunnel rather than an untrusted network.
 
 ## Before upgrading
 
@@ -36,7 +25,7 @@ happens to exist.
 Record what is running, so a later comparison is possible:
 
 ```bash
-a4s status --server https://control:8443 --key-id ops --operator-key ~/.a4s/ops.key --json > /tmp/before.json
+a4s status --server http://control:8080 --key-id ops --operator-key ~/.a4s/ops.key --json > /tmp/before.json
 a4s version --json
 ```
 
@@ -100,13 +89,8 @@ If a new a4s build misbehaves:
 
 1. Stop the server.
 2. Restore the binary you were running before.
-3. If you upgraded across the SQLite migration, the previous binary finds its
-   original newline-delimited log where it left it and starts against that.
-   Anything recorded after the migration lives in the `.db` file the older
-   build cannot read, so those events are not in its history. Check the
-   recovered revision against what you noted before deciding to proceed.
-4. Otherwise, or if the log has been written by a newer schema, restore the
-   backup you took:
+3. If the log has since been written by a newer schema, the older build refuses
+   it rather than misreading it. Restore the backup you took:
 
 ```bash
 a4s restore --from /backups/events-<stamp>.log --event-log /var/lib/a4s/events.log
@@ -123,8 +107,8 @@ cache, both of which are safe to replay against.
 ## After upgrading
 
 ```bash
-a4s status --server https://control:8443 --key-id ops --operator-key ~/.a4s/ops.key
-a4s events --server https://control:8443 --key-id ops --operator-key ~/.a4s/ops.key --limit 20
+a4s status --server http://control:8080 --key-id ops --operator-key ~/.a4s/ops.key
+a4s events --server http://control:8080 --key-id ops --operator-key ~/.a4s/ops.key --limit 20
 ```
 
 Compare the recovered revision, allocation count, and route count against what

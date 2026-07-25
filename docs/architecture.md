@@ -400,30 +400,33 @@ tool, not a permanent compatibility promise.
 ## Reference migration for the originating setup
 
 The names and workloads below preserve the environment that motivated a4s.
-They are migration context, not dependencies of this standalone folder.
+They are migration context, not dependencies of this repository.
 
 ### Phase 0: control-kernel spike
 
-Status: implemented in this directory.
+Status: implemented.
 
 - Generic web-service goal and observed two-node world.
 - Placement and networking agents.
 - Capability grants, full-plan simulation, revision checks, capacity and label
   policy, public-route approval, evidence, and independent verification.
 - In-memory executor for deterministic control-loop simulation.
-- Hash-chained durable event file, signed node envelopes, and durable node
+- Hash-chained durable event log, signed node envelopes, and durable node
   idempotency ledger.
 
 ### Phase 1: one-node container runtime
 
-Status: implementation in progress; live Linux validation remains.
+Status: implemented; live Linux validation remains.
 
-- `a4s node` stream harness and containerd native API adapter implemented.
-- Pull/create/start implemented with an OCI-hardening baseline.
-- Stop/delete, restart supervision, and independent process probes remain.
-- Persist the server event log in SQLite.
-- Use systemd only to supervise `a4s server`, `a4s node`, containerd, and
-  tailscaled.
+- `a4s node` and the containerd native API adapter, reached over the enrolled
+  transport or the stdin harness.
+- Pull/create/start/stop/delete with an OCI-hardening baseline.
+- Restart supervision under a crash-loop budget, and independent process, TCP,
+  and HTTP probes with expiry.
+- The event log persisted in SQLite with the hash chain retained on top.
+
+Remaining: packaged systemd units to supervise `a4s server`, `a4s node`,
+containerd, and tailscaled.
 
 Exit criterion: the example service survives daemon restart and converges from
 an empty node using only typed actions and verified evidence.
