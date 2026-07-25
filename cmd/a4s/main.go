@@ -19,12 +19,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/arcbjorn/agentic-git/pkg/gitcmd"
+
 	"github.com/arcbjorn/a4s/control"
 	"github.com/arcbjorn/a4s/eventlog"
 	a4snode "github.com/arcbjorn/a4s/node"
 	"github.com/arcbjorn/a4s/obs"
 	"github.com/arcbjorn/a4s/reason"
 	"github.com/arcbjorn/a4s/server"
+	"github.com/arcbjorn/a4s/source"
 )
 
 func main() {
@@ -339,6 +342,18 @@ func runServer(args []string) error {
 	operatorKeyDir := flags.String("operator-keys", "", "directory of <key-id>.pub operator keys")
 	requireEncryption := flags.Bool("require-encryption", false,
 		"refuse nodes that do not negotiate an encrypted channel")
+	requireAttestation := flags.Bool("require-attestation", false,
+		"refuse evidence a node did not sign with its identity key")
+	anchorPath := flags.String("anchor", "",
+		"absolute path to the external chain-head anchor (empty disables it)")
+	gitRemote := flags.String("git-remote", "",
+		"repository to read goals from (empty disables the git source)")
+	gitRef := flags.String("git-ref", "main", "branch or tag to track")
+	gitPath := flags.String("git-path", "goals", "directory of goal documents in the repository")
+	gitMirror := flags.String("git-mirror", "", "absolute path for the local bare mirror")
+	gitInterval := flags.Duration("git-interval", source.DefaultPollInterval,
+		"how often to poll the tracked ref")
+	gitSSHKey := flags.String("git-ssh-key", "", "SSH identity for the repository")
 	apiListen := flags.String("api", "", "address to serve the operator API on (empty disables it)")
 	logLevel := flags.String("log-level", "info", "log verbosity: debug, info, warn, or error")
 	logFormat := flags.String("log-format", "text", "log format: text or json")
@@ -384,6 +399,7 @@ func runServer(args []string) error {
 
 	instance, openErr := server.Open(server.Config{
 		EventLog: *eventLog, Base: base, OperatorKeys: operatorKeys,
+		Anchor: *anchorPath,
 	}, control.RolloutAgent{}, control.PlacementAgent{}, control.NetworkAgent{})
 	if openErr != nil {
 		return openErr
@@ -480,8 +496,58 @@ func runServer(args []string) error {
 		}()
 	}
 
+	// Goals may also arrive from a versioned repository. The adapter submits
+	// through the same admission path as the operator API, so a repository is a
+	// transport rather than a privileged channel.
+	if *gitRemote != "" {
+		mirror := *gitMirror
+		if mirror == "" {
+			return fmt.Errorf("git-mirror is required with git-remote")
+		}
+		git := &gitcmd.Runner{SSHKey: *gitSSHKey}
+		if err := git.Available(); err != nil {
+			return err
+		}
+		repository := source.NewRepository(
+			gitcmd.NewSource(git, mirror, *gitRemote, *gitRef), *gitPath, instance)
+		go watchGitSource(ctx, logger, repository, *gitInterval)
+	}
+
 	executor := a4snode.NewRegistryExecutor(registry, *keyID, signingKey)
+	// Evidence is the only input that advances the world, so the executor
+	// verifies each node's signature over what it reports rather than trusting
+	// the authenticated channel to stand behind the claim.
+	executor.NodeKeys = nodeKeys
+	executor.RequireAttestation = *requireAttestation
 	return reconcileLoop(ctx, logger, instance, executor, registry, metrics)
+}
+
+// watchGitSource tracks a repository, logging what each sync applied.
+//
+// A failed sync is logged and retried rather than fatal: an unreachable remote
+// is a network problem, and a control plane that stopped tracking its repository
+// over a blip would need manual intervention to resume.
+func watchGitSource(ctx context.Context, logger *slog.Logger,
+	repository *source.Repository, interval time.Duration) {
+
+	_ = repository.Watch(ctx, interval, func(result source.Result, err error) {
+		if err != nil {
+			logger.Warn("git source sync failed", slog.Any("error", err))
+			return
+		}
+		if !result.Changed {
+			return
+		}
+		logger.Info("applied goals from git",
+			slog.String("commit", result.Commit),
+			slog.String("message", result.Message),
+			slog.Int("goals", len(result.Goals)))
+		for file, reason := range result.Rejected {
+			// A rejected goal is the operator's problem to fix, so name the file.
+			logger.Warn("git source rejected a goal",
+				slog.String("file", file), slog.String("reason", reason))
+		}
+	})
 }
 
 // reconcileLoop drives accepted goals whenever nodes are connected. A goal that
@@ -521,8 +587,10 @@ func reconcileLoop(ctx context.Context, logger *slog.Logger, instance *server.Se
 	}
 }
 
-// signalContext cancels on interrupt so the server shuts down cleanly rather
-// than leaving node connections half-open.
+// signalContext cancels on interrupt or SIGTERM so a daemon shuts down cleanly
+// rather than leaving node connections half-open or a dispatch half-applied.
+// Both daemons use it, because both run under a service manager that stops them
+// with SIGTERM.
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
@@ -587,6 +655,14 @@ func runNode(args []string) error {
 	containerdNamespace := flags.String("namespace", "a4s", "containerd namespace")
 	snapshotter := flags.String("snapshotter", "", "containerd snapshotter override")
 	logDir := flags.String("log-dir", "/var/log/a4s/allocations", "allocation log directory")
+	seccomp := flags.Bool("seccomp", true, "apply the runtime's default seccomp profile")
+	apparmor := flags.String("apparmor", "", "AppArmor profile to confine containers with")
+	runAsUser := flags.String("run-as", "", "run containers as uid[:gid] instead of the image default")
+	readOnlyRoot := flags.Bool("read-only-root", false, "mount container root filesystems read-only")
+	userNamespace := flags.Bool("user-namespace", false,
+		"map container uids into an unprivileged host range")
+	hostUIDBase := flags.Uint("host-uid-base", 100000, "first host uid of the mapped range")
+	uidMapSize := flags.Uint("uid-map-size", 65536, "size of the mapped uid range")
 	cniBinDir := flags.String("cni-bin", "/opt/cni/bin", "directory holding CNI plugin binaries")
 	cniConfDir := flags.String("cni-conf", "/etc/cni/net.d", "directory holding CNI network configuration")
 	cniNetwork := flags.String("cni-network", "a4s0", "CNI network name")
@@ -636,7 +712,12 @@ func runNode(args []string) error {
 		publicKey = loaded
 	}
 
-	ctx := context.Background()
+	// The node runs as a supervised service, so SIGTERM must unwind the dispatch
+	// loop and supervisor rather than killing the process mid-action. Workloads
+	// keep running either way: stopping the node does not stop containerd.
+	ctx, cancel := signalContext()
+	defer cancel()
+
 	runtime, err := a4snode.OpenContainerd(ctx, a4snode.ContainerdConfig{
 		Address:     *containerdAddress,
 		Namespace:   *containerdNamespace,
@@ -647,6 +728,18 @@ func runNode(args []string) error {
 		return err
 	}
 	defer runtime.Close()
+
+	// Confinement is host configuration, not workload configuration: an
+	// authorized action cannot ask to be sandboxed less than this.
+	runtime.Sandbox = a4snode.SandboxProfile{
+		Seccomp:       *seccomp,
+		AppArmor:      *apparmor,
+		User:          *runAsUser,
+		ReadOnlyRoot:  *readOnlyRoot,
+		UserNamespace: *userNamespace,
+		HostUIDBase:   uint32(*hostUIDBase),
+		UIDMapSize:    uint32(*uidMapSize),
+	}
 
 	// Each allocation gets its own namespace and address, so replicas of one
 	// workload can share this node without contending for a host port.
@@ -804,6 +897,16 @@ func runNode(args []string) error {
 			slog.String("keyset", *keysetPath), slog.Int("trusted_keys", len(trusted)))
 	}
 
+	// The identity key is loaded before the dispatcher is built, because it signs
+	// the evidence this node reports as well as proving identity at enrollment.
+	var identityKey ed25519.PrivateKey
+	if *identityKeyPath != "" {
+		identityKey, err = loadPrivateKey(*identityKeyPath)
+		if err != nil {
+			return err
+		}
+	}
+
 	dispatcher := a4snode.Dispatcher{
 		NodeID: *nodeID,
 		Keys:   trustedKeys,
@@ -816,14 +919,17 @@ func runNode(args []string) error {
 			Resolver:   resolver,
 			Firewall:   firewall,
 		},
-		Ledger:  ledger,
-		Desired: desired,
-		Now:     time.Now,
+		Ledger:      ledger,
+		Desired:     desired,
+		Now:         time.Now,
+		IdentityKey: identityKey,
 	}
 
 	// Supervision runs alongside the action stream so a crashed workload is
 	// restarted even while the server is unreachable.
 	supervisor := a4snode.NewSupervisor(runtime, desired)
+	supervisor.NodeID = *nodeID
+	supervisor.IdentityKey = identityKey
 	supervisorCtx, stopSupervisor := context.WithCancel(ctx)
 	defer stopSupervisor()
 	go superviseLoop(supervisorCtx, logger, supervisor, *superviseInterval)
@@ -833,12 +939,8 @@ func runNode(args []string) error {
 		// useful for offline testing against a real containerd.
 		return a4snode.Serve(ctx, &dispatcher, os.Stdin, os.Stdout)
 	}
-	if *identityKeyPath == "" {
+	if identityKey == nil {
 		return fmt.Errorf("identity-key is required to connect to a server")
-	}
-	identityKey, err := loadPrivateKey(*identityKeyPath)
-	if err != nil {
-		return err
 	}
 	logger.Info("connecting to server", slog.String("addr", *serverAddress))
 	return a4snode.DialServer(ctx, "tcp", *serverAddress, *nodeID, identityKey, &dispatcher, 0)
@@ -980,12 +1082,17 @@ Usage:
   a4s validate --file scenario.json
   a4s simulate --file scenario.json [--json] [--event-log /path] [--max-rounds N]
   a4s node --node-id ID --key-id ID --public-key /path [runtime flags]
+           [--seccomp] [--apparmor PROFILE] [--run-as UID[:GID]]
+           [--read-only-root] [--user-namespace]
            [--dns 127.0.0.1:53] [--keyset /path/keyset.json]
            [--nft /usr/sbin/nft] [--nft-dry-run]
            [--gateway-admin http://127.0.0.1:2019 --acme-email you@example.com]
   a4s server --event-log /path [--file scenario.json] [--status]
              [--listen host:port --signing-key /path --node-keys /dir]
              [--api host:port --operator-keys /dir] [--require-encryption]
+             [--require-attestation] [--anchor /path/anchor.jsonl]
+             [--git-remote URL --git-mirror /path [--git-ref main]
+              [--git-path goals] [--git-interval 30s] [--git-ssh-key /path]]
              [--log-level info] [--log-format text|json]
   a4s keygen --out /path
   a4s keys init --keyset /path/keyset.json --key-id control-1 --out /path/key
