@@ -205,10 +205,24 @@ schemas. Each a4s adapter exposes a smaller contract.
   trust, so a reachable impostor cannot nominate its own key.
 - Handshakes are deadline-bounded, so a stalled peer cannot hold resources.
 
-Enrollment authenticates identity; it does not provide confidentiality or
-integrity for the channel itself. Action envelopes are individually signed, so a
-tampered envelope is still rejected, but observation and evidence traffic is
-readable to anyone on the path. Run this over the tailnet, or add TLS.
+Enrollment also agrees a session key. Both peers offer an ephemeral X25519
+share inside the payload they sign, so the key agreement is authenticated by
+the same identity keys that prove who they are: an attacker in the middle
+cannot substitute their own share without invalidating the signature. Records
+are then sealed with ChaCha20-Poly1305 under per-direction keys, with the
+sequence number as the nonce, so a reordered or replayed record fails
+authentication rather than being interpreted.
+
+The shares are ephemeral, so recording a session today and compromising a node
+identity key tomorrow does not reveal what was said. That is deliberately
+different from the sealed-secret path, which uses long-lived identity keys
+because material must survive to be decrypted later.
+
+A peer that offers no share still enrolls and runs unencrypted, which keeps an
+older node working during an upgrade. `--require-encryption` refuses those
+peers; set it on any network you do not already trust, because otherwise a
+downgrade to plaintext is available to anyone who can strip a field from the
+opening hello.
 
 ### Evidence and world integrity
 
@@ -457,17 +471,36 @@ Digest pinning provides immutability, not provenance. Before production add:
 
 ## Required before production
 
-- Authenticated server API and separately authenticated approvals.
+Closed since this list was written:
+
+- Authenticated server API and separately authenticated approvals. Operator
+  requests carry a signed envelope bound to method, path, and body, made
+  single-use by a nonce ledger.
 - Mutual controller/node authentication and encrypted transport.
-- Controller key rotation and node enrollment.
-- Signed, fresh node observations and evidence.
+- Controller key rotation, through an active/accepted/retired keyset that
+  rotates without a coordinated fleet restart.
+- Signed, fresh node observations and evidence, with readiness that expires.
 - Enforced target leases and conflict recovery.
-- External audit-hash anchoring and tested backup/restore.
-- Stop/delete lifecycle with compensation and crash reconciliation.
-- Independent readiness/liveness probes.
-- Seccomp/AppArmor policy and non-root/user-namespace strategy.
-- CNI/network-policy enforcement and gateway snapshot authenticity.
+- Tested backup and restore, including detection of a truncated archive by
+  anchoring the chain head outside the file.
+- Stop/delete lifecycle with operator-approved compensation and crash
+  reconciliation.
+- Independent readiness and liveness probes.
+- CNI and network-policy enforcement compiled from typed intent, verified
+  against a real kernel.
+
+Still required:
+
+- External audit-hash anchoring. The chain head is recorded in a backup
+  manifest, which detects truncation of that archive; it is not published
+  anywhere an attacker with write access to both could not also reach.
+- Seccomp/AppArmor policy and a non-root or user-namespace strategy.
+- Gateway snapshot authenticity. The node applies whole snapshots, but the
+  gateway does not verify their provenance independently.
 - Secret rotation without workload restart.
+- Validation against a real containerd on real hardware. Everything above is
+  proven against a faked backend, which is a claim about the control plane
+  rather than about the system.
 - Stateful ownership protocol before any durable workload.
 - Resource and request limits on all decoders and agent runtimes.
 - Fuzzing of protocol decoders, kernel authorization, event replay, and node

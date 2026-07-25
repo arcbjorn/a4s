@@ -1,6 +1,6 @@
 # Project status
 
-Status date: 2026-07-22
+Status date: 2026-07-24
 
 Version: `0.2.0-dev`
 
@@ -26,11 +26,15 @@ against a real node dispatcher over the real protocol, with only containerd
 faked.
 
 A server package and `a4s server` command hold durable history and rebuild the
-world projection on every start, and nodes enroll over a real network transport
-by proving possession of their identity key. What remains is channel encryption
-beneath the transport and the data-plane work: CNI, gateways, storage, secrets. The implemented transport is a byte-stream protocol currently
-carried over a pipe; moving it onto the tailnet does not change the control
-contract.
+world projection on every start. Nodes enroll over a real network transport by
+proving possession of their identity key, and the session that follows is
+encrypted with keys agreed during that handshake, so the transport no longer
+assumes a private network beneath it.
+
+An authenticated operator API now accepts goals, approvals, and queries over
+HTTP, so a goal reaches a running control plane without a scenario file. What
+remains before this could be called production-ready is the thing it has always
+been: none of it has run against a real containerd on real hardware.
 
 ## Implemented
 
@@ -134,6 +138,25 @@ contract.
   an abandoned holder cannot block a target indefinitely.
 - Rollout agent retiring drifted allocations one at a time, with the kernel
   independently enforcing the availability floor.
+- Operator-approved rollback execution. A failed rollout still blocks the goal
+  and names the known-good digest; once an operator approves, the approval
+  records both versions and the effective goal resolves to the known-good
+  image for every agent in the round. Binding the decision to specific versions
+  is what stops the rollback oscillating as observations arrive.
+- Evidence-backed garbage collection of unreferenced images, with the protected
+  set computed by the kernel from the world and checked against it, and a
+  dry-run mode that reports exactly what a real run would reclaim.
+- Cluster-wide service names. A workload resolves under `a4s.internal` from any
+  node: locally to its allocation address, and elsewhere through the owning
+  node's gateway, because an allocation address is only routable where it was
+  assigned. Names are published as complete zones with a fingerprint, so an
+  unchanged cluster stops republishing.
+- A node-local DNS resolver serving only that zone. It never forwards, so a
+  name it does not know fails rather than escaping to public DNS.
+- Typed network policy compiled to nftables. Intent is declared as ingress and
+  egress rules naming workloads or CIDRs; the compiler expands names to
+  observed endpoints and fails closed when nothing is serving. a4s owns one
+  table and replaces it wholesale, so applied state equals authorized state.
 
 ### Operator introspection
 
@@ -161,6 +184,34 @@ The hash chain detects edits and reordering relative to the local first record.
 It does not prevent undetected truncation or replacement unless the latest hash
 is anchored outside the file. It is an integrity aid, not yet a complete audit
 security system.
+
+### Operator API and observability
+
+- An authenticated HTTP operator API. Every request carries an Ed25519-signed
+  envelope binding the signature to the method, path, and body digest, with a
+  nonce ledger that makes a captured request single-use and a five-minute
+  maximum lifetime. Reads are authenticated too: the world projection and
+  history describe the whole cluster. Only liveness is public.
+- Request and decoder limits applied before authentication, so an unbounded
+  body cannot exhaust the control plane without a valid signature.
+- `a4s submit`, `a4s status`, and `a4s events` speak to a running server, so a
+  goal reaches the control plane without a scenario file.
+- Structured logging in both daemons, text or JSON, with the level and format
+  chosen at startup and an unrecognized value refused rather than defaulted.
+- In-process metrics with a Prometheus text endpoint: world revision, node,
+  allocation, route and event counts, connected nodes, reconciliation
+  outcomes, and operator request outcomes from a closed set.
+
+### Controller state and key custody
+
+- Verified backup and restore of the authoritative event log. A backup records
+  the chain head outside the file, which closes the truncation gap the hash
+  chain alone cannot detect, and a restore verifies before touching the
+  destination and preserves any log it supersedes.
+- Controller signing keys as a distributable keyset with active, accepted, and
+  retired states. Rotation demotes the previous key to accepted rather than
+  removing it, so a fleet rotates without a coordinated restart; retiring the
+  active key is refused.
 
 ### Server
 
@@ -194,6 +245,12 @@ security system.
 - Orphan discovery for a4s-managed containers absent from desired state.
 - Node attribution of evidence: the node stamps its own identity and observation
   time onto everything a runtime adapter reports.
+- Channel encryption beneath the transport. The enrollment handshake carries
+  ephemeral X25519 shares inside the signed payload, so the key agreement is
+  authenticated and a man in the middle cannot substitute their own. Records
+  are sealed with ChaCha20-Poly1305 under per-direction keys and sequence
+  nonces, which makes a reordered or replayed record fail authentication.
+  `--require-encryption` refuses a peer that does not negotiate a channel.
 
 ### Linux container runtime
 
@@ -211,13 +268,23 @@ security system.
 
 ### Developer tooling
 
-- `validate`, `simulate`, `node`, `server`, `keygen`, `seal`, `plan`, `explain`,
-  `diagnose`, `approve`, `history`, `version`, and `help` CLI commands.
+- `validate`, `simulate`, `node`, `server`, `keygen`, `keys`, `seal`, `plan`,
+  `explain`, `diagnose`, `approve`, `history`, `backup`, `restore`, `submit`,
+  `status`, `events`, `version`, and `help` CLI commands.
 - `seal` encrypts secret material to a node's public identity, so the sealed
   file is readable only by the node it was sealed for and never transits the
   control plane in the clear.
-- Race-tested unit and contract tests.
-- Linux amd64 cross-build verification.
+- Race-tested unit and contract tests, including a denial matrix that drives
+  the node over the real protocol: unknown signing key, tampered envelope,
+  wrong node, expired capability, idempotency-key reuse, replay after node
+  restart, stale readiness, complete deletion, and an unapproved public route.
+- CI running race tests, vet, gofmt, `go mod tidy`, Linux and arm64
+  cross-builds, the example simulation, fuzz smoke targets, and documentation
+  link checking.
+- Build-time version, commit, and date stamping, with a release script
+  producing checksummed binaries for four platforms.
+- `scripts/check-nftables.sh`, which applies the compiler's own output to a
+  real Linux kernel rather than asserting the rendered text looks correct.
 - Generic web-service example with an explicit public-route approval.
 
 ## Simulated only
@@ -235,36 +302,27 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 
 ## Not implemented
 
-- External goal API. The server package and `a4s server` command exist, but
-  goals are supplied from a scenario file rather than an authenticated API.
-- Channel encryption. Enrollment authenticates who the peer is; it does not
-  protect the channel. The transport is intended to run over an already
-  encrypted tailnet, and needs TLS beneath it on an untrusted network.
-- Controller key custody and key rotation.
-- Canary rollout and compensating-action execution. Rolling replacement, the
-  disruption budget, and known-good rollback detection are implemented;
-  applying the rollback is deliberately an operator decision.
-- Garbage collection of unreferenced images and snapshots.
-- Node-local DNS and cross-node service routing. Service discovery resolves a
-  workload to endpoints on the node that owns them; a service name does not yet
-  resolve across nodes.
-- nftables policy compilation from typed network intent.
-- Public ingress or TLS automation.
+- Multi-server consensus or high availability. One server owns the event log.
+- SQLite event storage. The world projection is rebuilt from a hash-chained
+  file event log, which satisfies the same durability and rebuild requirement.
+- Canary rollout. Rolling replacement, the disruption budget, known-good
+  rollback detection, and operator-approved rollback execution all exist;
+  gradual traffic shifting does not.
 - A dedicated transfer transport. The node moves data through the shared backup
   store, so a move needs a store both nodes can reach; direct node-to-node
   streaming is not implemented.
 - Model-backed storage scheduling. The storage agent re-verifies stale backups
-  deterministically; a cadence is driven by reconciliation frequency rather than
-  an internal timer.
+  deterministically; its cadence comes from reconciliation frequency rather
+  than an internal timer.
 - Secret rotation without a workload restart, and a Vault-backed broker. The
-  file broker and the mount path are implemented; rotation currently means
-  changing the goal's version, which replaces the allocation.
+  file broker and mount path are implemented; rotation currently means changing
+  the goal's version, which replaces the allocation.
 - Seccomp/AppArmor selection, user namespaces, or rootless containers.
-- Operator API and separately authenticated approval workflow.
-- Model-backed agents, agent sandboxing, or agent resource budgets.
-- SQLite event storage, multi-server consensus, or HA. The world projection is
-  rebuilt from the hash-chained file event log.
 - Kubernetes manifest importer.
+- Git source adapter. Goals arrive through the operator API or a scenario file,
+  not from a versioned repository.
+- IPv6 allocation addressing. The CNI configuration and the policy compiler
+  both assume IPv4.
 
 ## Known implementation constraints
 
@@ -292,33 +350,52 @@ The following passed on the status date:
 
 ```bash
 go test -race ./...
+go vet ./...
+gofmt -l .
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o /tmp/a4s-node.test ./node
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/a4s ./cmd/a4s
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/a4s-arm64 ./cmd/a4s
+go run ./cmd/a4s validate --file examples/web-service.json
 go run ./cmd/a4s simulate --file examples/web-service.json
+./scripts/check-doc-links.sh
+./scripts/check-nftables.sh
 git diff --check
 ```
 
-The Linux binary cross-built successfully. It has not yet been exercised
-against a live Linux containerd socket.
+`check-nftables.sh` applies the policy compiler's own output to a real Linux
+kernel and prints the resulting table, so the compiled ruleset is verified
+against nftables rather than against an assertion about its text.
+
+The Linux binary cross-builds and runs: a release build reports its stamped
+commit under `linux/amd64`. It has still **not** been exercised against a live
+containerd socket, which remains the single largest gap in this project.
 
 ## Exact next milestone
 
-The action and evidence round trip, restart recovery, and outage survival are
-proven in the acceptance suite against a faked containerd. The next milestone
-replaces the fake with real hardware:
+Everything the control plane can prove without hardware is now proven. The
+action and evidence round trip, restart recovery, outage survival, encrypted
+transport, key rotation, backup and restore, rollback execution, cross-node
+name resolution, and firewall compilation are all covered by tests, and the
+denial matrix is exercised over the real protocol.
 
-1. Generate and install a temporary control signing key.
-2. Start containerd and `a4s node` on a disposable Linux host.
-3. Converge the example goal against a real digest-pinned image.
+What none of that establishes is whether the containerd adapter works. The next
+milestone replaces the fake backend with real hardware:
+
+1. Generate a controller keyset and install the signing key.
+2. Start containerd and `a4s node --keyset ...` on a disposable Linux host.
+3. Submit the example goal through `a4s submit` against a real digest-pinned
+   image, rather than from a scenario file.
 4. Kill the container out from under the node and confirm the supervisor
    restarts it while the control plane is stopped.
 5. Restart `a4s node` and confirm replayed actions do not duplicate runtime
    state and that orphan discovery reports anything left behind.
 6. Restart the server and confirm the world projection rebuilds from the event
    log without redoing work.
-7. Record measured failure behavior, especially anything the faked backend did
+7. Rotate the controller key with the node running, and confirm it keeps
+   accepting capabilities across the overlap window.
+8. Record measured failure behavior, especially anything the faked backend did
    not model.
 
-Only after that should the transport move onto an authenticated tailnet
-connection. Do not begin CNI or storage until the round trip survives real node
-and server restarts on real hardware.
+Do not treat any part of this as production-ready until that has happened. A
+control plane that has never driven a real container runtime has not been
+tested; it has only been argued for.

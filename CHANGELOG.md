@@ -5,7 +5,51 @@ release or compatibility guarantee yet.
 
 ## Unreleased
 
+### Added
+
+- An authenticated operator HTTP API. Requests carry an Ed25519-signed envelope
+  bound to the method, path, and body digest, made single-use by a nonce
+  ledger and bounded by a five-minute lifetime. `a4s submit`, `a4s status`, and
+  `a4s events` speak to a running server, so a goal reaches the control plane
+  without a scenario file. Reads are authenticated too; only liveness is public.
+- Channel encryption beneath the node transport. The enrollment handshake
+  carries ephemeral X25519 shares inside the signed payload, so the key
+  agreement is authenticated and cannot be substituted by a peer in the middle.
+  `--require-encryption` refuses a peer that will not negotiate one.
+- Controller signing key custody. A keyset with active, accepted, and retired
+  states lets a fleet rotate without a coordinated restart; retiring the active
+  key is refused, because that turns key hygiene into an outage.
+- Verified backup and restore of controller state. The manifest anchors the
+  chain head outside the log, which detects the truncation the hash chain alone
+  cannot, and a restore verifies before touching the destination.
+- Operator-approved rollback execution. A failed rollout still blocks and names
+  the known-good digest; the approval records both versions so the compensation
+  does not oscillate as the restored version is observed serving.
+- Cluster-wide service names under `a4s.internal`, resolved locally to an
+  allocation address and elsewhere through the owning node's gateway, plus a
+  node-local resolver that serves only that zone and never forwards.
+- Typed network policy compiled to nftables, failing closed when a named
+  workload has nothing serving. The compiler's own output is verified by
+  applying it to a real Linux kernel.
+- Evidence-backed garbage collection of unreferenced images, with the protected
+  set computed by the kernel and a dry run that reports what a real run would
+  reclaim.
+- Structured daemon logging, in-process metrics with a Prometheus endpoint, and
+  request and decoder limits applied before authentication.
+- Apache-2.0 license, CI, build-time version stamping, a checksummed release
+  script, a support matrix, and an upgrade and rollback guide.
+
 ### Fixed
+
+- The handshake no longer stalls for its full timeout before establishing a
+  session. Checking for buffered data with a blocking read meant every
+  enrollment waited out the deadline; over a real socket it now completes in
+  about a millisecond, and a regression test measures it.
+
+### Changed
+
+- `a4s version` reports the build commit, date, platform, and whether the tree
+  was modified, from link-time stamps or the toolchain's own VCS metadata.
 
 - Documentation drifted from behavior in three places. The README's expected
   reconciliation omitted the `attach_network` pair and the `observation.recorded`

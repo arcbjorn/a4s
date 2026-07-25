@@ -17,7 +17,8 @@ verification.
 
 ## Current milestone: M0 control and node boundary
 
-Status: partially complete.
+Status: complete except for hardware validation, which is the only remaining
+exit criterion and the gate on every later milestone's claim to be finished.
 
 Complete:
 
@@ -43,6 +44,9 @@ Remaining exit work:
 - Run against a real disposable Linux containerd.
 - Document measured failure behavior on real hardware.
 
+Nothing below can be called complete until this is done. The later milestones
+list what is built and tested; none of it has driven a real container runtime.
+
 Exit criterion: a real digest-pinned stateless container reaches independently
 verified readiness, and duplicate signed actions after node restart do not
 duplicate runtime state.
@@ -60,6 +64,13 @@ Build:
 - Node heartbeats, capability inventory, and signed observations.
 - Per-message result/error protocol.
 - Recovery for dispatched actions without completion events.
+
+Status: built and tested, pending hardware validation. The event log is a
+hash-chained file rather than SQLite, which meets the durability and rebuild
+requirement the milestone actually stated. Enrollment now agrees session keys
+inside the signed handshake, so the transport is encrypted rather than assuming
+a private tailnet beneath it. Controller keys rotate through an
+active/accepted/retired keyset without a fleet restart.
 
 Keep deterministic built-in agents in process for this milestone. Do not add a
 model provider yet.
@@ -81,6 +92,12 @@ Build:
 - Rolling replacement agent with availability and disruption limits.
 - Garbage-collection policy with dry-run evidence.
 
+Status: built and tested, pending hardware validation. Rollback is executed
+rather than only detected, gated on an operator approval that records both the
+failed and known-good versions. Garbage collection reclaims unreferenced image
+storage with a protected set the kernel computes and checks. Canary rollout is
+deliberately still absent.
+
 Exit criterion: deploy, update, fail, restart, roll back, and delete a stateless
 service without manual containerd mutation, including recovery from server and
 node crash points.
@@ -101,6 +118,12 @@ Build:
 Avoid transparent cross-node allocation IP routing initially. Route named
 services through node gateways over Tailscale.
 
+Status: built and tested, pending hardware validation. A service resolves under
+`a4s.internal` from any node, locally to its allocation address and elsewhere
+through the owning node's gateway. Typed network intent compiles to nftables,
+and the compiler's own output is verified by applying it to a real Linux
+kernel. TLS issuance is delegated to Caddy.
+
 Exit criterion: a stateless service is reachable by stable internal name and an
 approved alternate public domain, with route removal and certificate recovery
 tested.
@@ -117,8 +140,18 @@ Build:
 - Operator approval UI or CLI with strong authentication.
 - Canary and automatic rollback agents.
 
+Status: partially complete. The secret broker with node-scoped mounts and
+version-only evidence, structured daemon logs, metrics, an authenticated
+event-log query API, and a strongly authenticated operator CLI are all built.
+Rollback is operator-approved rather than automatic, which is deliberate.
+Still missing: the Git source adapter, the recipe format and Kubernetes
+importer, schedule and batch agents, tracing, and canary rollout.
+
 Exit criterion: one real stateless service moves from K3s to a4s with equivalent
 Git deployment, secret handling, monitoring, TLS, health checks, and rollback.
+
+The Git adapter is the remaining blocker for this criterion: goals arrive
+through the operator API today, not from a versioned repository.
 
 ## M5 durable workload safety
 

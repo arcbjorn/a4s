@@ -50,11 +50,21 @@ node-runtime boundary:
 - A Linux node adapter for containerd pull/create/start with digest checks,
   resource limits, no-new-privileges, empty capabilities, and namespaced
   cgroups.
+- A server and node connected over an authenticated, encrypted transport:
+  nodes enroll by proving possession of their key, and the handshake agrees
+  session keys inside the signed payload so the channel cannot be read or
+  edited in transit.
+- An authenticated operator API. Each request carries a signed envelope bound
+  to its method, path, and body, single-use through a nonce ledger, so a goal
+  reaches a running control plane without a scenario file.
+- Cluster-wide service names, typed network policy compiled to nftables,
+  verified backup and restore of controller state, and controller key rotation
+  without a fleet restart.
 
-The controller simulation and Linux node command are not connected by a
-network transport yet. The node command deliberately accepts a stream of
-signed envelopes on standard input; this exercises the security and runtime
-contract before choosing HTTP, QUIC, NATS, or another transport.
+What none of this establishes is whether the containerd adapter works on real
+hardware. It has never run against a live containerd socket, which is the
+project's largest open gap and the next milestone. See
+[project status](docs/project-status.md).
 
 The example is an ordinary public web service and exercises only general
 infrastructure primitives.
@@ -129,5 +139,8 @@ a new directory or repository without the original infrastructure checkout.
 
 The module path remains `github.com/arcbjorn/a4s` after a local move. Change it
 only if publishing under a new import path; instructions are in the
-[documentation index](docs/index.md). No license has been selected yet, so add
-one before public distribution or accepting external contributions.
+[documentation index](docs/index.md).
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
