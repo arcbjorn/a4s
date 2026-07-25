@@ -36,6 +36,56 @@ type ContainerSpec struct {
 	// Empty means the container keeps the runtime default, which is only
 	// appropriate for a workload that serves no port.
 	Namespace string
+	// Seccomp requests the runtime's default seccomp profile, which blocks the
+	// syscalls a container has no business making. An empty capability set stops
+	// a process using privileged syscalls it holds no capability for; seccomp
+	// stops it reaching the kernel surface those syscalls live on at all, which
+	// is where most container escapes are found.
+	Seccomp bool
+	// AppArmor names a loaded profile to confine the container. Empty leaves
+	// AppArmor unset, because naming a profile the host has not loaded makes the
+	// container fail to start rather than run unconfined.
+	AppArmor string
+	// User runs the container as a specific uid:gid instead of the image default.
+	// Empty keeps the image's own user, which is commonly root.
+	User string
+	// ReadOnlyRoot mounts the root filesystem read-only. A workload that needs
+	// scratch space should declare a volume rather than write into its image
+	// layer, which does not survive a restart anyway.
+	ReadOnlyRoot bool
+	// UserNamespace maps container uids to unprivileged host uids, so root inside
+	// the container is not root on the host. HostUIDBase is the first host uid of
+	// the mapped range and UIDMapSize its length.
+	UserNamespace bool
+	HostUIDBase   uint32
+	UIDMapSize    uint32
+}
+
+// SandboxProfile is the host-level container hardening the node applies to every
+// allocation it creates.
+//
+// It lives on the runtime rather than in an action, so a proposal cannot ask for
+// a weaker sandbox than the node was configured to enforce. An action carries
+// what to run; the host decides how tightly to confine it.
+type SandboxProfile struct {
+	Seccomp       bool
+	AppArmor      string
+	User          string
+	ReadOnlyRoot  bool
+	UserNamespace bool
+	HostUIDBase   uint32
+	UIDMapSize    uint32
+}
+
+// DefaultSandboxProfile is the profile applied when none is configured.
+//
+// Seccomp is on because the runtime's default profile is well tested and costs
+// nothing. User namespaces and a read-only root are off by default: both can
+// break a workload that was not written for them, and a default that makes
+// working images fail to start would push operators to disable hardening
+// wholesale rather than adopt it incrementally.
+func DefaultSandboxProfile() SandboxProfile {
+	return SandboxProfile{Seccomp: true}
 }
 
 // VolumeMountSpec binds one durable volume into a container.
@@ -102,10 +152,13 @@ type ContainerRuntime struct {
 	// node has a network capability, so a container joins the namespace CNI
 	// created for it rather than sharing the host network.
 	Namespaces func(string) string
+	// Sandbox is the host hardening applied to every container this runtime
+	// creates. The zero value means DefaultSandboxProfile.
+	Sandbox SandboxProfile
 }
 
 func NewContainerRuntime(backend ContainerBackend) *ContainerRuntime {
-	return &ContainerRuntime{backend: backend}
+	return &ContainerRuntime{backend: backend, Sandbox: DefaultSandboxProfile()}
 }
 
 // volumeMounts resolves the volume mounts for an allocation, if any.
@@ -177,6 +230,15 @@ func (r *ContainerRuntime) Execute(ctx context.Context, action control.Action) (
 			LogPath:         action.Target + ".log",
 			NoNewPrivileges: true,
 			Capabilities:    []string{},
+			// Hardening comes from the node's profile, never from the action, so
+			// an authorized proposal cannot ask to be confined less.
+			Seccomp:       r.Sandbox.Seccomp,
+			AppArmor:      r.Sandbox.AppArmor,
+			User:          r.Sandbox.User,
+			ReadOnlyRoot:  r.Sandbox.ReadOnlyRoot,
+			UserNamespace: r.Sandbox.UserNamespace,
+			HostUIDBase:   r.Sandbox.HostUIDBase,
+			UIDMapSize:    r.Sandbox.UIDMapSize,
 		})
 		if err != nil {
 			return control.Evidence{}, fmt.Errorf("create allocation %q: %w", action.Target, err)

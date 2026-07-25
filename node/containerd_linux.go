@@ -11,6 +11,7 @@ import (
 	"time"
 
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/contrib/seccomp"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
@@ -146,6 +147,7 @@ func (b *containerdBackend) Create(ctx context.Context, spec ContainerSpec) (boo
 		opts = append(opts, oci.WithNoNewPrivileges)
 	}
 	opts = append(opts, oci.WithCapabilities(spec.Capabilities))
+	opts = append(opts, sandboxOpts(spec)...)
 
 	_, err = b.client.NewContainer(
 		ctx,
@@ -366,4 +368,38 @@ func (b *containerdBackend) RemoveImage(ctx context.Context, name string) (bool,
 
 func (b *containerdBackend) Close() error {
 	return b.client.Close()
+}
+
+// sandboxOpts translates the node's sandbox profile into OCI spec options.
+//
+// Each of these narrows what a compromised workload can reach. They are applied
+// after the image config so they override what the image asked for: an image
+// cannot opt out of the host's confinement by declaring its own user.
+func sandboxOpts(spec ContainerSpec) []oci.SpecOpts {
+	var opts []oci.SpecOpts
+	if spec.Seccomp {
+		// The runtime default profile blocks roughly the syscalls Docker and
+		// Kubernetes block. Most published container escapes need one of them.
+		opts = append(opts, seccomp.WithDefaultProfile())
+	}
+	if spec.AppArmor != "" {
+		opts = append(opts, oci.WithApparmorProfile(spec.AppArmor))
+	}
+	if spec.User != "" {
+		// WithUser accepts uid, uid:gid, or a name resolved from the image's
+		// /etc/passwd, so an operator can pin either.
+		opts = append(opts, oci.WithUser(spec.User), oci.WithAdditionalGIDs(spec.User))
+	}
+	if spec.ReadOnlyRoot {
+		opts = append(opts, oci.WithRootFSReadonly())
+	}
+	if spec.UserNamespace && spec.UIDMapSize > 0 {
+		// Root in the container maps to an unprivileged host uid, so escaping the
+		// namespace does not hand over the host.
+		mapping := []specs.LinuxIDMapping{{
+			ContainerID: 0, HostID: spec.HostUIDBase, Size: spec.UIDMapSize,
+		}}
+		opts = append(opts, oci.WithUserNamespace(mapping, mapping))
+	}
+	return opts
 }

@@ -147,3 +147,52 @@ func TestContainerRuntimeRejectsMutableOrMismatchedImage(t *testing.T) {
 		t.Fatal("expected pull failure")
 	}
 }
+
+// Seccomp is on unless an operator turns it off, because a container that
+// reaches the kernel's full syscall surface is where most escapes are found.
+func TestCreateAppliesDefaultSandboxProfile(t *testing.T) {
+	backend := &fakeBackend{}
+	runtime := NewContainerRuntime(backend)
+
+	if _, err := runtime.Execute(context.Background(), control.Action{
+		Kind: control.ActionCreateAllocation, Target: "web-0", Workload: "web",
+		Image: testImage, Resources: control.Resources{CPUMillis: 100, MemoryMB: 128},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !backend.created.Seccomp {
+		t.Fatal("the default profile did not request seccomp")
+	}
+}
+
+// The node's profile decides confinement, and it reaches the spec the backend
+// receives. An action has no field that can weaken any of this.
+func TestCreateAppliesConfiguredSandboxProfile(t *testing.T) {
+	backend := &fakeBackend{}
+	runtime := NewContainerRuntime(backend)
+	runtime.Sandbox = SandboxProfile{
+		Seccomp: true, AppArmor: "a4s-default", User: "65532:65532",
+		ReadOnlyRoot: true, UserNamespace: true, HostUIDBase: 100000, UIDMapSize: 65536,
+	}
+
+	if _, err := runtime.Execute(context.Background(), control.Action{
+		Kind: control.ActionCreateAllocation, Target: "web-0", Workload: "web",
+		Image: testImage, Resources: control.Resources{CPUMillis: 100, MemoryMB: 128},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got := backend.created
+	if !got.Seccomp || got.AppArmor != "a4s-default" || got.User != "65532:65532" {
+		t.Fatalf("confinement did not reach the backend: %+v", got)
+	}
+	if !got.ReadOnlyRoot || !got.UserNamespace {
+		t.Fatalf("root and namespace hardening did not reach the backend: %+v", got)
+	}
+	if got.HostUIDBase != 100000 || got.UIDMapSize != 65536 {
+		t.Fatalf("uid mapping did not reach the backend: %+v", got)
+	}
+	// The baseline controls stay on regardless of the profile.
+	if !got.NoNewPrivileges || len(got.Capabilities) != 0 {
+		t.Fatalf("baseline hardening was lost: %+v", got)
+	}
+}
