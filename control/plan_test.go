@@ -209,10 +209,13 @@ func TestDryRunAppliesKernelAuthorization(t *testing.T) {
 	_ = engine.Run(scenario.Goal, 8)
 
 	// The workload is ready, so the network agent will propose a public route
-	// that has no approval.
+	// that has no approval. Publishing service names is authorized and may
+	// appear first; what must never appear is the unapproved route.
 	plan := DryRun(planKernel(), executor.World(), scenario.Goal, NetworkAgent{})
-	if len(plan.Steps) != 0 {
-		t.Fatalf("dry run authorized an unapproved public route: %+v", plan.Steps)
+	for _, step := range plan.Steps {
+		if step.Kind == ActionPublishRoute {
+			t.Fatalf("dry run authorized an unapproved public route: %+v", step)
+		}
 	}
 	denied := false
 	for _, obstacle := range plan.Blocked {

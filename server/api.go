@@ -79,6 +79,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/approvals", a.authenticated(a.approvals))
 	mux.HandleFunc("GET /v1/directory", a.authenticated(a.directory))
 	mux.HandleFunc("GET /v1/routes", a.authenticated(a.routes))
+	mux.HandleFunc("GET /v1/zone/{node}", a.authenticated(a.zone))
 	mux.HandleFunc("GET /v1/explain/{target}", a.authenticated(a.explain))
 	mux.HandleFunc("GET /v1/plan/{goal}", a.authenticated(a.plan))
 	mux.HandleFunc("GET /v1/diagnose/{goal}", a.authenticated(a.diagnose))
@@ -231,6 +232,12 @@ func (a *API) routes(writer http.ResponseWriter, _ *http.Request, _ RequestEnvel
 
 func (a *API) approvals(writer http.ResponseWriter, _ *http.Request, _ RequestEnvelope) {
 	writeJSON(writer, http.StatusOK, a.server.Approvals())
+}
+
+// zone reports the names a given node's resolver should answer. Resolution is
+// vantage-dependent, so the node is part of the request rather than implied.
+func (a *API) zone(writer http.ResponseWriter, request *http.Request, _ RequestEnvelope) {
+	writeJSON(writer, http.StatusOK, a.server.ServiceZone(request.PathValue("node")))
 }
 
 // events answers a history query. The filters mirror the `a4s history` command,

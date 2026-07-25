@@ -387,6 +387,20 @@ type Node struct {
 	Used     Resources         `json:"used"`
 	Images   map[string]bool   `json:"images,omitempty"`
 	Healthy  bool              `json:"healthy"`
+	// Address is where other nodes reach this one, conventionally its tailnet
+	// address. Allocation addresses are node-local: an allocation IP on one
+	// node means nothing on another, so a cross-node service name resolves to
+	// the owning node's gateway rather than to the allocation directly.
+	Address string `json:"address,omitempty"`
+	// GatewayPort is where this node's gateway accepts forwarded traffic for
+	// its local workloads. Zero means the node exposes no gateway, which makes
+	// its allocations reachable only from the node itself.
+	GatewayPort int `json:"gateway_port,omitempty"`
+	// ZoneFingerprint is the digest of the service zone this node's resolver
+	// last accepted. Comparing it against the zone the world currently implies
+	// is what stops the network agent from republishing an unchanged zone every
+	// round.
+	ZoneFingerprint string `json:"zone_fingerprint,omitempty"`
 	// Providers records which model providers this node can currently reach, as
 	// an observed fact rather than a configured intent. Provider egress is a
 	// scheduling constraint for agent workloads in the same way a pinned image
@@ -647,6 +661,10 @@ const (
 	ActionStopAllocation   ActionKind = "stop_allocation"
 	ActionDeleteAllocation ActionKind = "delete_allocation"
 	ActionPublishRoute     ActionKind = "publish_route"
+	// ActionPublishZone installs the service names a node's resolver answers.
+	// Like a route snapshot it carries the complete set, so a name the control
+	// plane withdrew cannot survive through incremental drift.
+	ActionPublishZone ActionKind = "publish_zone"
 	// ActionGrantTools installs an agent allocation's tool envelope before it
 	// starts. Granting is a separate authorized step rather than a field read at
 	// start time, so the blast radius appears in the event log as its own
@@ -680,6 +698,9 @@ type Action struct {
 	// DryRun asks a prune or collection to report what it would remove without
 	// removing it.
 	DryRun bool `json:"dry_run,omitempty"`
+	// Zone carries the complete set of service names a publish_zone action
+	// installs on a node's resolver.
+	Zone *ServiceZone `json:"zone,omitempty"`
 	// Protected lists the images a collect_images action must not reclaim. The
 	// set is computed by the kernel from the world and travels inside the
 	// signed action, so a node never decides for itself what is unreferenced.

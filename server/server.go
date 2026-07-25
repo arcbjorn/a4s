@@ -392,6 +392,16 @@ func (s *Server) Directory() map[string]control.Service {
 
 // RouteSnapshots resolves every published route to its serving endpoints. This
 // is the complete, atomic input a gateway consumes.
+// ServiceZone renders the names one node's resolver should answer.
+//
+// It is built from the same directory the gateway consumes, so a name resolves
+// exactly when the route layer would route it. Deriving the two independently
+// would let them disagree, and a name resolving to an instance the gateway
+// will not serve is worse than one that does not resolve.
+func (s *Server) ServiceZone(nodeID string) control.ServiceZone {
+	return control.BuildServiceZone(s.projector.World(), s.workloadPorts(), nodeID)
+}
+
 func (s *Server) RouteSnapshots() []control.RouteSnapshot {
 	return control.BuildRouteSnapshots(s.projector.World(), s.workloadPorts())
 }

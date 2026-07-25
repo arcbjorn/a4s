@@ -244,8 +244,8 @@ type NetworkAgent struct{}
 
 func (NetworkAgent) Descriptor() AgentDescriptor {
 	return AgentDescriptor{
-		ID: "network-agent", Role: "publish approved workload routes",
-		Capabilities: []ActionKind{ActionPublishRoute},
+		ID: "network-agent", Role: "publish approved workload routes and service names",
+		Capabilities: []ActionKind{ActionPublishRoute, ActionPublishZone},
 	}
 }
 
@@ -256,20 +256,87 @@ func (NetworkAgent) Propose(goal Goal, world World) (Proposal, error) {
 		GoalID: goal.ID, BasedOnRevision: world.Revision,
 		Reasoning: "publish the requested route only after every desired replica is ready",
 	}
+	// Service names are published independently of routes. A workload with no
+	// external route still needs to be reachable by name from other workloads,
+	// which is the whole point of internal service discovery.
+	//
+	// A pending zone does not short-circuit the route below. Returning early
+	// would hide an unapproved route behind routine name publication, so an
+	// operator would stop seeing the denial that explains why their route never
+	// appeared.
+	zones := staleZones(goal, world)
+
 	if goal.Route == nil || world.Routes[goal.Route.Host] != nil {
+		if len(zones) > 0 {
+			proposal.Reasoning = "publish service names to nodes whose resolver is out of date"
+			proposal.Actions = zones
+		}
 		return proposal, nil
 	}
 	if matchingReadyAllocations(goal, world) < goal.Workload.Replicas {
+		if len(zones) > 0 {
+			proposal.Reasoning = "publish service names to nodes whose resolver is out of date"
+			proposal.Actions = zones
+		}
 		return proposal, nil
 	}
-	proposal.Actions = []Action{{
+	// Names first, then the route: a route whose backends cannot be resolved by
+	// name is only half a publication.
+	proposal.Actions = append(zones, Action{
 		ID: "publish-" + goal.Workload.Name, Kind: ActionPublishRoute,
 		Target: goal.Route.Host, Workload: goal.Workload.Name,
 		Node: routeNode(goal, world),
 		Port: goal.Route.Port, Exposure: goal.Route.Exposure,
-	}}
+	})
 	proposal.ExpectedEvidence = []Check{{Kind: "route_reachable", Target: goal.Route.Host, Want: "true"}}
 	return proposal, nil
+}
+
+// staleZones proposes a zone for every node whose resolver has not yet been
+// told about the currently serving endpoints.
+//
+// Publishing to every healthy node rather than only those running the workload
+// is deliberate: a caller anywhere in the cluster must be able to resolve the
+// name, including from a node that holds no replica of it.
+func staleZones(goal Goal, world World) []Action {
+	ports := map[string]int{goal.Workload.Name: goal.Workload.Port}
+	directory := BuildDirectory(world, ports)
+	if len(directory[goal.Workload.Name].Endpoints) == 0 {
+		// Nothing is serving yet, so there is no name worth publishing.
+		return nil
+	}
+
+	nodes := make([]string, 0, len(world.Nodes))
+	for id, node := range world.Nodes {
+		if node.Healthy {
+			nodes = append(nodes, id)
+		}
+	}
+	sort.Strings(nodes)
+
+	actions := make([]Action, 0, len(nodes))
+	for _, id := range nodes {
+		zone := BuildServiceZone(world, ports, id)
+		if len(zone.Records) == 0 {
+			continue
+		}
+		if world.Nodes[id].ZoneFingerprint == zone.Fingerprint() {
+			// This node already has the current view, so republishing would be
+			// churn the gateway and resolver both have to absorb.
+			continue
+		}
+		zoneCopy := zone
+		actions = append(actions, Action{
+			ID: "publish-zone-" + id, Kind: ActionPublishZone,
+			Target: id, Node: id, Workload: goal.Workload.Name, Zone: &zoneCopy,
+		})
+	}
+	// One node per round keeps each proposal small and lets a failure be
+	// observed before the next node is touched.
+	if len(actions) > 1 {
+		actions = actions[:1]
+	}
+	return actions
 }
 
 // routeNode picks the node that will serve a route. Routes are published by the

@@ -117,6 +117,10 @@ type CompositeRuntime struct {
 	// RuntimeAPI is the workload-facing surface agents call. It holds the
 	// per-allocation credential, so it participates in allocation lifecycle.
 	RuntimeAPI *RuntimeAPI
+	// Resolver answers a4s service names for workloads on this node. Optional:
+	// without it the node runs, its workloads just cannot resolve each other
+	// by name.
+	Resolver *Resolver
 }
 
 func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (control.Evidence, error) {
@@ -126,6 +130,23 @@ func (c *CompositeRuntime) Execute(ctx context.Context, action control.Action) (
 			return control.Evidence{}, fmt.Errorf("node has no routing capability")
 		}
 		return c.Routes.Execute(ctx, action)
+	case control.ActionPublishZone:
+		if action.Zone == nil {
+			return control.Evidence{}, fmt.Errorf("publish zone requires a zone")
+		}
+		// A node without a resolver accepts the zone and does nothing with it.
+		// Name resolution is optional per node, and failing here would block a
+		// goal from converging on a node that simply serves no names.
+		if c.Resolver != nil {
+			c.Resolver.Apply(*action.Zone)
+		}
+		return control.Evidence{
+			Kind: control.EvidenceZonePublished, Target: action.Node,
+			Observed: map[string]string{
+				"names":       fmt.Sprint(len(action.Zone.Records)),
+				"fingerprint": action.Zone.Fingerprint(),
+			},
+		}, nil
 	case control.ActionAttachNetwork:
 		if c.Networks == nil {
 			return control.Evidence{}, fmt.Errorf("node has no network capability")

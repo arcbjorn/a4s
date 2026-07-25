@@ -40,6 +40,9 @@ const (
 	EvidenceAllocationDrained = "allocation.drained"
 	EvidenceQueueObserved     = "queue.observed"
 	EvidenceProviderReachable = "provider.reachable"
+	// EvidenceZonePublished records that a node's resolver accepted a zone. It
+	// observes the resolver, not the workloads, so it changes no allocation.
+	EvidenceZonePublished = "zone.published"
 	// EvidenceImagesCollected records what a garbage collection reclaimed, or
 	// in dry-run mode what it would reclaim. It observes storage rather than
 	// workloads, so it changes no allocation state.
@@ -331,6 +334,18 @@ func projectInto(world *World, evidence Evidence) error {
 		volume.Generation++
 		volume.Handoff.Phase = HandoffAdopted
 		volume.Handoff = nil
+
+	case EvidenceZonePublished:
+		node, ok := world.Nodes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown node %q", evidence.Kind, evidence.Target)
+		}
+		// Recording what the resolver accepted is what lets the next round tell
+		// an already-current node from one that still needs the update.
+		node.ZoneFingerprint = evidence.Observed["fingerprint"]
+		// Publishing names records that a resolver accepted the zone. The names
+		// themselves are derived from the directory on demand rather than stored,
+		// so there is nothing here to keep in sync with what is serving.
 
 	case EvidenceImagesCollected:
 		node, ok := world.Nodes[evidence.Target]

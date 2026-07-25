@@ -208,6 +208,18 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			Observed: map[string]string{"snapshot": action.Snapshot, "verified": "true"},
 		}, nil
 
+	case ActionPublishZone:
+		if action.Zone == nil {
+			return Evidence{}, fmt.Errorf("publish zone requires a zone")
+		}
+		return Evidence{
+			Kind: EvidenceZonePublished, Target: action.Node,
+			Observed: map[string]string{
+				"names":       fmt.Sprint(len(action.Zone.Records)),
+				"fingerprint": action.Zone.Fingerprint(),
+			},
+		}, nil
+
 	case ActionCollectImages:
 		// The in-memory data plane holds no content store, so it reports a
 		// collection that reclaimed nothing. The protected set still travels
@@ -489,6 +501,10 @@ func simulateAction(world *World, action Action) error {
 			return fmt.Errorf("verify backup requires a volume reference and snapshot id")
 		}
 		// Verification never mutates the volume, so simulation does nothing.
+
+	case ActionPublishZone:
+		// Publishing names changes what a resolver answers, not what the world
+		// holds, so there is nothing to simulate.
 
 	case ActionCollectImages:
 		// Collecting reclaims storage the world does not reference. It changes

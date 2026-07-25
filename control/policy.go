@@ -30,6 +30,9 @@ func DefaultPolicy() Policy {
 			},
 			"network-agent": {
 				ActionPublishRoute: true,
+				// Publishing names is the same job as publishing routes: both
+				// tell the data plane where a service currently lives.
+				ActionPublishZone: true,
 			},
 			// The rollout agent may retire an allocation but may not create
 			// one. Replacement is placement's job, which keeps destruction and
@@ -170,6 +173,7 @@ var actionValidators = map[ActionKind]func(Goal, World, Action) error{
 	ActionVerifyBackup:     validateVerifyBackup,
 	ActionPruneSnapshots:   validatePruneSnapshots,
 	ActionCollectImages:    validateCollectImages,
+	ActionPublishZone:      validatePublishZone,
 	ActionBackupSnapshot:   validateBackupSnapshot,
 	ActionRestoreSnapshot:  validateRestoreSnapshot,
 	ActionMountSecret:      validateMountSecret,
@@ -483,6 +487,28 @@ func validatePruneSnapshots(goal Goal, world World, action Action) error {
 		return fmt.Errorf("volume %q is being moved and cannot be pruned", action.Volume.Name)
 	}
 
+	return nil
+}
+
+// validatePublishZone authorizes installing a node's resolvable service names.
+//
+// The zone must be built for the node it is being sent to. A zone resolved from
+// another node's vantage point would hand out addresses that are not routable
+// where they land, turning every cross-node call into a timeout.
+func validatePublishZone(goal Goal, world World, action Action) error {
+	if action.Node == "" {
+		return fmt.Errorf("publish zone requires a node")
+	}
+	if _, ok := world.Nodes[action.Node]; !ok {
+		return fmt.Errorf("node %q does not exist", action.Node)
+	}
+	if action.Zone == nil {
+		return fmt.Errorf("publish zone requires a zone")
+	}
+	if action.Zone.Node != action.Node {
+		return fmt.Errorf("zone was built for node %q but is addressed to %q",
+			action.Zone.Node, action.Node)
+	}
 	return nil
 }
 
