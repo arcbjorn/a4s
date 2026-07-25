@@ -1,480 +1,117 @@
 # Changelog
 
-All notable project changes should be recorded here. The project has no stable
-release or compatibility guarantee yet.
+Notable changes per release. The project has not been released yet: there is no
+stable version and no compatibility guarantee, so everything below is under
+`Unreleased` and may still change shape.
 
 ## Unreleased
 
-### Added
+### Control kernel
 
-- An authenticated operator HTTP API. Requests carry an Ed25519-signed envelope
-  bound to the method, path, and body digest, made single-use by a nonce
-  ledger and bounded by a five-minute lifetime. `a4s submit`, `a4s status`, and
-  `a4s events` speak to a running server, so a goal reaches the control plane
-  without a scenario file. Reads are authenticated too; only liveness is public.
-- Channel encryption beneath the node transport. The enrollment handshake
-  carries ephemeral X25519 shares inside the signed payload, so the key
-  agreement is authenticated and cannot be substituted by a peer in the middle.
-  `--require-encryption` refuses a peer that will not negotiate one.
-- Controller signing key custody. A keyset with active, accepted, and retired
-  states lets a fleet rotate without a coordinated restart; retiring the active
-  key is refused, because that turns key hygiene into an outage.
-- Verified backup and restore of controller state. The manifest anchors the
-  chain head outside the log, which detects the truncation the hash chain alone
-  cannot, and a restore verifies before touching the destination.
-- Operator-approved rollback execution. A failed rollout still blocks and names
-  the known-good digest; the approval records both versions so the compensation
-  does not oscillate as the restored version is observed serving.
-- Cluster-wide service names under `a4s.internal`, resolved locally to an
-  allocation address and elsewhere through the owning node's gateway, plus a
-  node-local resolver that serves only that zone and never forwards.
-- Typed network policy compiled to nftables, failing closed when a named
-  workload has nothing serving. The compiler's own output is verified by
-  applying it to a real Linux kernel.
-- Evidence-backed garbage collection of unreferenced images, with the protected
-  set computed by the kernel and a dry run that reports what a real run would
-  reclaim.
-- Structured daemon logging, in-process metrics with a Prometheus endpoint, and
-  request and decoder limits applied before authentication.
-- Apache-2.0 license, CI, build-time version stamping, a checksummed release
-  script, a support matrix, and an upgrade and rollback guide.
+- v1alpha1 vocabulary: goal, world, agent, proposal, action, policy, evidence,
+  and event.
+- Deterministic placement, network, rollout, and storage agents.
+- Per-agent capability grants, revision-bound proposals, and whole-proposal
+  simulation before mutation.
+- Policy: node health, placement labels, resource capacity, digest-pinned
+  images, privileged-workload rejection, and stateful single-writer limits.
+- Evidence-only world advancement through a pure, idempotent projection, with
+  readiness measured by probes and expiring rather than asserted.
+- Target leases with expiry, so two proposals cannot interleave on one target.
+- Rolling replacement with an availability floor, and operator-approved rollback
+  bound to both the failed and known-good versions.
+- Cluster-wide service names, typed network policy compiled to nftables, and
+  route snapshots resolved to observed endpoints.
+- Volumes with generation-fenced single-writer ownership, checksummed snapshots,
+  off-host backup, scheduled restore verification, and evidence-gated cross-node
+  handoff.
+- Opaque secret references with node-sealed material and version-only evidence.
+- Agent workloads as a workload kind: pinned model and runtime, mandatory
+  positive budget ceilings, scoped tool envelopes granted before start,
+  provider reachability and budget capacity as placement constraints, monotonic
+  spend evidence, drain-before-stop retirement, and queue-depth scaling under a
+  kernel-recomputed worker ceiling.
+- Model-backed diagnosis in `reason`, outside the stdlib-only kernel, with
+  deterministic fallback so model availability is never a dependency.
 
-### Fixed
+### Server and node
 
-- Verifying a backup no longer alters it. Opening the archive let SQLite
-  checkpoint and rewrite bytes, so a second verification of an untouched
-  backup reported a checksum mismatch and told the operator their only
-  recovery point was corrupt. Archives are now opened strictly read-only.
-- The handshake no longer stalls for its full timeout before establishing a
-  session. Checking for buffered data with a blocking read meant every
-  enrollment waited out the deadline; over a real socket it now completes in
-  about a millisecond, and a regression test measures it.
+- `a4s server`: durable event log, world projection rebuilt on every start,
+  shared lease manager, and goal admission.
+- Authenticated operator HTTP API. Every request carries an Ed25519-signed
+  envelope bound to method, path, and body digest, made single-use by a nonce
+  ledger and bounded by a five-minute lifetime. Reads are authenticated; only
+  liveness is public.
+- Node enrollment proving possession of an identity key, with ephemeral X25519
+  shares inside the signed handshake and ChaCha20-Poly1305 per-direction record
+  encryption. `--require-encryption` refuses a peer that will not negotiate.
+- Signed, node-bound action envelopes with short expiry, and a durable
+  idempotency ledger keyed on a digest of the authorized work.
+- Durable desired-state cache and a supervisor that restarts crashed workloads
+  during a control-plane outage, bounded by a crash-loop budget.
+- Node-side budget enforcement, a tool-call gate refusing ungranted
+  capabilities, and the `a4s.agent/v1` workload runtime API on a Unix socket.
+- Linux containerd v2 adapter: digest-verified pull, idempotent create and
+  start, CPU/memory/PID limits, `noNewPrivileges`, empty capabilities, and
+  namespaced cgroups.
+- Allocation networking through CNI, a zone-only node-local DNS resolver, and
+  Caddy gateway routes.
 
-### Changed
+### Persistence
 
-- The event log is a SQLite database in WAL mode with `synchronous=FULL`,
-  replacing the newline-delimited file. The hash chain is retained on top of it
-  rather than replaced: SQLite establishes that rows are the ones committed,
-  the chain establishes that they are the ones a4s wrote. Chain invariants are
-  now also enforced by the schema, and a record and the chain head advance in
-  one transaction with a conditional head update, so two writers cannot fork
-  history. An existing log is migrated automatically on first open with the
-  original file preserved, so the upgrade is reversible. The driver is pure Go,
-  so `CGO_ENABLED=0` cross-builds still produce static binaries.
-- Backups are taken with `VACUUM INTO` rather than copying a live file, which
-  is transactionally consistent without stopping writers.
-- `a4s version` reports the build commit, date, platform, and whether the tree
-  was modified, from link-time stamps or the toolchain's own VCS metadata.
+- SQLite in WAL mode with `synchronous=FULL`, so every acknowledged event is
+  fsynced before the append returns. A hash chain is retained on top: SQLite
+  establishes the rows are the ones committed, the chain that they are the ones
+  a4s wrote.
+- Chain invariants enforced by the schema, with the record and chain head
+  advancing in one transaction under a conditional head update, so two writers
+  cannot fork history.
+- Versioned schema with transactional migrations; a store written by a newer
+  build is refused rather than misread.
+- Verified backup and restore. Backups use `VACUUM INTO`, are verified
+  read-only, and anchor the chain head outside the store to detect truncation.
+- Pure-Go driver, so `CGO_ENABLED=0` cross-builds stay static.
 
-- Documentation drifted from behavior in three places. The README's expected
-  reconciliation omitted the `attach_network` pair and the `observation.recorded`
-  step, so the first output a reader compares against did not match a real run,
-  and it was labeled ambiguously after the agent-workload command while showing
-  web-service output. The status inventory listed ten CLI commands when thirteen
-  exist, missing `approve`, `history`, and `seal`. `seal` appeared only in `a4s
-  help`, so the command that seals secret material was absent from the security
-  model that describes the sealing.
-- A torn final write no longer makes the event log unopenable. A machine losing
-  power mid-append left a partial line, and replay aborted on the whole file —
-  so a single badly-timed crash stopped the control plane from starting, with
-  every prior record intact and verifiable. An incomplete trailing record is now
-  truncated and reported through `Truncated()`.
-- Corruption anywhere but the trailing record stays fatal. A bad record with
-  valid records after it cannot be explained by an interrupted append, and
-  silently dropping it would discard history the hash chain says exists. Tests
-  cover unparseable, tampered, and deleted middle records.
+### Operator surface
 
-### Added
+- `validate`, `simulate`, `node`, `server`, `keygen`, `keys`, `seal`, `plan`,
+  `explain`, `diagnose`, `approve`, `history`, `backup`, `restore`, `submit`,
+  `status`, `events`, and `version`.
+- Signed operator approvals for the gated decisions, with mandatory expiry
+  checked against observation time and appended to durable history before the
+  projection updates. Revocation is authenticated the same way granting is.
+- Causal explanation of any allocation or route, dry-run planning that reuses
+  the kernel's own simulation, and deterministic diagnosis of a stuck goal.
+- Controller keyset with active, accepted, and retired states, so a fleet
+  rotates without a coordinated restart; retiring the active key is refused.
+- Structured logging and in-process metrics with a Prometheus endpoint.
 
-- Agent workloads as a workload kind. A workload may declare a `runtime` block
-  the way a database declares an `engine`, which makes its cost measured in
-  tokens rather than cpu-seconds, its readiness a question of provider reach and
-  remaining budget, and its blast radius a declared tool envelope. An agent
-  workload is not a control agent: it proposes nothing, holds no `ActionKind`
-  grants, and the two grant vocabularies are deliberately disjoint.
-- `Budget` as a resource dimension beside cpu and memory, with per-node
-  `budget_capacity` and `budget_used`. A cpu limit bounds how fast an agent burns
-  money, not how much, so budget is committed at placement the way memory is.
-  Every ceiling must be positive: a zero is rejected rather than read as
-  unlimited, so a forgotten field cannot grant infinite spend.
-- `grant_tools`, which installs a scoped tool envelope while the allocation is
-  still in `created` phase. This is what lets the kernel authorize an agent up
-  front without knowing what it will decide to do: the envelope is checked
-  before it starts and cannot be widened at runtime. Mutating grants require a
-  separate `agent-mutating-tools` approval, since they change state outside a4s
-  where no compensation or event log reaches.
-- `drain_allocation` and drain-before-stop retirement. An agent instance
-  accumulates task context a stateless replica does not, so stopping it mid-task
-  destroys work already paid for in tokens. The kernel refuses to stop an agent
-  holding a task until it is observed holding nothing, borrowing the shape of
-  the volume handoff. An exhausted agent is exempt, since waiting for it would
-  never end.
-- Provider reachability as a node fact and a hard placement constraint. An agent
-  placed where its provider is unreachable can never become ready, so it is
-  refused at placement rather than discovered at probe time.
-- An `agent` probe and `agent_ready` check. A process probe would pass for an
-  agent whose provider is unreachable or whose ceiling is spent, both of which
-  mean no work can be done despite a healthy-looking container.
-- Monotonic `agent.spent` evidence. A lower reading is ignored as stale, because
-  accepting it would let an exhausted agent look affordable again and be
-  restarted into the same ceiling. An exhausted agent stops being ready, stops
-  counting toward goal satisfaction, and is treated as drifted so it can be
-  replaced.
-- Work queues and demand-driven scaling between the goal's replica count and the
-  queue's `max_workers`. The kernel recomputes that ceiling itself rather than
-  trusting the placement agent's arithmetic, and depth older than 60 seconds
-  does not scale, since workers consume the depth as it is read.
-- A node agent capability holding tool envelopes strictly per allocation. Context
-  leakage between agents comes from shared runtime state, not a shared kernel
-  namespace, so envelopes, workspaces, and credentials are per instance and a
-  deleted allocation's envelope is released.
-- Fuzz targets for the kernel's untrusted-input surface: scenario validation,
-  model output decoding, approval verification, evidence projection, and log
-  replay. `architecture.md` had committed to fuzzing the kernel thoroughly and
-  there were none. Each asserts an invariant rather than only checking for
-  panics — a decoder that survives arbitrary input by accepting it would pass a
-  crash-only test while being the bug worth finding. Roughly 20 million
-  executions across the four kernel targets found no violations.
-- An operator surface. Approvals existed in the world type but nothing could
-  create one, so every gated decision — public exposure, destroying durable data,
-  restoring over live data, moving a volume, granting an agent mutating tools —
-  was reachable only by hand-editing a starting world. `a4s approve` now issues
-  and revokes Ed25519-signed grants, and `a4s history` narrows recorded history
-  by goal, target, kind, or window.
-- Approvals became signed operator decisions. A grant names its issuer and
-  signing key inside the signed bytes, so it cannot be re-signed by one operator
-  while attributing itself to another. The scope set is closed and re-checked on
-  replay, because a free-form scope would let a goal or an importer invent an
-  authorization the kernel never asked for.
-- Mandatory approval expiry, bounded by a maximum lifetime. An unbounded grant
-  becomes standing permission nobody remembers issuing. Expiry is evaluated
-  against the world's observation time, alongside every other policy check.
-- Revocation is authenticated the same way granting is: withdrawing another
-  operator's approval is as consequential as issuing one. Revoked grants are kept
-  rather than deleted, so review can distinguish withdrawn from never-issued.
-- Operator decisions are appended to durable history before the projection is
-  updated. A projection updated without a durable record would vanish on restart,
-  silently withdrawing an authorization the operator was told had been granted.
-- `a4s diagnose` now uses the model-backed diagnoser when a provider is
-  configured, printing the provenance of every explanation. It had been built and
-  tested but left unreachable — the command still hardcoded the deterministic
-  path. `--deterministic` forces the old behavior.
-- The first model-backed control agent. A diagnoser explains why a goal did not
-  converge, using a model where one is available. It was chosen as the first
-  because it is the smallest useful surface: it proposes nothing, holds no
-  capability grants, and can influence what an operator reads but never what the
-  kernel executes.
-- A redacted model context built by subtraction, so a new field on `World` or
-  `Event` does not silently become model input. Secret versions and mount paths,
-  image digests, spend amounts, and other workloads' allocations are excluded,
-  and operator text is stripped of control characters because a goal objective
-  containing role markers would otherwise read as instructions.
-- A strict decoder for untrusted model output. It refuses unknown fields,
-  oversized responses, and excess findings, and drops targets the world does not
-  contain, so a hallucinated allocation cannot appear to an operator as observed
-  fact. The decoded type has nowhere to put an action or a capability.
-- A deterministic fallback on every model failure — provider down, timeout,
-  malformed output, a response naming things that do not exist. A model can
-  improve an explanation; it can never remove one.
-- `diagnosis.recorded` evidence carrying model id, template version, observed
-  revision, and whether the explanation fell back. It changes no world state and
-  does not advance the world revision: advancing it would let a read-only
-  explanation invalidate in-flight proposals through the stale-revision check.
-- The `a4s.agent/v1` runtime API, the surface an agent image implements. It
-  serves claim, ack, requeue, spend, tool authorization, and identity on a Unix
-  socket. Every enforcement point built earlier now has a caller.
-- Runtime identity is issued rather than asserted. The node mints a
-  per-allocation token at creation and resolves it before any handler runs, so no
-  endpoint accepts an allocation id. Without this every per-allocation budget and
-  envelope would be bypassable by naming another instance.
-- The API is a Unix socket rather than a port, since a per-instance credential on
-  a TCP listener would become a cluster-wide attack surface. Tokens are written
-  owner-readable as files rather than passed as environment variables, which
-  surface in process listings and crash dumps. Re-issuing invalidates the old
-  token, and deleting an allocation revokes it.
-- Unknown request fields are refused rather than ignored, so a runtime built
-  against a different contract fails loudly instead of having its intent dropped,
-  and request bodies are size-bounded against an untrusted caller.
-- A durable node work queue. `Queue.Depth` drove agent scaling but nothing
-  measured it, and `HoldTask`/`ReleaseTask` were never called, so a drain always
-  observed an empty task slot and could stop an instance mid-work. Delivery now
-  lives on the node, durably, and depth is measured on the supervision tick.
-- Leased claims with bounded redelivery. An instance that dies holding a task
-  would otherwise strand it forever, since the control plane cannot redeliver
-  work whose contents it never sees. The lease is longer than a typical task
-  because reclaiming from a merely slow instance means paying twice and possibly
-  acting twice. A task that exhausts its attempts stops being delivered, stops
-  counting toward depth, and is reported as stalled.
-- `QueueBroker`, the seam between the queue and the agent lifecycle. An instance
-  may claim only if it is metered, funded, not draining, and not already holding
-  work. Authorization runs before the queue is touched, so a refused claim does
-  not consume an attempt on a task the instance was never eligible for.
-- Draining is now sticky on the node. An instance that finished its task and
-  claimed another would never drain, stalling the rollout waiting on it.
-- Deleting an allocation returns the work it held, rather than leaving a task
-  undelivered until its lease lapses.
-- Measured provider reachability. `Node.Providers` was read by the scheduler but
-  never written, so in a real deployment every agent placement failed with
-  "cannot reach provider". A node-side monitor now measures egress on a timer and
-  reports `provider.reachable`.
-- Provider facts are measurements rather than flags. Egress does not stay true
-  once observed the way a pulled image does: a route, a credential, or an outage
-  removes it between placements. Each entry carries an expiry, and `CanReach`
-  treats unmeasured, unreachable, and expired identically, because the scheduler
-  needs positive current evidence rather than an absence of bad news.
-- The monitor fails closed. A timeout, a refused connection, and a 5xx all read
-  as unreachable; a 401 does not, since the question is whether the node has a
-  working path and treating an auth failure as a network failure would misreport
-  a credential problem. The projection also refuses an observation older than the
-  one it holds, so a stale success cannot overwrite a fresh failure.
-- Node-side budget enforcement. The kernel can authorize a ceiling but cannot
-  enforce one: a round trip through evidence, projection, and a proposal takes
-  longer than an agent needs to spend everything it has left. The node now holds
-  a per-allocation meter, reserved from the authorized action rather than from
-  anything the runtime claims.
-- A tool-call gate. `AuthorizeToolCall` refuses capabilities outside the
-  envelope, refuses everything once an instance is exhausted, and charges the
-  tool-call ceiling on success, which is what stops an agent thrashing between
-  two granted tools while staying cheap on every other dimension. Refusals are
-  counted and reported, since an agent repeatedly reaching for a capability it
-  lacks is a fact an operator should see.
-- `Budget.Exhausts`, distinct from `Fits`. Reservation is inclusive: committing
-  exactly the remaining capacity is legitimate. Consumption is not: an instance
-  that spent exactly its ceiling has nothing left. Using `!Fits` for consumption
-  granted one extra unit on every dimension to every agent.
-- An agent readiness probe measuring provider reachability, remaining budget,
-  and container liveness, plus a composite observer routing each probe kind to
-  the capability that owns it. Agent workloads previously failed readiness on a
-  real node with "unsupported probe kind".
-- Supervisor-reported spend, including for stopped allocations, and refusal to
-  restart an exhausted agent. An agent that spent its ceiling did not crash, it
-  finished; restarting it would burn a fresh ceiling to reach the same state.
-- `examples/agent-workload.json` and [agent workloads](docs/agent-workloads.md).
+### Verification
 
-- Database workloads: a workload may declare an `engine` (postgres), which makes
-  it single-writer, volume-backed, and readiness-checked by an accepted
-  connection rather than an open port.
-- `database_backup`, which invokes the engine's own consistent-backup tool
-  (pg_basebackup) against the live database. A raw filesystem snapshot of a
-  running database is now refused, since its files are torn when copied.
-- A PostgreSQL engine backend: pg_basebackup for backups and a real connection
-  for readiness, so a database still replaying its WAL is not reported ready.
-- Database backups are first-class recovery points: verifiable, prunable, and
-  restorable like any other snapshot.
+- Race-tested unit and contract tests, including a denial matrix driven over the
+  real protocol: unknown key, tampered envelope, wrong node, expired capability,
+  idempotency reuse, replay after restart, stale readiness, and unapproved
+  public route.
+- Fuzz targets over the untrusted-input surface: scenario validation, model
+  output decoding, approval verification, evidence projection, and event-store
+  opening. Each asserts an invariant rather than only checking for panics.
+- Event durability verified by SIGKILLing a writer mid-append across repeated
+  trials; no acknowledged event was lost and the chain verified on recovery.
+- The nftables compiler's own output applied to a real Linux kernel.
+- The full round trip verified against live containerd on linux/amd64 and
+  linux/arm64, covering allocation networking, the gateway, and durable volumes.
+- CI: race tests, vet, gofmt, `go mod tidy`, Linux and arm64 cross-builds, the
+  example simulation, fuzz smoke targets, and documentation link checking.
+- Apache-2.0 license, build-time version stamping, and a release script
+  producing checksummed binaries for four platforms.
 
-- Scheduled restore verification: a `verify_backup` action restores a snapshot
-  into scratch space, checksums it, and discards it, proving a backup is
-  recoverable without touching the live volume. A restore test that could damage
-  the data it protects would be worse than none.
-- A storage agent that proposes verifying the least recently checked backup once
-  its verification ages past an interval, and records when each backup was last
-  proven recoverable.
-- `StaleBackups`, reporting volumes overdue for verification, so an operator can
-  see their recovery posture rather than assuming it.
+### Not implemented
 
-- Snapshot retention and a `prune_snapshots` action. Pruning keeps the most
-  recent N snapshots and never removes the last-known-good, a backed-up
-  snapshot, or the last one standing, so a prune cannot leave a volume with no
-  recovery point.
-- Dry-run pruning that reports exactly what it would remove without touching the
-  disk, and matches the subsequent real prune.
-- Snapshot ordering on volumes, so pruning has a deterministic notion of oldest.
-
-- Node-side volume transfer: the origin ships a verified snapshot through the
-  shared store, the target fetches it and proves receipt by reproducing the
-  checksum, and adoption materializes the data on the target. The origin keeps
-  every byte until adoption, so a stalled move leaves the data where it was.
-
-- Cross-node volume handoff following the prescribed sequence: quiesce, verified
-  snapshot, transfer, and explicit adoption. Each phase is entered only on
-  evidence from the previous one, and none can be skipped.
-- A volume mid-move cannot be attached and its workload cannot be placed, so no
-  writer can diverge from what is being transferred.
-- Adoption advances the volume generation, fencing any writer still holding the
-  origin node's view.
-- Moving a volume requires a granted `move-volume` approval.
-
-- Off-host backup: `backup_snapshot` ships a verified snapshot to a store
-  outside the node, and restore falls back to it when the node's local snapshot
-  is gone. That is the host-loss case backups exist for.
-- `DirectoryBackupStore`, which refuses a path inside the volume root because a
-  backup on the same disk as its data does not survive that disk.
-- Restore evidence records whether recovery came from a local snapshot or the
-  backup store, which is what an operator needs to know after an incident.
-
-- Volume snapshots: checksummed, immutable copies of a quiesced volume, staged
-  and renamed so an interrupted run never leaves a partial tree under a name
-  that looks complete.
-- `restore_snapshot`, which verifies the recorded checksum before overwriting
-  anything and stages the restored copy before swapping it in.
-- A `storage-agent` grant covering snapshot and restore but not placement or
-  execution, keeping backup authority separate from execution authority.
-- Restore requires a granted `restore-volume` approval, and only a snapshot this
-  cluster took and verified may be restored.
-
-- Volumes: explicit durable objects with node affinity, single-writer ownership,
-  and a generation counter that fences a writer superseded while unreachable.
-- `create_volume`, `attach_volume`, `detach_volume`, and `snapshot_volume`
-  actions with matching evidence.
-- Node volume manager with ownership records that survive node restart, so a
-  restarted node still refuses a second writer.
-- Stateful workloads are now accepted, replacing the blanket rejection. A
-  workload declaring volumes is pinned to the node holding its data and limited
-  to one replica.
-- Kernel rules: a volume cannot be attached to two allocations, attached across
-  nodes, detached from a running writer, or deleted while still held. Destroying
-  a stateful allocation requires a separately authenticated approval.
-
-- Secrets: opaque `SecretRef` (name, version, mount path) on workloads, a
-  `mount_secret` action, and `secret.mounted` evidence carrying only the
-  version. `SecretRef` has no field capable of holding a value.
-- Node secret broker sealing material to a node's identity with X25519 and
-  ChaCha20-Poly1305, decrypting into a tmpfs mount bound read-only into the
-  container. Vault or another backend satisfies the same interface.
-- `SecretMaterial`, which refuses to serialize and renders as `[redacted]` under
-  every formatting verb, so material cannot reach a log line or the event log.
-- `a4s seal` for sealing material to a node, reading from a file rather than an
-  argument so it never appears in shell history.
-- Redaction tests that run a real reconciliation and scan every serialized
-  artifact — goal, world, events, plan, explanation, diagnosis — for the value.
-- Kernel rules: a workload cannot start before its declared secrets are mounted,
-  and an agent cannot mount material the goal did not declare.
-
-- Service discovery: a directory mapping workload names to the endpoints
-  observed serving them. Derived from verified evidence only, so an allocation
-  appears solely when it has an address and unexpired readiness.
-- Caddy gateway backend applying whole route snapshots through the admin API,
-  with native ACME for public routes and internal issuance for tailnet-only
-  ones. This replaces ingress and cert-manager with one component.
-- Route snapshots resolving each route to its serving endpoints, so the gateway
-  proxies to real allocation addresses.
-
-- Per-allocation networking: an `attach_network` action, a CNI backend invoking
-  the standard bridge/host-local plugins, node-local IPAM, and containers that
-  join the namespace CNI created for them. Each allocation now has its own
-  address and namespace.
-- Multi-replica placement, batched at two replicas per proposal to keep blast
-  radius and the action budget bounded.
-- `network.attached` and `network.detached` evidence, with the address recorded
-  on the allocation.
-
-- `a4s explain`: reconstructs why an allocation or route exists from the
-  hash-chained log, including the agent's reasoning, the kernel's
-  authorization, and the probe evidence that proved the outcome. An action
-  dispatched without a completion reads as pending, making the crash window
-  visible.
-- `a4s plan`: dry-run reconciliation against the real world projection. It runs
-  the real agents and the real kernel over a cloned world, mutating nothing, and
-  marks steps contingent on readiness that simulation cannot measure.
-- `a4s diagnose` and `control.Diagnoser`: synthesizes why a goal is not
-  converging and suggests a next step. The diagnoser holds no capability grants
-  and proposes no actions, so it is where model-backed reasoning can be
-  substituted without granting new authority.
-- `Target` and `Kind` on control events, recorded at dispatch, so an action that
-  never completed can still be attributed to what it was about.
-
-- Node enrollment: a challenge-response handshake in which a node proves
-  possession of its enrolled Ed25519 key before the server issues any
-  capability. Refusals are generic on the wire so node identities cannot be
-  enumerated, while the server log records the real cause.
-- Node-facing TCP listener, connection registry, and `RegistryExecutor` that
-  routes each capability to the node an action names.
-- `a4s keygen` for generating Ed25519 keypairs with restrictive permissions,
-  and `a4s server --listen` / `a4s node --server` for real network operation.
-- Known-good image tracking recorded from readiness evidence, so a rollback
-  target is always a version the cluster actually observed serving.
-- `RollbackRequired`, raised when a replacement is observed failing. The goal
-  blocks and names the known-good digest rather than an agent silently running
-  a version the operator did not request.
-- Target leases (`control.LeaseManager`) enforced before the first mutation, so
-  two proposals built against the same revision cannot interleave on one
-  allocation. Leases expire, so an abandoned holder does not block a target.
-- Node-side lease backstop rejecting an envelope that contradicts a live claim.
-- Rollout agent that retires drifted allocations one at a time within an
-  availability budget, with placement creating the replacements.
-- Kernel-enforced disruption floor, so an agent cannot exceed the availability
-  budget by proposing the stop anyway.
-- Long-running server package and `a4s server` command holding durable history,
-  a projection rebuilt from it on every start, and goal admission.
-- `stop_allocation` and `delete_allocation` actions with kill deadline,
-  snapshot cleanup, and capacity release.
-- Real process, TCP, and HTTP readiness probes (`node.RuntimeObserver`).
-- Observation freshness: readiness evidence expires and stale readiness no
-  longer satisfies a goal.
-- Durable world projection rebuilt from recorded evidence
-  (`control.DurableProjector`), so a restarted server recovers its state.
-- Node desired-state cache and supervisor with crash-loop budget, exponential
-  backoff, and orphan discovery, so workloads survive a server outage.
-- Controller-to-node transport: `RemoteExecutor` issues signed capabilities and
-  `Serve` handles them, replacing the ad-hoc stdin harness.
-- Router capability with atomic gateway route snapshots and rollback on a
-  failed apply.
-- End-to-end acceptance suite covering convergence over the transport, server
-  restart recovery, node survival during an outage, replay after node restart,
-  and failed readiness blocking a goal.
-- Pure, idempotent world projection from evidence (`control.Project`).
-- `Prober` interface separating readiness observation from action execution.
-- `observation.recorded` event for independently produced probe evidence.
-- Per-message node dispatch responses.
-
-### Changed
-
-- The world advances only by projecting evidence. `Executor` no longer owns
-  world state; `WorldSource` and `Projector` supply it.
-- Node envelopes are verified over the exact transmitted bytes and decoded only
-  after the signature checks, removing the dependency on encoder stability.
-  Unknown fields and trailing content are rejected.
-- The node reports rejected and failed envelopes per message instead of exiting.
-
-### Fixed
-
-- A route with no healthy endpoint is now answered with 503 rather than being
-  dropped from the gateway. Dropping it let the hostname fall through to an
-  unrelated site, which is worse than an honest error.
-
-- Replicas of one workload could not share a node: containers ran on the host
-  network and contended for the same port. Every allocation now has its own
-  network namespace and address.
-- Readiness probes fell back to dialing loopback, which could report a dead
-  workload healthy because an unrelated process held the port, and could not
-  distinguish replicas. The probe now targets the allocation's own address and
-  refuses to guess when it has none.
-
-- Node deduplication compared whole envelopes, so a legitimate retry with fresh
-  issue and expiry times was rejected as idempotency-key reuse. The ledger now
-  compares a digest of the authorized work instead.
-- Placement proposals accumulated readiness checks instead of overwriting them.
-  Previously only the last replica's evidence declaration survived, which would
-  have silently dropped evidence requirements once multi-replica placement was
-  enabled.
-- Replayed allocation evidence no longer double-counts node capacity.
-
-## 0.2.0-dev - 2026-07-22
-
-### Added
-
-- v1alpha1 goal, world, proposal, action, evidence, and event vocabulary.
-- Deterministic placement and network agents.
-- Deterministic proposal authorization and complete-plan simulation.
-- Memory executor and end-to-end reconciliation simulation.
-- Hash-chained durable event file.
-- Ed25519-signed node action envelopes.
-- Persistent node idempotency ledger.
-- Runtime-neutral container backend contract.
-- Linux containerd v2 pull, create, and start adapter.
-- OCI CPU, memory, PID, capability, privilege, and cgroup baseline.
-- Comprehensive portable project handbook and decision records.
-
-### Known limitations
-
-- No live server or controller-to-node transport at the time of this release.
-- Linux adapter has cross-built but not run against a live containerd in this
-  project history.
-- Networking, storage, secrets, probes, rollback, and complete lifecycle are
-  not implemented.
-
-## 0.1.0-dev
-
-### Added
-
-- Initial architecture and control-kernel experiment.
+- Multi-server consensus or high availability; one server owns the event log.
+- Canary rollout and gradual traffic shifting.
+- Per-node evidence signing and external anchoring of the audit chain.
+- Git source adapter and Kubernetes manifest importer.
+- Secret rotation without a workload restart, and a Vault-backed broker.
+- Seccomp/AppArmor selection, user namespaces, and rootless containers.
+- Direct node-to-node transfer streaming; volumes move through a shared store.
+- IPv6 allocation addressing.
