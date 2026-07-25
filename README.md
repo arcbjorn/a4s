@@ -61,10 +61,12 @@ node-runtime boundary:
   verified backup and restore of controller state, and controller key rotation
   without a fleet restart.
 
-What none of this establishes is whether the containerd adapter works on real
-hardware. It has never run against a live containerd socket, which is the
-project's largest open gap and the next milestone. See
-[project status](docs/project-status.md).
+The round trip has been verified against a live containerd socket on linux/amd64
+and linux/arm64, including allocation networking, the gateway, and durable
+volumes. What remains before production is not the runtime adapter but the
+operational surface: per-node evidence signing, external audit anchoring,
+packaged service units, and a complete container sandbox. See
+[project status](docs/project-status.md) and [security](docs/security.md).
 
 The example is an ordinary public web service and exercises only general
 infrastructure primitives.
@@ -101,20 +103,19 @@ action.completed      start_allocation
 observation.recorded  allocation.ready
 proposal.created      network-agent
 proposal.approved     policy-kernel
+action.dispatched     publish_zone
+action.completed      publish_zone
 action.dispatched     publish_route
 action.completed      publish_route
 goal.achieved         verifier
 ```
 
-The next vertical slice connects server and node, adds independent process and
-HTTP probes, then implements CNI and a local gateway. See
-[the node runtime](docs/node-runtime.md) for the exact boundary and Linux smoke
-test.
+See [the node runtime](docs/node-runtime.md) for the exact host boundary and the
+Linux smoke test.
 
 ## Documentation
 
-Start with the [documentation index](docs/index.md). The essential handoff set
-is:
+Start with the [documentation index](docs/index.md). The essential set is:
 
 - [Project status](docs/project-status.md): exact implementation inventory and
   next milestone.
@@ -129,17 +130,9 @@ is:
 - [Codebase guide](docs/codebase.md): package ownership and extension paths.
 - [Operations](docs/operations.md): disposable Linux-node runbook and recovery
   behavior.
+- [Support matrix](docs/support-matrix.md): supported versions and platforms.
+- [Upgrading](docs/upgrading.md): upgrade, key rotation, and rollback procedure.
 - [Roadmap](docs/roadmap.md): ordered milestones and exit criteria.
-
-## Moving the project
-
-This directory is self-contained: it has its own Go module, dependency lock,
-project instructions, changelog, examples, and handbook. It can be copied into
-a new directory or repository without the original infrastructure checkout.
-
-The module path remains `github.com/arcbjorn/a4s` after a local move. Change it
-only if publishing under a new import path; instructions are in the
-[documentation index](docs/index.md).
 
 ## License
 
