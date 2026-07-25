@@ -27,8 +27,6 @@ import (
 	"github.com/arcbjorn/a4s/server"
 )
 
-const version = "0.2.0-dev"
-
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "a4s:", err)
@@ -77,8 +75,7 @@ func run(args []string) error {
 	case "events":
 		return remoteEvents(args[1:])
 	case "version":
-		fmt.Println(version)
-		return nil
+		return showVersion(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -1021,5 +1018,5 @@ than with possession of the network path:
   a4s events --server http://host:8443 --key-id ID --operator-key /path
              [--goal ID] [--target ID] [--kind KIND] [--limit N]
 
-  a4s version`)
+  a4s version [--json] [--short]`)
 }
