@@ -33,6 +33,9 @@ func approve(args []string) error {
 	id := flags.String("id", "", "approval id; defaults to goal-scope")
 	revoke := flags.Bool("revoke", false, "withdraw a previously granted approval")
 	listScopes := flags.Bool("scopes", false, "list the decisions that can be approved")
+	workload := flags.String("workload", "", "workload a rollback approval applies to")
+	from := flags.String("from", "", "image being rolled back from (defaults to the failing one)")
+	to := flags.String("to", "", "image to roll back to (defaults to the last known-good one)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -73,6 +76,20 @@ func approve(args []string) error {
 		ID: approvalID, GoalID: *goalID, Scope: *scope, IssuedBy: *issuedBy,
 		IssuedAt: now, ExpiresAt: now.Add(*lifetime),
 		Revision: projector.World().Revision, Reason: *reason,
+	}
+
+	// A rollback grant names both versions, so the decision stays bound to one
+	// specific revert. They are read from the world rather than typed by the
+	// operator: the point of the approval is to authorize what the cluster
+	// actually observed failing, not an image someone remembered.
+	if *scope == "rollback" && !*revoke {
+		failed, target, err := rollbackVersions(projector.World(), *workload, *from, *to)
+		if err != nil {
+			return err
+		}
+		grant.Subject = failed
+		grant.Rollback = target
+		fmt.Printf("rolling back %s\n  from %s\n    to %s\n", *workload, failed, target)
 	}
 	signed, err := control.SignApproval(grant, *keyID, key)
 	if err != nil {
@@ -224,4 +241,44 @@ func history(args []string) error {
 		fmt.Println(strings.TrimRight(line, " "))
 	}
 	return nil
+}
+
+// rollbackVersions resolves which two images a rollback approval names.
+//
+// Reading them from the world is what makes the approval trustworthy: an
+// operator authorizes the revert the cluster actually observed needing, and a
+// typo becomes a refusal rather than a workload pinned to an image nobody
+// checked. Explicit flags override, for the case where the operator genuinely
+// knows better than the recorded observation.
+func rollbackVersions(world control.World, workload, from, to string) (string, string, error) {
+	if workload == "" {
+		return "", "", fmt.Errorf("workload is required to approve a rollback")
+	}
+	failed := from
+	if failed == "" {
+		for _, allocation := range world.Allocations {
+			if allocation.Workload == workload && allocation.Phase == control.AllocationStopped &&
+				(allocation.ExitCode != 0 || allocation.Restarts > 0) {
+				failed = allocation.Image
+				break
+			}
+		}
+	}
+	if failed == "" {
+		return "", "", fmt.Errorf(
+			"no failing allocation of %q was observed; pass --from to name the version explicitly", workload)
+	}
+
+	target := to
+	if target == "" {
+		target = world.KnownGood[workload]
+	}
+	if target == "" {
+		return "", "", fmt.Errorf(
+			"no known-good image is recorded for %q; pass --to to name one explicitly", workload)
+	}
+	if target == failed {
+		return "", "", fmt.Errorf("refusing to roll %q back to the version that failed", workload)
+	}
+	return failed, target, nil
 }

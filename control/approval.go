@@ -20,6 +20,11 @@ var ApprovalScopes = map[string]string{
 	"restore-volume":       "overwrite a volume from a snapshot",
 	"move-volume":          "relocate a volume to another node",
 	"agent-mutating-tools": "grant an agent tools that change state outside a4s",
+	// A rollback runs a version the goal does not name, so it needs an operator
+	// decision rather than an agent one. The grant names the goal, and the
+	// kernel checks the image it authorizes against the recorded known-good
+	// version, so approving a rollback cannot become approval to run anything.
+	"rollback": "run the last known-good version instead of the version the goal names",
 }
 
 // MaxApprovalLifetime bounds how long a grant may stand.
@@ -56,6 +61,12 @@ type ApprovalGrant struct {
 	ExpiresAt time.Time `json:"expires_at"`
 	Revision  uint64    `json:"revision,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
+	// Subject binds a rollback grant to the version being rolled back from, and
+	// Rollback names the version to return to. Both are inside the signed
+	// bytes, so an operator authorizes one specific revert rather than a
+	// standing permission to run whatever the world later considers good.
+	Subject  string `json:"subject,omitempty"`
+	Rollback string `json:"rollback,omitempty"`
 }
 
 // SignedApproval is a grant with its operator signature.
@@ -145,6 +156,7 @@ func (g ApprovalGrant) Approval() *Approval {
 		ID: g.ID, GoalID: g.GoalID, Scope: g.Scope, IssuedBy: g.IssuedBy,
 		Granted: true, IssuedAt: g.IssuedAt, ExpiresAt: g.ExpiresAt,
 		Revision: g.Revision, Reason: g.Reason,
+		Subject: g.Subject, Rollback: g.Rollback,
 	}
 }
 
@@ -166,6 +178,15 @@ func (g ApprovalGrant) Evidence() Evidence {
 	}
 	if g.Reason != "" {
 		observed["reason"] = g.Reason
+	}
+	// Recording these means a restarted server rebuilds a rollback grant that
+	// still names the same two versions, rather than one that re-derives them
+	// from a world that has since moved.
+	if g.Subject != "" {
+		observed["subject"] = g.Subject
+	}
+	if g.Rollback != "" {
+		observed["rollback"] = g.Rollback
 	}
 	return Evidence{
 		Kind: EvidenceApprovalGranted, Target: g.ID, Source: "operator:" + g.IssuedBy,

@@ -351,6 +351,18 @@ type Approval struct {
 	// moved would make approvals unusable on a live cluster, but recording what
 	// was on screen is what makes an after-the-fact review meaningful.
 	Revision uint64 `json:"revision,omitempty"`
+	// Subject narrows what a grant authorizes within its scope. A rollback
+	// approval names the image being rolled back from, so the decision is bound
+	// to one specific bad version: once the goal asks for something else, the
+	// grant no longer applies and the workload is not pinned to an old image.
+	Subject string `json:"subject,omitempty"`
+	// Rollback names the version a rollback approval returns to.
+	//
+	// It is recorded on the approval rather than recomputed from the world
+	// because the known-good image moves as the restored version is observed
+	// serving. Deriving the target live would make a rollback switch itself off
+	// halfway through and rebuild the version that failed.
+	Rollback string `json:"rollback,omitempty"`
 	// Reason is the operator's own words. It is the only field here a human
 	// writes freely, and it is what a later reviewer actually wants to read.
 	Reason string `json:"reason,omitempty"`
@@ -740,6 +752,11 @@ const (
 	EventObservationRecorded EventType = "observation.recorded"
 	EventGoalAchieved        EventType = "goal.achieved"
 	EventGoalBlocked         EventType = "goal.blocked"
+	// EventGoalCompensating records that an operator-approved rollback changed
+	// which version the goal effectively names. It is recorded every round the
+	// compensation is in force, so history shows a workload was deliberately
+	// running something other than what its goal document says.
+	EventGoalCompensating EventType = "goal.compensating"
 )
 
 type Event struct {

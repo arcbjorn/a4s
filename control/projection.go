@@ -668,6 +668,11 @@ func projectInto(world *World, evidence Evidence) error {
 			IssuedAt: evidence.ObservedAt, ExpiresAt: evidence.ExpiresAt,
 			Revision: uint64(observedInt(evidence, "revision")),
 			Reason:   evidence.Observed["reason"],
+			// A rollback grant carries the two versions it was issued about, so
+			// a restarted server resumes the same compensation rather than
+			// re-deriving it from a world that has since moved.
+			Subject:  evidence.Observed["subject"],
+			Rollback: evidence.Observed["rollback"],
 		}
 
 	case EvidenceApprovalRevoked:

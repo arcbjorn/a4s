@@ -96,13 +96,28 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 		return err
 	}
 	for round := 0; round < maxRounds; round++ {
-		if goalAchieved(goal, e.World.World()) {
+		// An operator-approved rollback changes which image the goal means. It
+		// is resolved once per round, before anything reads the goal, so every
+		// agent and validator in the round works from the same version.
+		effective, rolledBackFrom, compensating := CompensatedGoal(goal, e.World.World())
+		if compensating {
+			if err := e.record(Event{
+				Type: EventGoalCompensating, Actor: "coordinator", GoalID: goal.ID,
+				Kind: string(ActionCreateAllocation), Target: goal.Workload.Name,
+				Message: fmt.Sprintf("operator approved rollback from %s to %s",
+					rolledBackFrom, effective.Workload.Image),
+			}); err != nil {
+				return err
+			}
+		}
+
+		if goalAchieved(effective, e.World.World()) {
 			return e.record(Event{Type: EventGoalAchieved, Actor: "verifier", GoalID: goal.ID, Message: "goal conditions verified from current world evidence"})
 		}
 		progress := false
 		for _, agent := range e.Agents {
 			world := e.World.World()
-			proposal, err := agent.Propose(goal, world)
+			proposal, err := agent.Propose(effective, world)
 			if err != nil {
 				// A required rollback is an operator decision, not a denial to
 				// retry. Blocking here surfaces the known-good digest rather
@@ -125,7 +140,7 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 			if err := e.record(Event{Type: EventProposalCreated, Actor: proposal.AgentID, GoalID: goal.ID, ProposalID: proposal.ID, Message: proposal.Reasoning}); err != nil {
 				return err
 			}
-			if err := e.Kernel.Authorize(agent.Descriptor(), goal, world, proposal); err != nil {
+			if err := e.Kernel.Authorize(agent.Descriptor(), effective, world, proposal); err != nil {
 				if recordErr := e.record(Event{Type: EventProposalDenied, Actor: "policy-kernel", GoalID: goal.ID, ProposalID: proposal.ID, Message: err.Error()}); recordErr != nil {
 					return recordErr
 				}
@@ -149,7 +164,7 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 			if bound, ok := e.Executor.(BoundExecutor); ok {
 				bound.Bind(goal.ID, proposal.ID, proposal.BasedOnRevision, leaseID)
 			}
-			executed, err := e.executeProposal(goal, proposal, leaseID)
+			executed, err := e.executeProposal(effective, proposal, leaseID)
 			if executed {
 				progress = true
 			}

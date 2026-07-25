@@ -76,6 +76,65 @@ func RollbackTarget(goal Goal, world World) (string, bool) {
 	return "", false
 }
 
+// CompensatedGoal resolves the goal every agent should work from.
+//
+// When a rollout has failed and an operator has approved a rollback, the
+// effective image becomes the last known-good digest. Applying that once, at
+// the engine boundary, means every agent and every validator sees a single
+// consistent goal: placement rebuilds on the known-good image, pull validation
+// accepts it, and the rollout agent retires the version that failed.
+//
+// Resolving it here rather than inside each agent is what keeps the rule
+// checkable. An agent that rewrote the image itself would be redefining the
+// goal, which the kernel exists to prevent; this instead makes the operator's
+// approved decision part of the goal before any agent sees it.
+//
+// The second return value is the image being rolled back from, which the
+// rollout agent needs in order to know what to retire.
+func CompensatedGoal(goal Goal, world World) (Goal, string, bool) {
+	approval := rollbackApproval(world, goal.ID)
+	if approval == nil {
+		return goal, "", false
+	}
+	// The approval names the version it was issued against. Once the goal no
+	// longer asks for that version an operator has moved on, and the
+	// compensation stops rather than pinning the workload to an old image.
+	if approval.Subject != "" && approval.Subject != goal.Workload.Image {
+		return goal, "", false
+	}
+
+	// The target is read from the approval rather than recomputed, because
+	// KnownGood moves as the rolled-back version is observed serving. Deriving
+	// it live would make the compensation switch itself off mid-rollback and
+	// rebuild the very version that failed.
+	target := approval.Rollback
+	if target == "" {
+		known, failed := RollbackTarget(goal, world)
+		if !failed {
+			return goal, "", false
+		}
+		target = known
+	}
+	if target == goal.Workload.Image {
+		return goal, "", false
+	}
+
+	failedImage := goal.Workload.Image
+	goal.Workload.Image = target
+	return goal, failedImage, true
+}
+
+// rollbackApproval returns the live rollback grant for a goal, if any.
+func rollbackApproval(world World, goalID string) *Approval {
+	now := world.Now()
+	for _, approval := range world.Approvals {
+		if approval.GoalID == goalID && approval.Scope == "rollback" && approval.Valid(now) {
+			return approval
+		}
+	}
+	return nil
+}
+
 func (r RolloutAgent) Propose(goal Goal, world World) (Proposal, error) {
 	descriptor := r.Descriptor()
 	proposal := Proposal{
@@ -88,6 +147,15 @@ func (r RolloutAgent) Propose(goal Goal, world World) (Proposal, error) {
 	// means running a different version than the operator asked for, and an
 	// agent may not redefine the goal. The engine raises this as a blocked goal
 	// naming the known-good digest so a human or a Git source can decide.
+	//
+	// Once an operator has approved the rollback, the decision has been made by
+	// someone with the authority to make it, and the agent may carry it out.
+	// The approval is what converts a reported obstacle into an executable
+	// plan; without it this still refuses.
+	//
+	// By the time a compensated goal reaches here its image is already the
+	// known-good digest, so RollbackTarget no longer reports a failure and this
+	// branch is skipped. The failed version is retired below as ordinary drift.
 	if knownGood, failed := RollbackTarget(goal, world); failed {
 		return proposal, &RollbackRequired{
 			Workload:  goal.Workload.Name,

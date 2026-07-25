@@ -968,6 +968,8 @@ Usage:
              [--deterministic] [--model ID]
   a4s approve --event-log /path --goal ID --scope SCOPE --operator NAME
               --key /path --key-id ID [--reason TEXT] [--lifetime 1h] [--revoke]
+  a4s approve --event-log /path --goal ID --scope rollback --workload NAME
+              --operator NAME --key /path --key-id ID [--from IMAGE] [--to IMAGE]
   a4s approve --scopes
   a4s history --event-log /path [--goal ID] [--target ID] [--kind KIND]
               [--since 1h] [--limit N] [--json]
