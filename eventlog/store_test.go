@@ -83,14 +83,15 @@ func TestStoreDetectsRecordEditedThroughSQL(t *testing.T) {
 	}
 	db.Close()
 
+	// Refused at open rather than on first read. Recovery is the normal startup
+	// path, so a control plane must not come up believing edited history.
 	reopened, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
+	if err == nil {
+		reopened.Close()
+		t.Fatal("a log with an edited record opened cleanly")
 	}
-	defer reopened.Close()
-
-	if err := reopened.Verify(); err == nil {
-		t.Fatal("an edited record passed verification")
+	if !strings.Contains(err.Error(), "verification") {
+		t.Fatalf("the failure did not name verification: %v", err)
 	}
 }
 
@@ -490,4 +491,37 @@ func FuzzOpen(f *testing.F) {
 			previous = record.Hash
 		}
 	})
+}
+
+// A store whose event blobs cannot be decoded must refuse to open.
+//
+// Found by FuzzOpen. loadHead only checks that the chain head and the row count
+// agree, which this store satisfies: it opened cleanly and then failed in
+// whichever caller read records first — the projection rebuild, a backup, or a
+// replay. Failing at open keeps that from becoming a control plane that is up
+// but cannot read its own history.
+func TestStoreRefusesUndecodableEvents(t *testing.T) {
+	store, path := appendedStore(t, 3)
+	store.Close()
+
+	db, err := sql.Open(driverName, "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Valid SQLite, invalid JSON: the row count and chain head still agree.
+	if _, err := db.Exec(
+		`UPDATE records SET event = '{"sequence":2,"at":}' WHERE sequence = 2`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	reopened, err := Open(path)
+	if err == nil {
+		reopened.Close()
+		t.Fatal("a log with an undecodable event opened cleanly")
+	}
+	if !strings.Contains(err.Error(), "verification") {
+		t.Fatalf("the failure did not name verification: %v", err)
+	}
 }

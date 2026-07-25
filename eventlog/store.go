@@ -92,6 +92,15 @@ func Open(path string) (*File, error) {
 		db.Close()
 		return nil, err
 	}
+	// The chain is verified at open, not on first read. loadHead only checks that
+	// the head and the row count agree, which a store holding undecodable event
+	// blobs still satisfies: it opens cleanly and then fails later, in whichever
+	// caller happens to read records first. Recovery is the normal startup path,
+	// so a log that cannot be replayed must refuse to open.
+	if err := store.Verify(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("event log failed verification: %w", err)
+	}
 	return store, nil
 }
 
@@ -377,6 +386,13 @@ func (f *File) Verify() error {
 		return err
 	}
 	return verifyChain(records)
+}
+
+// Head reports the current chain tip. The zero value means an empty log.
+func (f *File) Head() Record {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.head
 }
 
 // Path reports where this store lives.
