@@ -15,10 +15,12 @@
 |-- eventlog/                 durable controller event records
 |-- node/                     signed dispatch and runtime adapters
 |-- reason/                   model-backed control agents
+|-- source/                   goals from a versioned repository
 |-- obs/                      structured logging and metrics
 |-- docs/                     handbook and decision records
 |-- examples/                 safe simulation inputs
 |-- scripts/                  release, doc-link, and nftables checks
+|-- init/systemd/             service units
 |-- .github/workflows/        CI
 |-- go.mod / go.sum           pinned Go module graph
 `-- .go-version               expected Go toolchain
@@ -50,6 +52,9 @@ containerd, networking implementations, model SDKs, and transport libraries.
 | `probe.go` | Readiness declarations and observation freshness |
 | `directory.go` / `resolve.go` | Service discovery and cluster-wide name zones |
 | `netpolicy.go` | Typed network intent compiled toward nftables |
+| `attest.go` | Node evidence signing and verification |
+| `schedule.go` | Cron parsing and scheduled-run evaluation |
+| `canary.go` | Canary steps and endpoint traffic weights |
 | `storage_agent.go` | Volume backup, restore verification, and handoff proposals |
 | `plan.go` / `explain.go` / `diagnose.go` | Dry run, causal history, and deterministic diagnosis |
 | `modelcontext.go` | Redacted model input and explanation provenance |
@@ -98,6 +103,26 @@ serves the authenticated operator API.
 server -> control, eventlog, node, obs
 ```
 
+### `source`
+
+Goals from a versioned git repository. It is deliberately thin: a repository is a
+transport for goal documents, and every goal it reads is admitted through the
+same validation as one submitted over the operator API. Nothing here can
+authorize anything, and a repository cannot carry an approval.
+
+| File | Responsibility |
+|---|---|
+| `git.go` | Ref polling, goal decoding, and submission through admission |
+
+Git execution comes from `agentic-git/pkg/gitcmd`, which passes arguments as a
+slice with no shell, replaces the environment rather than inheriting it, and
+times every invocation out. The mirror is bare, so a repository cannot write a
+working tree onto the control plane.
+
+```text
+source -> control, agentic-git/pkg/gitcmd
+```
+
 ### `obs`
 
 Structured logging and in-process metrics for both daemons. It is separate so
@@ -129,6 +154,9 @@ Dependency direction:
 ```text
 eventlog -> control
 ```
+
+The anchor is a separate append-only file, not a row in the database. Storing the
+witness inside the thing it witnesses would defeat it.
 
 ### `node`
 

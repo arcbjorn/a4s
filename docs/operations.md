@@ -22,8 +22,8 @@ One binary provides both daemons and the operator CLI:
 - `simulate` runs a finite reconciliation in one process using memory state.
 
 The node supervises its own desired state on `--supervise-interval`, so
-workloads survive a control-plane outage. There is still no packaged systemd
-unit; see the productionization sequence below.
+workloads survive a control-plane outage. Service units for both daemons are in
+`init/systemd/`; both handle SIGTERM and unwind rather than dying mid-action.
 
 ## Host prerequisites
 
@@ -320,12 +320,29 @@ through volume backup and an explicit ownership handoff.
 
 ## Productionization sequence
 
-Remaining before a persistent systemd service:
+Remaining before running production traffic:
 
-1. Package unit files, signal handling, and graceful shutdown.
-2. Add a least-privilege service identity and host sandboxing.
-3. Sign evidence with a node identity distinct from the controller key, so a
-   compromised node cannot lie undetectably about what it observed.
-4. Anchor the latest audit hash outside the database.
-5. Close the remaining items in the [security model](security.md), including
-   seccomp/AppArmor profile selection and non-root containers.
+1. Turn on the confinement that is off by default: `--run-as`, `--apparmor`,
+   `--read-only-root`, and `--user-namespace`. Each can break an image not
+   written for it, so adopt them per workload rather than fleet-wide.
+2. Give the gateway a way to verify snapshot provenance independently.
+3. Rotate secrets without replacing the allocation.
+4. Run sustained-failure and penetration testing beyond the verified round trip.
+
+See the [security model](security.md) for what each of these leaves open.
+
+## Service units
+
+`init/systemd/a4s-server.service` runs the control plane as an unprivileged
+`a4s` user with `ProtectSystem=strict`, an empty capability set, and a
+`@system-service` syscall filter. It needs only its state directory and its keys.
+
+`init/systemd/a4s-node.service` cannot be unprivileged: it drives containerd,
+creates network namespaces, and installs nftables rules. Its
+`CapabilityBoundingSet` names exactly the capabilities that work needs and drops
+the rest, which is the meaningful confinement available to a process that must be
+able to do those things.
+
+Both stop with SIGTERM and are given 30 seconds to unwind. Stopping either is not
+an outage: containers keep running, because the node holds no workload process as
+a child.

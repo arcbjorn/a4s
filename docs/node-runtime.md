@@ -59,9 +59,20 @@ signed envelope stream
 The adapter requires immutable `sha256` image references and verifies the
 resolved manifest digest after pull. Create applies the goal's CPU and memory
 limits, a PID limit of 256, `noNewPrivileges`, an empty Linux capability set,
-and a namespaced cgroup. Allocation logs are written under the configured log
-directory. A container that already exists is accepted only when its managed,
-workload, and image labels match the requested allocation.
+a namespaced cgroup, and the runtime's default seccomp profile. Allocation logs
+are written under the configured log directory. A container that already exists
+is accepted only when its managed, workload, and image labels match the
+requested allocation.
+
+Further confinement is available per node: `--apparmor`, `--run-as`,
+`--read-only-root`, and `--user-namespace`. These live on the node rather than in
+a goal, so an authorized action can never ask to be confined less than the host
+decided.
+
+Every observation the node reports is signed with its enrollment identity key.
+The control plane verifies that signature before the evidence advances the world,
+so a node cannot report a readiness, spend, or ownership fact it did not measure,
+and cannot report one on another node's behalf.
 
 `allocation.running` means the OCI task started. It does not mean the service
 is ready. Readiness must come from a separate process, TCP, or HTTP probe and
@@ -140,14 +151,13 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/a4s ./cmd/a4s
   reported, but removal stays an authorized action rather than a node decision.
 - Snapshot garbage collection. Unreferenced images are reclaimed against a
   kernel-computed protected set; snapshots are not.
-- Seccomp/AppArmor profile selection, user namespaces, and rootless execution.
-  The container is hardened relative to image defaults but may still run as root
-  inside its namespace.
+- Non-root containers by default. Seccomp, AppArmor, a pinned uid, a read-only
+  root, and user namespaces are all available through the node's sandbox
+  profile, but only seccomp is on by default: the others break images not
+  written for them, and a default that makes working images fail would push
+  operators to disable hardening wholesale.
 - Direct node-to-node transfer streaming. A volume moves between nodes through
   the shared backup store rather than a dedicated channel.
-- Evidence signed by a node identity distinct from the controller signing key.
-  The node authenticates when it connects, but individual evidence records are
-  not separately attributable.
 - IPv6 allocation addressing. The CNI configuration assumes IPv4.
 
 These are required before running a production workload.

@@ -34,9 +34,15 @@ control plane without a scenario file.
 
 The round trip has been verified against live containerd on linux/amd64 and
 linux/arm64, including allocation networking, the gateway, and durable volumes.
-What remains before production is the operational surface: per-node evidence
-signing, external audit anchoring, a complete container sandbox, and packaged
-service units.
+Evidence is signed by the node that measured it, the audit chain is anchored
+outside its own store, containers run under a seccomp profile, and both daemons
+ship as hardened service units.
+
+What remains before production is narrower than the platform: the gateway does
+not verify snapshot provenance independently, secret rotation still replaces the
+allocation, containers run as the image's own user unless an operator pins one,
+and nothing has been through sustained-failure or penetration testing. See
+"required before production" in [security](security.md).
 
 ## Implemented
 
@@ -159,6 +165,22 @@ service units.
   egress rules naming workloads or CIDRs; the compiler expands names to
   observed endpoints and fails closed when nothing is serving. a4s owns one
   table and replaces it wholesale, so applied state equals authorized state.
+- Canary rollout with weighted traffic. A goal declares traffic steps; the
+  kernel derives the authorized share from the proportion of ready allocations
+  running the target image, and the gateway applies per-endpoint weights.
+  Because the share is derived rather than latched, a new version that stops
+  being measured ready loses its traffic automatically instead of holding it on
+  the strength of an earlier advance.
+- Scheduled and batch workloads. A workload declares a cron schedule, a run
+  deadline, required completions, retries, and a concurrency policy. Schedules
+  are evaluated as a pure function of the observed world's time and always in
+  UTC, so placement stays deterministic and a daylight-saving transition cannot
+  make a job run twice or not at all.
+- Goals from a versioned repository. A git source mirrors a tracked ref into a
+  bare repository and submits every goal document it finds through the same
+  admission path as the operator API. Nothing is checked out, so a repository
+  cannot write a working tree onto the control plane, and one malformed document
+  is reported without stopping the rest of the repository from converging.
 
 ### Operator introspection
 
@@ -186,6 +208,9 @@ service units.
   SQLite guarantees the rows are the ones that were committed; only the chain
   establishes that they are the ones a4s wrote, which is what catches an edit
   made through `sqlite3` directly.
+- The chain verified when the log is opened, not on first read. A store whose
+  event blobs cannot be decoded satisfies the head-and-count check, so it would
+  otherwise come up and fail later in whichever caller read records first.
 - Chain invariants enforced by the schema: sequence is the primary key, hashes
   are unique, and CHECK constraints reject a malformed link. A record and the
   chain head advance in one transaction, and the head update is conditional on
@@ -326,9 +351,6 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 ## Not implemented
 
 - Multi-server consensus or high availability. One server owns the event log.
-- Canary rollout. Rolling replacement, the disruption budget, known-good
-  rollback detection, and operator-approved rollback execution all exist;
-  gradual traffic shifting does not.
 - A dedicated transfer transport. The node moves data through the shared backup
   store, so a move needs a store both nodes can reach; direct node-to-node
   streaming is not implemented.
@@ -338,10 +360,8 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 - Secret rotation without a workload restart, and a Vault-backed broker. The
   file broker and mount path are implemented; rotation currently means changing
   the goal's version, which replaces the allocation.
-- Seccomp/AppArmor selection, user namespaces, or rootless containers.
 - Kubernetes manifest importer.
-- Git source adapter. Goals arrive through the operator API or a scenario file,
-  not from a versioned repository.
+- Distributed tracing. Structured logs and metrics exist; spans do not.
 - IPv6 allocation addressing. The CNI configuration and the policy compiler
   both assume IPv4.
 

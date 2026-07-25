@@ -14,7 +14,8 @@ run by hand; it does not imply production readiness. See
 | runc | 1.1 or later | Whatever containerd is configured to use. a4s does not invoke runc directly. |
 | CNI plugins | 1.4 or later | The node writes a `bridge` network configuration with `host-local` IPAM and invokes the plugin binaries in `--cni-bin`. |
 | nftables | 1.0 or later | Only when `--nft` is set. The compiled ruleset uses `inet` tables and `ct state` matching. |
-| Caddy | 2.7 or later | Only when `--gateway-admin` is set. The node drives the admin API. |
+| Caddy | 2.7 or later | Only when `--gateway-admin` is set. The node drives the admin API. Weighted upstreams need the `weighted_round_robin` policy. |
+| git | 2.30 or later | Only when `--git-remote` is set. The server invokes the binary; there is no shell involved and every call is timed out. |
 | SQLite | embedded 3.53 | Provided by `modernc.org/sqlite`, a pure-Go implementation. No system SQLite is used and no CGO is required. |
 | libSQL / Turso | untested | The schema is deliberately restricted to SQL libSQL also implements, so moving should be a driver and DSN change rather than a rewrite. Not exercised against a libSQL server. |
 

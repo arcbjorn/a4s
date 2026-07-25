@@ -60,12 +60,19 @@ node-runtime boundary:
 - Cluster-wide service names, typed network policy compiled to nftables,
   verified backup and restore of controller state, and controller key rotation
   without a fleet restart.
+- Evidence signed by the node that measured it, verified before it advances the
+  world, so a compromised node cannot report a fact it did not observe or
+  attribute one to another node.
+- An audit chain anchored outside its own store, which detects wholesale
+  replacement of a log whose internal chain still verifies.
+- Goals from a versioned git repository, cron-scheduled and batch workloads, and
+  canary rollout whose traffic share is derived from measured readiness.
 
 The round trip has been verified against a live containerd socket on linux/amd64
 and linux/arm64, including allocation networking, the gateway, and durable
-volumes. What remains before production is not the runtime adapter but the
-operational surface: per-node evidence signing, external audit anchoring,
-packaged service units, and a complete container sandbox. See
+volumes. What remains before production is narrower than the platform: gateway
+snapshot provenance, secret rotation without a restart, non-root containers by
+default, and sustained-failure testing. See
 [project status](docs/project-status.md) and [security](docs/security.md).
 
 The example is an ordinary public web service and exercises only general

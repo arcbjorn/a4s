@@ -246,11 +246,26 @@ opening hello.
 - The node stamps its own identity and observation time onto evidence a runtime
   adapter produces.
 
-The remaining gap is that probe evidence is not yet signed by a node identity
-distinct from the controller signing key. The node authenticates itself when it
-connects, but individual evidence records are not separately attributable, so a
-compromised node can still lie about what it observed. That must be closed
-before production.
+Evidence is signed by the reporting node's own identity key, the same key it
+proves possession of at enrollment, and verified before it reaches the world
+projection. The signature is detached and covers the serialized evidence, so a
+field edited in transit fails verification rather than being projected.
+
+Two checks carry this boundary, and only together:
+
+- The signature must verify against an enrolled node's public key, which is what
+  keeps an unenrolled peer out.
+- The signer must be the node the evidence claims observed it. Without this,
+  any enrolled node could attest to another's observations, which is precisely
+  the impersonation the attestation exists to prevent.
+
+An attestation also expires. Replay protection on an action envelope does not
+cover evidence, which travels the other way, so a captured attestation stops
+being accepted once it is older than the configured window.
+
+`--require-attestation` refuses unattested evidence outright. Without it the
+control plane falls back to trusting the authenticated channel, which cannot
+establish which node made a measurement.
 
 ### Node autonomy limits
 
@@ -496,19 +511,29 @@ Closed:
   evidence projection, and event-store opening.
 - Validation against live containerd on linux/amd64 and linux/arm64.
 
+- Per-node evidence signing. Every observation carries a detached signature made
+  with the reporting node's enrollment identity key, verified before the evidence
+  reaches the world projection. The signature covers the node id and observation
+  time, and the signer is checked against the node the evidence claims made the
+  measurement, so one enrolled node cannot attest for another.
+- External audit-hash anchoring. Chain heads are witnessed in an append-only file
+  outside the store and checked before the projection is rebuilt, which detects
+  wholesale replacement of a log whose own chain verifies.
+- Container confinement beyond the OCI baseline: a default seccomp profile, and
+  optional AppArmor, non-root user, read-only root, and user namespaces. The
+  profile is host configuration, so an authorized action cannot request weaker
+  confinement.
+- Least-privilege service units with signal handling and graceful shutdown.
+
 Still required:
 
-- External audit-hash anchoring. The chain head is recorded in a backup
-  manifest, which detects truncation of that archive; it is not published
-  anywhere an attacker with write access to both could not also reach.
-- Seccomp/AppArmor policy and a non-root or user-namespace strategy.
 - Gateway snapshot authenticity. The node applies whole snapshots, but the
   gateway does not verify their provenance independently.
 - Secret rotation without workload restart.
-- Per-node evidence signing, so a compromised node cannot misreport what it
-  observed under the controller's own key.
 - Resource and request limits on the agent runtime surface. Operator API
   decoders are already bounded before authentication.
+- Non-root containers by default. The mechanism exists; the default is still the
+  image's own user, because changing it breaks images not written for it.
 - Penetration and sustained-failure testing beyond the verified round trip.
 
 ## Security-review trigger

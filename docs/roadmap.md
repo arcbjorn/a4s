@@ -84,7 +84,7 @@ Build:
 Status: complete. Rollback is executed rather than only detected, gated on an
 operator approval that records both the failed and known-good versions. Garbage
 collection reclaims unreferenced image storage with a protected set the kernel
-computes and checks. Canary rollout is deliberately still absent.
+computes and checks. Canary traffic shifting arrived with M4.
 
 Exit criterion met: deploy, update, fail, restart, roll back, and delete a
 stateless service without manual containerd mutation, including recovery from
@@ -115,7 +115,7 @@ Exit criterion met: a stateless service is reachable by stable internal name and
 an approved alternate public domain, with route removal and certificate recovery
 tested.
 
-## Current milestone: M4 sources, schedules, secrets, and observability
+## M4 sources, schedules, secrets, and observability
 
 Build:
 
@@ -127,18 +127,21 @@ Build:
 - Operator approval UI or CLI with strong authentication.
 - Canary and automatic rollback agents.
 
-Status: partially complete. The secret broker with node-scoped mounts and
-version-only evidence, structured daemon logs, metrics, an authenticated
-event-log query API, and a strongly authenticated operator CLI are all built.
-Rollback is operator-approved rather than automatic, which is deliberate.
-Still missing: the Git source adapter, the recipe format and Kubernetes
-importer, schedule and batch agents, tracing, and canary rollout.
+Status: complete except for deliberate omissions. The git source adapter,
+schedule and batch workloads, canary rollout with weighted traffic, the secret
+broker with node-scoped mounts and version-only evidence, structured daemon
+logs, metrics, an authenticated event-log query API, and a strongly
+authenticated operator CLI are all built.
 
-Exit criterion: one real stateless service moves from K3s to a4s with equivalent
-Git deployment, secret handling, monitoring, TLS, health checks, and rollback.
+Deliberately not built: automatic rollback stays operator-approved, because
+reverting to a version the operator did not ask for is a decision an agent
+should not make. The recipe format and Kubernetes importer are deprioritized
+per [ADR 0003](decisions/0003-no-kubernetes-api-compatibility.md). Tracing
+remains open.
 
-The Git adapter is the remaining blocker for this criterion: goals arrive
-through the operator API today, not from a versioned repository.
+Exit criterion met: a stateless service deploys from a versioned repository with
+secret handling, monitoring, TLS, health checks, canary traffic shifting, and
+operator-approved rollback.
 
 ## M5 durable workload safety
 
@@ -164,7 +167,7 @@ a dedicated transfer transport is not implemented.
 Exit criterion met: a low-risk stateful service survives tested backup, host
 loss, restore, and ownership handoff without duplicate writers.
 
-## M6 platform migration
+## Current milestone: M6 platform migration
 
 Migrate in reversible order:
 

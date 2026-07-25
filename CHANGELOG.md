@@ -33,6 +33,20 @@ stable version and no compatibility guarantee, so everything below is under
   kernel-recomputed worker ceiling.
 - Model-backed diagnosis in `reason`, outside the stdlib-only kernel, with
   deterministic fallback so model availability is never a dependency.
+- Canary rollout with weighted traffic. A goal declares traffic steps; the kernel
+  derives the authorized share from the proportion of ready allocations running
+  the target image, and the gateway applies per-endpoint weights. The share is
+  derived rather than latched, so a new version that stops being measured ready
+  loses its traffic instead of holding it on the strength of an earlier advance.
+- Scheduled and batch workloads: cron schedule, run deadline, required
+  completions, retries, and a concurrency policy. Schedules are a pure function
+  of the observed world's time and always evaluated in UTC, so placement stays
+  deterministic and a daylight-saving transition cannot make a job run twice or
+  not at all.
+- Goals from a versioned git repository. A tracked ref is mirrored bare and every
+  goal document is submitted through the same admission path as the operator API.
+  Nothing is checked out, and one malformed document is reported without stopping
+  the rest of the repository from converging.
 
 ### Server and node
 
@@ -47,6 +61,17 @@ stable version and no compatibility guarantee, so everything below is under
   encryption. `--require-encryption` refuses a peer that will not negotiate.
 - Signed, node-bound action envelopes with short expiry, and a durable
   idempotency ledger keyed on a digest of the authorized work.
+- Evidence signed by the node that measured it, using the identity key it already
+  proves at enrollment, and verified before it advances the world. Two checks
+  carry the boundary: the signature must belong to an enrolled node, and the
+  signer must be the node the evidence claims made the observation, so one
+  enrolled node cannot attest for another. Attestations expire, because replay
+  protection on an action envelope does not cover evidence travelling the other
+  way. `--require-attestation` refuses unattested evidence outright.
+- Container confinement beyond the OCI baseline: a default seccomp profile, plus
+  optional AppArmor, a pinned uid, a read-only root, and user namespaces. The
+  profile is host configuration, so an authorized action cannot request weaker
+  confinement than the node was configured to enforce.
 - Durable desired-state cache and a supervisor that restarts crashed workloads
   during a control-plane outage, bounded by a crash-loop budget.
 - Node-side budget enforcement, a tool-call gate refusing ungranted
@@ -71,6 +96,9 @@ stable version and no compatibility guarantee, so everything below is under
 - Verified backup and restore. Backups use `VACUUM INTO`, are verified
   read-only, and anchor the chain head outside the store to detect truncation.
 - Pure-Go driver, so `CGO_ENABLED=0` cross-builds stay static.
+- Chain heads witnessed in an append-only anchor outside the store, checked before
+  the projection is rebuilt. The hash chain catches an edit; only an outside
+  witness catches replacement of a whole store whose own chain verifies.
 
 ### Operator surface
 
@@ -85,6 +113,9 @@ stable version and no compatibility guarantee, so everything below is under
 - Controller keyset with active, accepted, and retired states, so a fleet
   rotates without a coordinated restart; retiring the active key is refused.
 - Structured logging and in-process metrics with a Prometheus endpoint.
+- systemd units for both daemons with least-privilege hardening, and SIGTERM
+  handling in the node as well as the server, so a service stop unwinds instead
+  of killing a dispatch in progress.
 
 ### Verification
 
@@ -98,6 +129,10 @@ stable version and no compatibility guarantee, so everything below is under
 - Event durability verified by SIGKILLing a writer mid-append across repeated
   trials; no acknowledged event was lost and the chain verified on recovery.
 - The nftables compiler's own output applied to a real Linux kernel.
+- Attestation denial cases driven over the real protocol: unattested, edited after
+  signing, attested by a different enrolled node, and replayed after expiry.
+- The git source exercised against real repositories rather than a fake, including
+  a repository where every goal is malformed.
 - The full round trip verified against live containerd on linux/amd64 and
   linux/arm64, covering allocation networking, the gateway, and durable volumes.
 - CI: race tests, vet, gofmt, `go mod tidy`, Linux and arm64 cross-builds, the
@@ -105,13 +140,22 @@ stable version and no compatibility guarantee, so everything below is under
 - Apache-2.0 license, build-time version stamping, and a release script
   producing checksummed binaries for four platforms.
 
+### Fixed
+
+- An event log holding undecodable event blobs no longer opens cleanly. Opening
+  only checked that the chain head and the row count agreed, which such a store
+  satisfies, so it came up and then failed in whichever caller read records
+  first — a projection rebuild, a backup, or a replay. The chain is now verified
+  at open, since recovery is the normal startup path and a control plane must not
+  come up believing history it cannot read. Found by `FuzzOpen`.
+
 ### Not implemented
 
 - Multi-server consensus or high availability; one server owns the event log.
-- Canary rollout and gradual traffic shifting.
-- Per-node evidence signing and external anchoring of the audit chain.
-- Git source adapter and Kubernetes manifest importer.
+- Kubernetes manifest importer, deprioritized by decision record 0003.
+- Distributed tracing. Structured logs and metrics exist; spans do not.
 - Secret rotation without a workload restart, and a Vault-backed broker.
-- Seccomp/AppArmor selection, user namespaces, and rootless containers.
+- Non-root containers by default. The mechanism exists; the default remains the
+  image's own user, since changing it breaks images not written for it.
 - Direct node-to-node transfer streaming; volumes move through a shared store.
 - IPv6 allocation addressing.
