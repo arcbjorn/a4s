@@ -324,9 +324,9 @@ security system.
   wrong node, expired capability, idempotency-key reuse, replay after node
   restart, stale readiness, complete deletion, and an unapproved public route.
 - CI running race tests, vet, gofmt, `go mod tidy`, Linux and arm64
-  cross-builds, the example simulation, and documentation link checking.
-  Fuzzing is a separate nightly workflow with long per-target windows; the
-  committed seed corpora run with the ordinary tests on every push.
+  cross-builds, the example simulation, and documentation link checking. The
+  committed fuzz seed corpora run with the ordinary tests; fuzz campaigns are
+  run locally rather than on every push.
 - Build-time version, commit, and date stamping, with a release script
   producing checksummed binaries for four platforms.
 - `scripts/check-nftables.sh`, which applies the compiler's own output to a
