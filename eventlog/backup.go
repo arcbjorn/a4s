@@ -1,8 +1,6 @@
 package eventlog
 
 import (
-	"bufio"
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -29,63 +27,86 @@ type BackupManifest struct {
 	// whose tip differs has been truncated or replaced.
 	HeadSequence uint64 `json:"head_sequence"`
 	HeadHash     string `json:"head_hash,omitempty"`
-	// Checksum is the SHA-256 of the archived log bytes, so corruption in
+	// Checksum is the SHA-256 of the archived database, so corruption in
 	// transit or at rest is detected before the file is trusted.
 	Checksum string `json:"checksum"`
-	// Bytes is the archived log size, a cheap first check before hashing.
+	// Bytes is the archived size, a cheap first check before hashing.
 	Bytes int64 `json:"bytes"`
+	// Format names how the archive was written, so a future change to the
+	// backup mechanism can be recognized rather than misread.
+	Format string `json:"format"`
 }
 
 // BackupVersion is the manifest format version.
-const BackupVersion = 1
+const BackupVersion = 2
+
+// backupFormat identifies a SQLite database produced by VACUUM INTO.
+const backupFormat = "sqlite"
 
 const manifestSuffix = ".manifest.json"
 
 // Backup writes a verified copy of the event log to destination.
 //
-// The log is replayed and its chain verified before anything is written, so a
-// backup can never capture a corrupt log and present it as a recovery point.
-// A backup nobody could restore is worse than no backup, because it is trusted.
+// The copy is made with VACUUM INTO, which produces a transactionally
+// consistent database without stopping writers. Copying the file directly
+// would race with WAL checkpointing and could capture a torn state that looks
+// intact; a backup that is trusted and unusable is worse than none.
+//
+// The chain is verified before anything is written, so a backup can never
+// capture a corrupt log and present it as a recovery point.
 func (f *File) Backup(destination string) (BackupManifest, error) {
 	if !filepath.IsAbs(destination) {
 		return BackupManifest{}, fmt.Errorf("backup path must be absolute")
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
-	// Verify the chain before copying. This reuses the same verification the
-	// normal open path performs, so a backup cannot be more permissive than a
-	// recovery.
-	if err := verifyChain(f.records); err != nil {
-		return BackupManifest{}, fmt.Errorf("refusing to back up a corrupt log: %w", err)
+	if f.db == nil {
+		return BackupManifest{}, fmt.Errorf("event log is closed")
 	}
 
-	source, err := os.ReadFile(f.path)
+	records, err := f.readRecords()
 	if err != nil {
-		return BackupManifest{}, fmt.Errorf("read event log: %w", err)
+		return BackupManifest{}, err
 	}
-
-	manifest := BackupManifest{
-		Version:  BackupVersion,
-		TakenAt:  time.Now().UTC(),
-		Records:  len(f.records),
-		Checksum: hashBytes(source),
-		Bytes:    int64(len(source)),
-	}
-	if len(f.records) > 0 {
-		head := f.records[len(f.records)-1]
-		manifest.HeadSequence = head.Sequence
-		manifest.HeadHash = head.Hash
+	if err := verifyChain(records); err != nil {
+		return BackupManifest{}, fmt.Errorf("refusing to back up a corrupt log: %w", err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
 		return BackupManifest{}, fmt.Errorf("create backup directory: %w", err)
 	}
+	// VACUUM INTO refuses to overwrite, so a stale archive is removed first.
+	if err := os.Remove(destination); err != nil && !os.IsNotExist(err) {
+		return BackupManifest{}, fmt.Errorf("clear previous backup: %w", err)
+	}
+	// The destination cannot be a bound parameter here, so it is quoted.
+	if _, err := f.db.Exec("VACUUM INTO " + quoteLiteral(destination)); err != nil {
+		return BackupManifest{}, fmt.Errorf("write backup: %w", err)
+	}
 	// The log is 0600 because it is authoritative control-plane history; a copy
 	// of it deserves exactly the same protection.
-	if err := writeFileAtomic(destination, source, 0o600); err != nil {
-		return BackupManifest{}, err
+	if err := os.Chmod(destination, 0o600); err != nil {
+		return BackupManifest{}, fmt.Errorf("secure backup permissions: %w", err)
 	}
+
+	payload, err := os.ReadFile(destination)
+	if err != nil {
+		return BackupManifest{}, fmt.Errorf("read backup: %w", err)
+	}
+	manifest := BackupManifest{
+		Version:  BackupVersion,
+		Format:   backupFormat,
+		TakenAt:  time.Now().UTC(),
+		Records:  len(records),
+		Checksum: hashBytes(payload),
+		Bytes:    int64(len(payload)),
+	}
+	if len(records) > 0 {
+		head := records[len(records)-1]
+		manifest.HeadSequence = head.Sequence
+		manifest.HeadHash = head.Hash
+	}
+
 	encoded, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return BackupManifest{}, fmt.Errorf("encode manifest: %w", err)
@@ -118,9 +139,10 @@ func VerifyBackup(archive string) (BackupManifest, error) {
 		return BackupManifest{}, fmt.Errorf("backup checksum mismatch: the archive is corrupt")
 	}
 
-	// Decoding the records proves the archive is a usable log, not merely bytes
-	// matching a checksum.
-	records, err := decodeRecords(payload)
+	// Opening the archive proves it is a usable database, not merely bytes
+	// matching a checksum, and re-deriving the chain proves it is a usable
+	// history.
+	records, err := recordsIn(archive)
 	if err != nil {
 		return BackupManifest{}, fmt.Errorf("backup is not a readable event log: %w", err)
 	}
@@ -142,6 +164,27 @@ func VerifyBackup(archive string) (BackupManifest, error) {
 		}
 	}
 	return manifest, nil
+}
+
+// recordsIn opens an archive read-only and returns its records.
+//
+// Read-only is load-bearing, not a precaution. Opening a database normally lets
+// SQLite change the journal mode and checkpoint on close, which rewrites bytes
+// in the file. That would make verifying a backup alter it, so a second verify
+// of an untouched archive would report a checksum mismatch and an operator
+// would be told their only recovery point was corrupt.
+func recordsIn(archive string) ([]Record, error) {
+	db, err := openReadOnly(archive)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	store := &File{path: archive, db: db}
+	if err := store.loadHead(); err != nil {
+		return nil, err
+	}
+	return store.readRecords()
 }
 
 // Restore installs a verified backup at path.
@@ -172,6 +215,12 @@ func Restore(archive, path string) (BackupManifest, error) {
 		if err := os.Rename(path, aside); err != nil {
 			return BackupManifest{}, fmt.Errorf("preserve existing log: %w", err)
 		}
+		// WAL and shared-memory sidecars belong to the log that was moved
+		// aside. Leaving them would let SQLite recover the old log's tail into
+		// the restored database.
+		for _, suffix := range []string{"-wal", "-shm"} {
+			_ = os.Rename(path+suffix, aside+suffix)
+		}
 	}
 	if err := writeFileAtomic(path, payload, 0o600); err != nil {
 		return BackupManifest{}, err
@@ -189,7 +238,9 @@ func readManifest(archive string) (BackupManifest, error) {
 		return BackupManifest{}, fmt.Errorf("decode backup manifest: %w", err)
 	}
 	if manifest.Version != BackupVersion {
-		return BackupManifest{}, fmt.Errorf("unsupported backup version %d", manifest.Version)
+		return BackupManifest{}, fmt.Errorf(
+			"unsupported backup version %d: this build writes and reads version %d",
+			manifest.Version, BackupVersion)
 	}
 	return manifest, nil
 }
@@ -234,56 +285,6 @@ func writeFileAtomic(path string, payload []byte, mode os.FileMode) error {
 	if handle, err := os.Open(directory); err == nil {
 		_ = handle.Sync()
 		handle.Close()
-	}
-	return nil
-}
-
-// decodeRecords parses a log payload into records without verifying the chain.
-func decodeRecords(payload []byte) ([]Record, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(payload))
-	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
-	var records []Record
-	line := 0
-	for scanner.Scan() {
-		line++
-		raw := scanner.Bytes()
-		if len(raw) == 0 {
-			continue
-		}
-		var record Record
-		if err := json.Unmarshal(raw, &record); err != nil {
-			return nil, fmt.Errorf("decode line %d: %w", line, err)
-		}
-		records = append(records, record)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read log: %w", err)
-	}
-	return records, nil
-}
-
-// verifyChain re-derives every hash and checks the links between records.
-//
-// This applies the same rules the open path enforces, so a backup or restore
-// can never accept a log that a normal recovery would reject.
-func verifyChain(records []Record) error {
-	previous := ""
-	for index, record := range records {
-		line := index + 1
-		if record.Sequence != uint64(line) || record.Event.Sequence != record.Sequence {
-			return fmt.Errorf("record %d has invalid sequence", line)
-		}
-		if record.PreviousHash != previous {
-			return fmt.Errorf("record %d breaks the hash chain", line)
-		}
-		hash, err := eventHash(previous, record.Event)
-		if err != nil {
-			return err
-		}
-		if hash != record.Hash {
-			return fmt.Errorf("record %d has invalid hash", line)
-		}
-		previous = record.Hash
 	}
 	return nil
 }

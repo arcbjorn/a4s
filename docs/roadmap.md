@@ -66,8 +66,9 @@ Build:
 - Recovery for dispatched actions without completion events.
 
 Status: built and tested, pending hardware validation. The event log is a
-hash-chained file rather than SQLite, which meets the durability and rebuild
-requirement the milestone actually stated. Enrollment now agrees session keys
+SQLite database in WAL mode with a hash chain retained on top of it, so the
+milestone's storage requirement is met and tamper detection is kept. Durability
+is verified by killing a writer mid-append rather than asserted. Enrollment now agrees session keys
 inside the signed handshake, so the transport is encrypted rather than assuming
 a private tailnet beneath it. Controller keys rotate through an
 active/accepted/retired keyset without a fleet restart.

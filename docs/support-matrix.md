@@ -15,6 +15,8 @@ run by hand; it does not imply production readiness. See
 | CNI plugins | 1.4 or later | The node writes a `bridge` network configuration with `host-local` IPAM and invokes the plugin binaries in `--cni-bin`. |
 | nftables | 1.0 or later | Only when `--nft` is set. The compiled ruleset uses `inet` tables and `ct state` matching. |
 | Caddy | 2.7 or later | Only when `--gateway-admin` is set. The node drives the admin API. |
+| SQLite | embedded 3.53 | Provided by `modernc.org/sqlite`, a pure-Go implementation. No system SQLite is used and no CGO is required. |
+| libSQL / Turso | compatible | The schema and every query the store issues have been applied to a real libSQL server. Moving to Turso is a driver and DSN change, not a schema rewrite. |
 
 ## Platforms
 
@@ -61,3 +63,6 @@ a4s version --json
   assume IPv4.
 - Rootless or user-namespaced containers.
 - containerd v1, Docker, or Podman as the runtime.
+- Sharing one event log between two servers. SQLite serializes writers and the
+  chain-head guard turns a lost race into a refused append rather than a fork,
+  but a4s has no leader election: one server owns its log.

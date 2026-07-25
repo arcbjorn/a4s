@@ -41,6 +41,10 @@ release or compatibility guarantee yet.
 
 ### Fixed
 
+- Verifying a backup no longer alters it. Opening the archive let SQLite
+  checkpoint and rewrite bytes, so a second verification of an untouched
+  backup reported a checksum mismatch and told the operator their only
+  recovery point was corrupt. Archives are now opened strictly read-only.
 - The handshake no longer stalls for its full timeout before establishing a
   session. Checking for buffered data with a blocking read meant every
   enrollment waited out the deadline; over a real socket it now completes in
@@ -48,6 +52,17 @@ release or compatibility guarantee yet.
 
 ### Changed
 
+- The event log is a SQLite database in WAL mode with `synchronous=FULL`,
+  replacing the newline-delimited file. The hash chain is retained on top of it
+  rather than replaced: SQLite establishes that rows are the ones committed,
+  the chain establishes that they are the ones a4s wrote. Chain invariants are
+  now also enforced by the schema, and a record and the chain head advance in
+  one transaction with a conditional head update, so two writers cannot fork
+  history. An existing log is migrated automatically on first open with the
+  original file preserved, so the upgrade is reversible. The driver is pure Go,
+  so `CGO_ENABLED=0` cross-builds still produce static binaries.
+- Backups are taken with `VACUUM INTO` rather than copying a live file, which
+  is transactionally consistent without stopping writers.
 - `a4s version` reports the build commit, date, platform, and whether the tree
   was modified, from link-time stamps or the toolchain's own VCS metadata.
 

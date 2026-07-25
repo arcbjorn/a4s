@@ -173,7 +173,32 @@ been: none of it has run against a real containerd on real hardware.
 
 ### Event persistence
 
-- Newline-delimited event records.
+- SQLite in WAL mode with `synchronous=FULL`, so every acknowledged event is
+  fsynced before the append returns. Verified by SIGKILLing a writer mid-append
+  across repeated trials: no acknowledged event was lost and the chain verified
+  on every recovery.
+- A versioned schema with migrations applied transactionally. A store written
+  by a newer build is refused rather than interpreted through a schema that no
+  longer describes it.
+- The hash chain is retained on top of the database rather than replaced by it.
+  SQLite guarantees the rows are the ones that were committed; only the chain
+  establishes that they are the ones a4s wrote, which is what catches an edit
+  made through `sqlite3` directly.
+- Chain invariants enforced by the schema: sequence is the primary key, hashes
+  are unique, and CHECK constraints reject a malformed link. A record and the
+  chain head advance in one transaction, and the head update is conditional on
+  the sequence the append observed, so two writers cannot fork history.
+- Automatic migration of an existing newline-delimited log on first open. The
+  legacy file is preserved, so rolling back to the previous build still finds
+  the history it expects. Verified against a log written by the previous
+  binary, in both directions.
+- Backups taken with `VACUUM INTO`, which is transactionally consistent without
+  stopping writers, and verified read-only so checking a recovery point cannot
+  alter it.
+- Pure-Go driver, so `CGO_ENABLED=0` cross-builds still produce statically
+  linked binaries for linux/amd64 and linux/arm64.
+- Newline-delimited event records, in the legacy format still readable for
+  migration.
 - Monotonic sequence validation.
 - SHA-256 hash chaining and replay-time corruption detection.
 - Append followed by file sync.
@@ -303,8 +328,6 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 ## Not implemented
 
 - Multi-server consensus or high availability. One server owns the event log.
-- SQLite event storage. The world projection is rebuilt from a hash-chained
-  file event log, which satisfies the same durability and rebuild requirement.
 - Canary rollout. Rolling replacement, the disruption budget, known-good
   rollback detection, and operator-approved rollback execution all exist;
   gradual traffic shifting does not.

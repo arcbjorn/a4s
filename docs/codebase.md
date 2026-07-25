@@ -65,12 +65,18 @@ reason -> control -> Go standard library only
 
 ### `eventlog`
 
-`eventlog.File` implements `control.EventSink`. It appends newline-delimited,
-hash-chained records and validates them on replay.
+`eventlog.File` implements `control.EventSink`. It appends hash-chained records
+to SQLite in WAL mode with `synchronous=FULL`, and validates the chain on
+replay. A legacy newline-delimited log is imported automatically on first open
+and the original file is preserved, so an upgrade can be rolled back.
 
-It is currently an audit/event durability primitive, not a complete server
-database. World projections, observation expiry, external hash anchoring,
-compaction, and SQLite are future work.
+The chain is kept on top of the database rather than replaced by it: SQLite
+establishes that the rows are the ones committed, and the chain establishes
+that they are the ones a4s wrote.
+
+It is an event durability primitive rather than a complete server database.
+World projections are rebuilt from it in `control`; external hash anchoring and
+compaction remain future work.
 
 Dependency direction:
 
