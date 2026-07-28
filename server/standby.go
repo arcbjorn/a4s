@@ -33,10 +33,17 @@ type Standby struct {
 
 // OpenStandby opens a follower over its own copy of the event log.
 //
-// The anchor is required rather than optional. Without an outside witness the
+// The anchor is required rather than optional, and it must be the primary's
+// anchor on storage both machines can reach. Without an outside witness the
 // standby has no way to tell "I am fully caught up" from "I am missing the last
 // hour", because both look like a valid chain that simply ends where it ends.
 // Promotion would then be a guess, and this type exists to remove the guess.
+//
+// A replica-local anchor satisfies every check trivially and protects nothing:
+// it would witness whatever the replica last ingested, so a copy an hour behind
+// would agree with itself and promote. That is the failure this is here to
+// prevent, so the anchor being shared is a deployment requirement rather than a
+// detail.
 //
 // The config must carry the same Base world and operator keys as the primary.
 // Base holds what the log cannot: node inventory, capacity, and any approvals
@@ -87,19 +94,14 @@ func (s *Standby) Ingest(records []eventlog.Record) (int, error) {
 	if s.log == nil {
 		return 0, fmt.Errorf("standby is closed")
 	}
-	appended, err := s.log.Ingest(records)
-	if err != nil {
-		return appended, err
-	}
-	// Witness what was accepted. A standby that never anchored would be unable
-	// to detect its own replacement, which is the same gap the primary's anchor
-	// closes for the primary.
-	if head := s.log.Head(); head.Hash != "" {
-		if err := s.anchor.Witness(head.Sequence, head.Hash); err != nil {
-			return appended, fmt.Errorf("witness ingested head: %w", err)
-		}
-	}
-	return appended, nil
+	// The follower reads the anchor and never writes it.
+	//
+	// Witnessing its own head here would make the anchor agree with the replica
+	// by construction, and an anchor that only ever confirms what the replica
+	// already knows cannot answer the one question promotion turns on: is this
+	// copy behind the real head. The witness has to come from the primary, which
+	// is why the anchor must be storage both can reach.
+	return s.log.Ingest(records)
 }
 
 // Head reports the follower's current chain tip.
