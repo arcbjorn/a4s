@@ -121,7 +121,22 @@ and nothing has been through sustained-failure or penetration testing. See
   target may be created or started again, and observed readiness resets it.
   Removal is never blocked, so backoff paces repair instead of preventing it.
   This is what stops a goal re-proposing the same failing placement every round.
-- Node cordon and evacuation. Cordoning is separate from health, because health
+- Diagnosis of the safeguards themselves. Each of the controls above stops work
+  on purpose, and a goal stopped on purpose looks exactly like a broken one. The
+  deterministic diagnoser reports which targets are waiting out a backoff, which
+  nodes are cordoned, when nothing is schedulable at all, and when the cluster is
+  pacing disruption, with a named next step for every refusal they produce. The
+  redacted model context carries the same facts, so a model-backed explanation
+  is not blind to them.
+- `a4s status` reports schedulable nodes against total, targets in backoff, and
+  recent disruptions, and the same counts are exposed as metrics. A brake nobody
+  can see is indistinguishable from a fault.
+- Node cordon and evacuation, for both the unplanned and the planned case. The
+  remediation agent cordons a node it has measured as failing; `a4s cordon`
+  covers maintenance, where nothing is wrong yet and nothing will observe a
+  reason to stop scheduling. An operator cordon is authenticated by the request
+  signature, recorded in durable history against whoever issued it, and survives
+  restart. Cordoning is separate from health, because health
   is measured and clears itself while a cordon is a decision that stands.
   Draining has no action of its own: it is a cordon plus ordinary stop and
   delete, so evacuation passes through the same authorization, disruption

@@ -19,6 +19,14 @@ stable version and no compatibility guarantee, so everything below is under
   consecutive failures and resets on observed readiness. All derived from
   recorded evidence, so they survive restart. Repairs and removals are never
   blocked by them, only paced.
+- Diagnosis of the safeguards. Each control above stops work deliberately, so the
+  diagnoser reports backoffs, cordoned nodes, an unschedulable cluster, and
+  disruption pacing, with a named next step for every refusal they produce. The
+  redacted model context carries the same facts so a model-backed explanation is
+  not blind to them. `a4s status` and the metrics endpoint report the same counts.
+- `a4s cordon` for planned maintenance, authenticated by the request signature,
+  recorded against the operator who issued it, and durable across restart. It
+  reports what still runs on the node and names durable data separately.
 - Node cordon and evacuation. Draining is a cordon plus ordinary stop and delete,
   so it inherits every gate already on removal, including the operator approval
   required before durable data is destroyed. Cordon settles in the control plane,
@@ -133,7 +141,7 @@ stable version and no compatibility guarantee, so everything below is under
 
 - `validate`, `simulate`, `node`, `server`, `keygen`, `keys`, `seal`, `attest`,
   `plan`, `explain`, `diagnose`, `approve`, `history`, `backup`, `restore`,
-  `submit`, `status`, `events`, and `version`.
+  `submit`, `status`, `events`, `cordon`, and `version`.
 - Signed operator approvals for the gated decisions, with mandatory expiry
   checked against observation time and appended to durable history before the
   projection updates. Revocation is authenticated the same way granting is.

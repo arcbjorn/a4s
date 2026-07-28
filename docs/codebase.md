@@ -104,6 +104,7 @@ serves the authenticated operator API.
 | `apiauth.go` | Signed-envelope verification and the single-use nonce ledger |
 | `apibody.go` | Carries the pre-read body to handlers, since the signature covers its digest |
 | `standby.go` | Follower log ingestion and the anchored promotion gate |
+| `cordon_test.go` | Operator cordon durability, attribution, and safeguard counts |
 | `approval_test.go` | Durable approval admission and restart survival |
 
 ```text
