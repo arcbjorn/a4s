@@ -45,6 +45,14 @@ go run ./cmd/a4s simulate --file examples/web-service.json
 The simulation should finish with `goal.achieved` at world revision 7, with one
 allocation, one published zone, and one route. It mutates only memory.
 
+To see replicas spread across failure domains, run the topology example. It
+declares three replicas with at most one per domain across four nodes, two of
+which share a rack, and finishes with one replica in each of the three racks:
+
+```bash
+go run ./cmd/a4s simulate --file examples/spread-service.json
+```
+
 Run the race suite before handing off a change:
 
 ```bash

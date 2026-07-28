@@ -10,7 +10,29 @@ stable version and no compatibility guarantee, so everything below is under
 
 - v1alpha1 vocabulary: goal, world, agent, proposal, action, policy, evidence,
   and event.
-- Deterministic placement, network, rollout, and storage agents.
+- Deterministic placement, network, rollout, storage, and remediation agents.
+- Failure domains and per-workload spread ceilings, enforced by the kernel and
+  selected against by the placement agent. A node that declares no domain is its
+  own, so spreading works before any topology has been described.
+- A cluster-wide disruption governor: a budget over a window, one failure domain
+  under disruption at a time, and per-target failure backoff that escalates on
+  consecutive failures and resets on observed readiness. All derived from
+  recorded evidence, so they survive restart. Repairs and removals are never
+  blocked by them, only paced.
+- Node cordon and evacuation. Draining is a cordon plus ordinary stop and delete,
+  so it inherits every gate already on removal, including the operator approval
+  required before durable data is destroyed. Cordon settles in the control plane,
+  since the usual reason to cordon a node is that it stopped answering.
+- A remediation agent walking a fixed ladder cheapest-first: cordon an unhealthy
+  node, retire an allocation holding its replica slot, evacuate a cordoned node
+  one allocation at a time. It may subtract but never add, and it stops after a
+  bounded number of attempts rather than repairing forever.
+- Image provenance as kernel policy: signed build attestations bound to a digest,
+  verified against trusted signers before a pull is authorized, produced by
+  `a4s attest`. A supplied attestation is always verified, so a forged one is
+  never better than none.
+- Cluster-wide ceilings on compute, allocation count, and agent spend, so a
+  runaway control loop has a maximum cost.
 - Per-agent capability grants, revision-bound proposals, and whole-proposal
   simulation before mutation.
 - Policy: node health, placement labels, resource capacity, digest-pinned
@@ -55,6 +77,10 @@ stable version and no compatibility guarantee, so everything below is under
 
 - `a4s server`: durable event log, world projection rebuilt on every start,
   shared lease manager, and goal admission.
+- An anchored warm standby. The follower re-derives every ingested hash against
+  its own chain rather than copying the primary's, and refuses to promote unless
+  it verifies and is at or beyond the externally witnessed head. Not consensus:
+  it makes a failover decision safe rather than making it automatically.
 - Authenticated operator HTTP API. Every request carries an Ed25519-signed
   envelope bound to method, path, and body digest, made single-use by a nonce
   ledger and bounded by a five-minute lifetime. Reads are authenticated; only
@@ -105,9 +131,9 @@ stable version and no compatibility guarantee, so everything below is under
 
 ### Operator surface
 
-- `validate`, `simulate`, `node`, `server`, `keygen`, `keys`, `seal`, `plan`,
-  `explain`, `diagnose`, `approve`, `history`, `backup`, `restore`, `submit`,
-  `status`, `events`, and `version`.
+- `validate`, `simulate`, `node`, `server`, `keygen`, `keys`, `seal`, `attest`,
+  `plan`, `explain`, `diagnose`, `approve`, `history`, `backup`, `restore`,
+  `submit`, `status`, `events`, and `version`.
 - Signed operator approvals for the gated decisions, with mandatory expiry
   checked against observation time and appended to durable history before the
   projection updates. Revocation is authenticated the same way granting is.

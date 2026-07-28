@@ -1,0 +1,108 @@
+{
+  "goal": {
+    "api_version": "a4s.io/v1alpha1",
+    "id": "homepage-spread",
+    "objective": "Keep three homepage replicas reachable, never more than one per rack, so losing a rack cannot take the service down.",
+    "workload": {
+      "name": "homepage",
+      "image": "ghcr.io/arcbjorn/homepage@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "replicas": 3,
+      "port": 8080,
+      "resources": {
+        "cpu_millis": 100,
+        "memory_mb": 128
+      },
+      "placement": {
+        "max_per_domain": 1
+      }
+    },
+    "route": {
+      "host": "homepage.example.com",
+      "port": 443,
+      "exposure": "public"
+    },
+    "constraints": {
+      "required_labels": {
+        "pool": "base"
+      }
+    }
+  },
+  "world": {
+    "revision": 0,
+    "approvals": {
+      "approve-homepage-spread": {
+        "id": "approve-homepage-spread",
+        "goal_id": "homepage-spread",
+        "scope": "public-route",
+        "issued_by": "operator:arc",
+        "granted": true
+      }
+    },
+    "nodes": {
+      "rack1-a": {
+        "id": "rack1-a",
+        "domain": "rack-1",
+        "labels": {
+          "pool": "base"
+        },
+        "capacity": {
+          "cpu_millis": 4000,
+          "memory_mb": 16384
+        },
+        "used": {
+          "cpu_millis": 0,
+          "memory_mb": 0
+        },
+        "healthy": true
+      },
+      "rack1-b": {
+        "id": "rack1-b",
+        "domain": "rack-1",
+        "labels": {
+          "pool": "base"
+        },
+        "capacity": {
+          "cpu_millis": 4000,
+          "memory_mb": 16384
+        },
+        "used": {
+          "cpu_millis": 0,
+          "memory_mb": 0
+        },
+        "healthy": true
+      },
+      "rack2-a": {
+        "id": "rack2-a",
+        "domain": "rack-2",
+        "labels": {
+          "pool": "base"
+        },
+        "capacity": {
+          "cpu_millis": 4000,
+          "memory_mb": 16384
+        },
+        "used": {
+          "cpu_millis": 0,
+          "memory_mb": 0
+        },
+        "healthy": true
+      },
+      "rack3-a": {
+        "id": "rack3-a",
+        "domain": "rack-3",
+        "labels": {
+          "pool": "base"
+        },
+        "capacity": {
+          "cpu_millis": 4000,
+          "memory_mb": 16384
+        },
+        "used": {
+          "cpu_millis": 0,
+          "memory_mb": 0
+        },
+        "healthy": true
+      }
+    }
+  }
+}

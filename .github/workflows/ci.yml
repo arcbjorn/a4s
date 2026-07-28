@@ -81,6 +81,10 @@ jobs:
         run: go run ./cmd/a4s validate --file examples/web-service.json
       - name: simulate example
         run: go run ./cmd/a4s simulate --file examples/web-service.json
+      - name: validate spread example
+        run: go run ./cmd/a4s validate --file examples/spread-service.json
+      - name: simulate spread example
+        run: go run ./cmd/a4s simulate --file examples/spread-service.json
 
   docs:
     name: documentation links
