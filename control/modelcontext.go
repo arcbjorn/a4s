@@ -67,6 +67,14 @@ type ModelNode struct {
 	// Labels are operator-assigned and appear in constraints, so a diagnosis
 	// needs them to explain a placement refusal.
 	Labels map[string]string `json:"labels,omitempty"`
+	// Domain is the failure domain this node shares with others. It is the same
+	// class of fact as a label, operator-assigned topology, and a placement
+	// refused by a spread ceiling cannot be explained without it.
+	Domain string `json:"domain,omitempty"`
+	// Cordoned reports a node deliberately kept out of placement. The reason
+	// text is not copied: it is free-form operator prose, and the fact that a
+	// node is out of service is what explains the refusal.
+	Cordoned bool `json:"cordoned,omitempty"`
 	// ReachableProviders lists model providers this node can currently reach.
 	ReachableProviders []string `json:"reachable_providers,omitempty"`
 }
@@ -83,6 +91,13 @@ type ModelAllocation struct {
 	// Exhausted reports an agent that spent its ceiling, without reporting how
 	// much it spent. The fact explains the failure; the amount does not.
 	Exhausted bool `json:"exhausted,omitempty"`
+	// Failures is the consecutive failure count behind this target's backoff. A
+	// count is exactly the kind of fact this context is allowed to carry, and
+	// without it a model cannot tell a workload that is waiting from one that
+	// is stuck.
+	Failures int `json:"failures,omitempty"`
+	// InBackoff reports that the target may not be recreated yet.
+	InBackoff bool `json:"in_backoff,omitempty"`
 }
 
 // ModelEvent is one history entry reduced to what explains an outcome.
@@ -150,6 +165,7 @@ func BuildModelContext(goal Goal, world World, events []Event) ModelContext {
 			ID: node.ID, Healthy: node.Healthy,
 			FreeCPUMillis: node.Capacity.CPUMillis - node.Used.CPUMillis,
 			FreeMemoryMB:  node.Capacity.MemoryMB - node.Used.MemoryMB,
+			Domain:        node.FailureDomain(), Cordoned: node.Cordoned,
 		}
 		if len(node.Labels) > 0 {
 			entry.Labels = make(map[string]string, len(node.Labels))
@@ -178,12 +194,17 @@ func BuildModelContext(goal Goal, world World, events []Event) ModelContext {
 			// its business, and including them would widen exposure for nothing.
 			continue
 		}
-		context.Allocations = append(context.Allocations, ModelAllocation{
+		entry := ModelAllocation{
 			ID: allocation.ID, Node: allocation.Node,
 			Phase: string(allocation.Phase), Ready: allocation.ReadyAt(now),
 			Restarts: allocation.Restarts, ExitCode: allocation.ExitCode,
 			Draining: allocation.Draining, Exhausted: allocation.Exhausted(),
-		})
+		}
+		if state := world.Backoff[allocation.ID]; state != nil {
+			entry.Failures = state.Failures
+			entry.InBackoff = state.Active(now)
+		}
+		context.Allocations = append(context.Allocations, entry)
 	}
 
 	relevant := make([]Event, 0, len(events))

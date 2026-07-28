@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Diagnosis explains why a goal is not converging, synthesized from recorded
@@ -53,6 +54,11 @@ func (LogDiagnoser) Diagnose(goalID string, events []Event, world World) Diagnos
 		dispatched   = make(map[string]Event)
 		completed    = make(map[string]bool)
 		unreadyProbe []Event
+		// touched is this goal's footprint: every target it has acted on. The
+		// governor's state is keyed by target and is cluster-wide, so without a
+		// footprint a diagnosis would report another goal's backoff as if it
+		// were this one's.
+		touched = make(map[string]bool)
 	)
 	for _, event := range events {
 		if event.GoalID != goalID {
@@ -68,6 +74,7 @@ func (LogDiagnoser) Diagnose(goalID string, events []Event, world World) Diagnos
 			blockages, denials, unreadyProbe = nil, nil, nil
 			dispatched = make(map[string]Event)
 			completed = make(map[string]bool)
+			touched = make(map[string]bool)
 		case EventGoalBlocked:
 			diagnosis.Converged = false
 			blockages = append(blockages, event)
@@ -75,6 +82,9 @@ func (LogDiagnoser) Diagnose(goalID string, events []Event, world World) Diagnos
 			denials = append(denials, event)
 		case EventActionDispatched:
 			dispatched[event.ActionID] = event
+			if event.Target != "" {
+				touched[event.Target] = true
+			}
 		case EventActionCompleted:
 			completed[event.ActionID] = true
 		case EventObservationRecorded:
@@ -151,6 +161,13 @@ func (LogDiagnoser) Diagnose(goalID string, events []Event, world World) Diagnos
 		}
 	}
 
+	// The autonomy safeguards each stop a goal on purpose, and a goal stopped on
+	// purpose looks exactly like one that is broken unless the diagnosis says
+	// which. These findings come from the world rather than from a message,
+	// because the reason a goal is not progressing right now may be a state it
+	// is waiting out rather than anything that was last logged.
+	diagnosis.Findings = append(diagnosis.Findings, governorFindings(world, touched)...)
+
 	if len(unreadyProbe) > 0 {
 		targets := make([]string, 0, len(unreadyProbe))
 		for _, event := range unreadyProbe {
@@ -190,6 +207,89 @@ func (LogDiagnoser) Diagnose(goalID string, events []Event, world World) Diagnos
 	return diagnosis
 }
 
+// governorFindings explains the states that hold a goal back deliberately.
+//
+// Each of these is a safeguard doing its job, which is exactly why they need
+// explaining: a cluster that is pacing itself and a cluster that is broken both
+// present as a goal that stopped moving, and an operator who cannot tell them
+// apart will either wait on a real failure or start fixing a working brake.
+func governorFindings(world World, touched map[string]bool) []Finding {
+	var findings []Finding
+
+	// Targets waiting out a failure backoff. Reported with the count, because
+	// "failed twice" and "failed nine times" call for different responses.
+	var waiting []string
+	now := world.Now()
+	for target := range touched {
+		state := world.Backoff[target]
+		if !state.Active(now) {
+			continue
+		}
+		waiting = append(waiting, fmt.Sprintf("%s (%d consecutive failures, retryable at %s)",
+			target, state.Failures, state.Until.UTC().Format(time.RFC3339)))
+	}
+	if len(waiting) > 0 {
+		sort.Strings(waiting)
+		findings = append(findings, Finding{
+			Cause: "targets are waiting out a failure backoff",
+			Detail: "these failed repeatedly and may not be recreated yet; the delay grows " +
+				"with consecutive failures and resets when one is observed ready",
+			Targets: waiting,
+		})
+	}
+
+	// Nodes taken out of service. If nothing is left to place on, that is the
+	// whole answer and no other finding will be more useful.
+	var cordoned []string
+	schedulable := 0
+	for id, node := range world.Nodes {
+		if node.Schedulable() {
+			schedulable++
+		}
+		if node.Cordoned {
+			reason := node.CordonReason
+			if reason == "" {
+				reason = "no reason recorded"
+			}
+			cordoned = append(cordoned, fmt.Sprintf("%s (%s)", id, reason))
+		}
+	}
+	sort.Strings(cordoned)
+	switch {
+	case len(world.Nodes) > 0 && schedulable == 0:
+		findings = append(findings, Finding{
+			Cause: "no node can accept work",
+			Detail: "every node is unhealthy or cordoned, so nothing can be placed " +
+				"anywhere until one is restored or uncordoned",
+			Targets: cordoned,
+		})
+	case len(cordoned) > 0:
+		findings = append(findings, Finding{
+			Cause:   "nodes are cordoned",
+			Detail:  "these hold existing work but will not accept new allocations",
+			Targets: cordoned,
+		})
+	}
+
+	// Recent disruption is context rather than a cause on its own: it explains
+	// a refusal an operator has already seen, and explains slowness they have
+	// not.
+	if recent := RecentDisruptions(world, now, DefaultDisruptionWindow); len(recent) > 0 {
+		domains := make(map[string]bool, len(recent))
+		for _, disruption := range recent {
+			domains[disruption.Domain] = true
+		}
+		findings = append(findings, Finding{
+			Cause: "the cluster is pacing disruption",
+			Detail: fmt.Sprintf(
+				"%d disruptive actions across %d failure domains in the last %s; "+
+					"the budget and the one-domain-at-a-time rule slow further changes on purpose",
+				len(recent), len(domains), DefaultDisruptionWindow),
+		})
+	}
+	return findings
+}
+
 // suggestFor proposes a next step for a blockage whose cause is recognizable.
 // It deliberately suggests rather than acts: every suggestion here would change
 // operator intent or require authority the diagnoser does not hold.
@@ -210,6 +310,32 @@ func suggestFor(message string, world World) string {
 		return capacitySuggestion(world)
 	case strings.Contains(message, "not connected"):
 		return "start the node daemon and confirm it enrolls with the server"
+
+	// The autonomy safeguards. Each names the specific knob, because "the
+	// kernel refused it" sends an operator looking in the wrong place.
+	// The failure-domain family is ordered most specific first: every message
+	// below mentions a failure domain, so a generic match placed earlier would
+	// shadow all of them and give the wrong next step for the right cause.
+	case strings.Contains(message, "hold only"):
+		return "add a failure domain, raise max_per_domain, or lower the replica count"
+	case strings.Contains(message, "failure domains at once"):
+		return "this is a proposing-agent bug: disruptive actions must name one failure domain"
+	case strings.Contains(message, "was disrupted within the last"):
+		return "wait out the cooldown; it exists so one domain's disruption is observed before the next"
+	case strings.Contains(message, "failure domain"):
+		return "add a node in another failure domain, or raise the workload's max_per_domain"
+	case strings.Contains(message, "disruption budget exhausted"):
+		return "wait for the window to pass; raise MaxDisruptionsPerWindow only if this rate is intended"
+	case strings.Contains(message, "is in backoff"):
+		return "fix why the target keeps failing; the delay clears when it is observed ready"
+	case strings.Contains(message, "is cordoned"):
+		return "uncordon the node, or let placement choose another once one is available"
+	case strings.Contains(message, "provenance attestation"):
+		return "sign the image with a trusted builder key using `a4s attest` and attach it to the goal"
+	case strings.Contains(message, "image provenance"):
+		return "the attached attestation did not verify; re-sign the exact digest with a trusted key"
+	case strings.Contains(message, "ceiling reached"):
+		return "raise the cluster ceiling, or release commitment by removing work that is no longer needed"
 	default:
 		return ""
 	}
