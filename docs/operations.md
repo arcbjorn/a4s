@@ -305,6 +305,50 @@ repeat returns the recorded evidence. If the envelope has expired, observe
 containerd state and let the server reissue rather than fabricating an envelope.
 Never assume failure solely from a missing completion event.
 
+### Nothing is being placed and no action is failing
+
+Check `a4s status` first. It prints a `holding back:` line whenever a safeguard
+is deliberately slowing or stopping the cluster, and prints nothing extra when
+none is. The line reports schedulable nodes against total, targets in backoff,
+and disruptions inside the governor's window.
+
+These states stop work on purpose, so none of them logs an error:
+
+- **Nodes cordoned.** New allocations will not land there. `a4s cordon --node ID
+  --undo` returns one to service. If no node is schedulable, nothing can be
+  placed anywhere.
+- **Targets in backoff.** A target that failed repeatedly may not be recreated
+  until its delay passes. The delay grows with consecutive failures and clears
+  when the target is observed ready, so fix the cause rather than waiting it
+  out. Removal is never blocked.
+- **Disruption pacing.** Cross-domain change is serialized and rate-limited.
+  A rollout crossing failure domains advances no faster than the cooldown.
+
+`a4s diagnose --goal ID` names whichever of these applies and suggests the next
+step. Raise `MaxDisruptionsPerWindow` only if the observed rate is intended;
+it is a governor, and a cluster that regularly exhausts it is changing faster
+than it can observe the results.
+
+### Planned node maintenance
+
+Cordon the node, then let the remediation agent drain it:
+
+```bash
+a4s cordon --node base --reason "replacing a disk" \
+  --server http://127.0.0.1:8443 --key-id ID --operator-key /path
+```
+
+The command reports what is still running and names anything holding durable
+data separately. Stateless allocations are moved automatically, one at a time,
+subject to the availability floor and the disruption budget. A stateful
+allocation is not: destroying it requires a `destroy-stateful` approval, because
+recreating it elsewhere is a data move rather than a reschedule. Uncordon with
+`--undo` when the work is done.
+
+Cordon is recorded in durable history against the operator who issued it and
+survives restart, so a machine somebody is working on does not return to the
+scheduler because the control plane bounced.
+
 ### Controller unavailable
 
 Existing tasks continue and the node keeps its desired state true, bounded by
