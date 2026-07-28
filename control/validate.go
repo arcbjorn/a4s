@@ -125,6 +125,9 @@ func (w *World) normalize() {
 	if w.KnownGood == nil {
 		w.KnownGood = make(map[string]string)
 	}
+	if w.Backoff == nil {
+		w.Backoff = make(map[string]*Backoff)
+	}
 	for _, node := range w.Nodes {
 		if node.Labels == nil {
 			node.Labels = make(map[string]string)

@@ -516,6 +516,7 @@ func projectInto(world *World, evidence Evidence) error {
 		allocation.Phase = AllocationStopped
 		allocation.Ready = false
 		allocation.ReadySince = time.Time{}
+		recordDisruption(world, allocation, evidence.Kind, evidence.ObservedAt)
 
 	case EvidenceAllocationFailed:
 		allocation, ok := world.Allocations[evidence.Target]
@@ -527,6 +528,10 @@ func projectInto(world *World, evidence Evidence) error {
 		allocation.ReadySince = time.Time{}
 		allocation.ExitCode = observedInt(evidence, "exit_code")
 		allocation.Restarts = observedInt(evidence, "restarts")
+		// A failure is not counted as a disruption: the capacity was lost by
+		// the workload itself, not spent by the control plane, and charging it
+		// to the budget would stop the cluster from repairing what broke.
+		recordFailure(world, evidence.Target, evidence.ObservedAt)
 
 	case EvidenceAllocationDeleted:
 		allocation, ok := world.Allocations[evidence.Target]
@@ -538,6 +543,7 @@ func projectInto(world *World, evidence Evidence) error {
 		if node, ok := world.Nodes[allocation.Node]; ok {
 			node.Used = node.Used.Subtract(allocation.Resources)
 		}
+		recordDisruption(world, allocation, evidence.Kind, evidence.ObservedAt)
 		delete(world.Allocations, evidence.Target)
 
 	case EvidenceRouteReachable:
@@ -625,6 +631,8 @@ func projectInto(world *World, evidence Evidence) error {
 		allocation.Draining = true
 		allocation.Task = ""
 		allocation.Ready = false
+		allocation.ReadySince = time.Time{}
+		recordDisruption(world, allocation, evidence.Kind, evidence.ObservedAt)
 
 	case EvidenceProviderReachable:
 		node, ok := world.Nodes[evidence.Observed["node"]]
@@ -779,6 +787,11 @@ func applyReadiness(world *World, allocation *Allocation, evidence Evidence) {
 	// readiness is merely remembered rather than currently observed.
 	allocation.ReadyExpiresAt = evidence.ExpiresAt
 	if ready {
+		// Observed healthy, so the failure history stops counting. Clearing on
+		// recovery rather than decaying on a timer is what makes the backoff
+		// measure consecutive failures: a target that recovers starts from
+		// zero and one that keeps flapping keeps escalating.
+		clearBackoff(world, allocation.ID)
 		// An image that has been observed serving becomes the version a failed
 		// rollout may return to. Recording it here, from evidence, means a
 		// rollback target is always one this cluster saw working.

@@ -346,6 +346,13 @@ type World struct {
 	// A rollout can only roll back to a version this cluster actually saw
 	// working, never to one that merely looks older.
 	KnownGood map[string]string `json:"known_good,omitempty"`
+	// Disruptions is the recent history of disruptive change, oldest first. It
+	// is what the kernel's disruption budget is measured against, and it is
+	// derived from evidence like everything else here: no agent writes it.
+	Disruptions []Disruption `json:"disruptions,omitempty"`
+	// Backoff records consecutive failures per target, so a goal that cannot
+	// converge stops re-proposing the same placement every round.
+	Backoff map[string]*Backoff `json:"backoff,omitempty"`
 }
 
 // Now returns the snapshot's evaluation time, falling back to the wall clock

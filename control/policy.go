@@ -10,11 +10,26 @@ import (
 type Policy struct {
 	MaxActionsPerProposal int
 	Grants                map[string]map[ActionKind]bool
+	// MaxDisruptionsPerWindow bounds how many disruptive actions the whole
+	// cluster may take within DisruptionWindow. Zero disables the budget, which
+	// is what a Policy built by hand before this existed asks for.
+	MaxDisruptionsPerWindow int
+	DisruptionWindow        time.Duration
+	// DisruptionCooldown is how long a failure domain counts as under
+	// disruption after one of its allocations was disrupted. While it is, no
+	// other domain may be disrupted. Zero disables the rule.
+	DisruptionCooldown time.Duration
 }
 
 func DefaultPolicy() Policy {
 	return Policy{
 		MaxActionsPerProposal: 8,
+		// A budget that is on by default, because a governor nobody enabled
+		// governs nothing, and the failure it prevents only happens when
+		// nobody is looking.
+		MaxDisruptionsPerWindow: DefaultMaxDisruptions,
+		DisruptionWindow:        DefaultDisruptionWindow,
+		DisruptionCooldown:      DefaultDisruptionCooldown,
 		Grants: map[string]map[ActionKind]bool{
 			"placement-agent": {
 				ActionPullImage:        true,
@@ -119,6 +134,16 @@ func (k Kernel) Authorize(actor AgentDescriptor, goal Goal, world World, proposa
 		completed[action.ID] = true
 	}
 	if err := requireEvidenceChecks(goal, proposal); err != nil {
+		return err
+	}
+	// The governor runs against the observed world rather than the simulation,
+	// because it bounds change relative to what the cluster has actually been
+	// through. Measuring it against a world this proposal had already mutated
+	// would let a large proposal grade its own blast radius.
+	if err := k.checkDisruptionBudget(world, proposal); err != nil {
+		return err
+	}
+	if err := checkBackoff(world, proposal); err != nil {
 		return err
 	}
 	return nil
@@ -933,9 +958,17 @@ func cloneWorld(world World) World {
 		Queues:      make(map[string]*Queue, len(world.Queues)),
 		Approvals:   make(map[string]*Approval, len(world.Approvals)),
 		KnownGood:   make(map[string]string, len(world.KnownGood)),
+		Backoff:     make(map[string]*Backoff, len(world.Backoff)),
 	}
 	for workload, image := range world.KnownGood {
 		clone.KnownGood[workload] = image
+	}
+	// The disruption ledger is append-only history, so a copy of the slice is
+	// enough: nothing rewrites an entry in place.
+	clone.Disruptions = append([]Disruption(nil), world.Disruptions...)
+	for target, state := range world.Backoff {
+		copyBackoff := *state
+		clone.Backoff[target] = &copyBackoff
 	}
 	for id, node := range world.Nodes {
 		copyNode := *node
