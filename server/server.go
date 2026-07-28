@@ -292,11 +292,28 @@ func (s *Server) Approve(signed control.SignedApproval) (control.ApprovalGrant, 
 func (s *Server) recordDecision(grant control.ApprovalGrant, evidence control.Evidence,
 	message string) error {
 
+	return s.appendOperatorEvent(grant.IssuedBy, grant.GoalID, grant.ID,
+		message+": "+grant.Scope, evidence)
+}
+
+// appendOperatorEvent writes an operator decision to durable history, witnesses
+// it, and applies it to the projection.
+//
+// Order matters: a projection updated without a durable record would vanish on
+// restart, silently withdrawing a decision the operator was told had taken
+// effect. Every operator-originated change goes through here so none of them can
+// acquire a different durability story by accident.
+func (s *Server) appendOperatorEvent(operator, goalID, target, message string,
+	evidence control.Evidence) error {
+
+	if s.log == nil {
+		return fmt.Errorf("event log is closed")
+	}
 	if err := s.log.Append(control.Event{
 		Sequence: s.log.NextSequence(), At: evidence.ObservedAt,
-		Type: control.EventObservationRecorded, Actor: "operator:" + grant.IssuedBy,
-		GoalID: grant.GoalID, Target: grant.ID, Kind: evidence.Kind,
-		Message: message + ": " + grant.Scope, Evidence: &evidence,
+		Type: control.EventObservationRecorded, Actor: "operator:" + operator,
+		GoalID: goalID, Target: target, Kind: evidence.Kind,
+		Message: message, Evidence: &evidence,
 	}); err != nil {
 		return fmt.Errorf("record operator decision: %w", err)
 	}
@@ -337,6 +354,65 @@ func (s *Server) Revoke(signed control.SignedApproval) error {
 			"revoked_by": grant.IssuedBy, "reason": grant.Reason,
 		},
 	}, "approval revoked")
+}
+
+// Cordon takes a node out of service on an operator's instruction.
+//
+// The remediation agent already cordons a node it has observed to be failing,
+// which covers the unplanned case. This covers the other one: a machine an
+// operator is about to open up, where nothing is wrong yet and nothing will
+// observe a reason to stop scheduling onto it until something goes wrong.
+//
+// Authority comes from the request signature the API already verified, the same
+// way a submitted goal's does. A separate signature over the cordon itself would
+// only matter if the kernel re-checked it later, and it does not: the durable
+// artifact is the evidence, and the hash chain is what protects that.
+func (s *Server) Cordon(nodeID, reason, operator string) error {
+	return s.setCordon(nodeID, reason, operator, true)
+}
+
+// Uncordon returns a node to service.
+func (s *Server) Uncordon(nodeID, operator string) error {
+	return s.setCordon(nodeID, "", operator, false)
+}
+
+func (s *Server) setCordon(nodeID, reason, operator string, cordoned bool) error {
+	if nodeID == "" {
+		return fmt.Errorf("a node is required")
+	}
+	if operator == "" {
+		return fmt.Errorf("an operator is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Checked against the projection rather than accepted blindly, so a typo
+	// becomes a refusal instead of a cordon on a node that does not exist and
+	// an operator who believes a machine is out of service when it is not.
+	if _, known := s.projector.World().Nodes[nodeID]; !known {
+		return fmt.Errorf("node %q is not in the observed world", nodeID)
+	}
+
+	kind, message := control.EvidenceNodeCordoned, "node cordoned"
+	if !cordoned {
+		kind, message = control.EvidenceNodeUncordoned, "node returned to service"
+	}
+	evidence := control.Evidence{
+		Kind: kind, Target: nodeID, Source: "operator:" + operator,
+		ObservedAt: time.Now().UTC(),
+		Observed:   map[string]string{"node": nodeID, "reason": reason},
+	}
+	if reason != "" {
+		message += ": " + reason
+	}
+	return s.appendOperatorEvent(operator, "", nodeID, message, evidence)
+}
+
+// Evacuation reports what draining a node would cost an operator, without
+// changing anything. Cordoning stops new work arriving; this says what is still
+// there and which of it holds data that cannot simply be recreated elsewhere.
+func (s *Server) Evacuation(nodeID string) control.NodeEvacuation {
+	return control.PlanEvacuation(s.projector.World(), nodeID)
 }
 
 // OperatorKeys returns the public keys permitted to sign operator statements.

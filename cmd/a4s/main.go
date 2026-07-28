@@ -79,6 +79,8 @@ func run(args []string) error {
 		return status(args[1:])
 	case "events":
 		return remoteEvents(args[1:])
+	case "cordon":
+		return cordon(args[1:])
 	case "version":
 		return showVersion(args[1:])
 	case "help", "-h", "--help":
@@ -1168,6 +1170,8 @@ than with possession of the network path:
   a4s events --server http://host:8443 --key-id ID --operator-key /path
              [--goal ID] [--target ID] [--kind KIND] [--since 1h]
              [--until 10m] [--limit N]
+  a4s cordon --node ID --server http://host:8443 --key-id ID
+             --operator-key /path [--reason TEXT] [--undo] [--json]
 
   a4s version [--json] [--short]`)
 }

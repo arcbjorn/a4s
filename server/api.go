@@ -83,11 +83,14 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/explain/{target}", a.authenticated(a.explain))
 	mux.HandleFunc("GET /v1/plan/{goal}", a.authenticated(a.plan))
 	mux.HandleFunc("GET /v1/diagnose/{goal}", a.authenticated(a.diagnose))
+	mux.HandleFunc("GET /v1/nodes/{node}/evacuation", a.authenticated(a.evacuation))
 
 	// Writes.
 	mux.HandleFunc("POST /v1/goals", a.authenticated(a.submitGoal))
 	mux.HandleFunc("POST /v1/approvals", a.authenticated(a.approve))
 	mux.HandleFunc("POST /v1/approvals/revoke", a.authenticated(a.revoke))
+	mux.HandleFunc("POST /v1/nodes/{node}/cordon", a.authenticated(a.cordon))
+	mux.HandleFunc("POST /v1/nodes/{node}/uncordon", a.authenticated(a.uncordon))
 
 	// Health is unauthenticated on purpose: a load balancer or supervisor must
 	// be able to ask whether the process is alive without holding an operator
@@ -344,6 +347,48 @@ func (a *API) approve(writer http.ResponseWriter, request *http.Request, _ Reque
 		slog.String("goal", grant.GoalID),
 		slog.String("issued_by", grant.IssuedBy))
 	writeJSON(writer, http.StatusCreated, grant)
+}
+
+// cordon takes a node out of service. The operator comes from the verified
+// request envelope rather than the body, so a caller cannot attribute the
+// decision to someone else.
+func (a *API) cordon(writer http.ResponseWriter, request *http.Request, envelope RequestEnvelope) {
+	node := request.PathValue("node")
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	// A reason is optional but the body must be well-formed if sent, so a typo
+	// in the payload is refused rather than silently cordoning with no reason.
+	if raw := bodyFrom(request.Context()); len(raw) > 0 {
+		if err := decodeBody(request, &body); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	if err := a.server.Cordon(node, body.Reason, envelope.IssuedBy); err != nil {
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	a.config.Logger.Info("node cordoned",
+		slog.String("node", node), slog.String("operator", envelope.IssuedBy),
+		slog.String("reason", body.Reason))
+	writeJSON(writer, http.StatusOK, a.server.Evacuation(node))
+}
+
+func (a *API) uncordon(writer http.ResponseWriter, request *http.Request, envelope RequestEnvelope) {
+	node := request.PathValue("node")
+	if err := a.server.Uncordon(node, envelope.IssuedBy); err != nil {
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	a.config.Logger.Info("node uncordoned",
+		slog.String("node", node), slog.String("operator", envelope.IssuedBy))
+	writeJSON(writer, http.StatusOK, map[string]string{"node": node, "status": "schedulable"})
+}
+
+// evacuation reports what draining a node would cost, changing nothing.
+func (a *API) evacuation(writer http.ResponseWriter, request *http.Request, _ RequestEnvelope) {
+	writeJSON(writer, http.StatusOK, a.server.Evacuation(request.PathValue("node")))
 }
 
 func (a *API) revoke(writer http.ResponseWriter, request *http.Request, _ RequestEnvelope) {
