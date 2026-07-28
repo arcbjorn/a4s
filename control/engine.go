@@ -114,8 +114,30 @@ func (e *Engine) WithWorld(world Projector) *Engine {
 }
 
 // WithProbers replaces the evidence sources consulted after execution.
+//
+// A measured prober decides what to measure from its target map, and the engine
+// is what learns those targets from the goal. Sharing the map is what connects
+// the two. Without it the engine registers targets into a map the prober never
+// reads, every measurement finds nothing to measure, and readiness is silently
+// never observed — which is exactly how the server path came to have no
+// readiness at all while the co-located test path worked.
 func (e *Engine) WithProbers(probers ...Prober) *Engine {
 	e.Probers = probers
+	for _, prober := range probers {
+		measured, ok := prober.(*MeasuredProber)
+		if !ok {
+			continue
+		}
+		if measured.Targets == nil {
+			measured.Targets = map[string]ProbeTarget{}
+		}
+		for id, target := range e.probeTargets {
+			if _, held := measured.Targets[id]; !held {
+				measured.Targets[id] = target
+			}
+		}
+		e.probeTargets = measured.Targets
+	}
 	return e
 }
 
@@ -300,8 +322,22 @@ func (e *Engine) registerProbeTarget(goal Goal, action Action) {
 }
 
 // ensureProbeTarget records what readiness means for one allocation.
+//
+// A target already present is kept rather than replaced. What readiness means is
+// a declaration, and one supplied by a caller is more specific than anything
+// inferable from the goal: a workload with a port would otherwise have an
+// explicitly declared process probe silently rewritten into a TCP one, changing
+// the measurement without changing the intent. Only the node is refreshed, since
+// that is placement, not meaning.
 func (e *Engine) ensureProbeTarget(goal Goal, allocation string) {
 	if e.probeTargets == nil || allocation == "" {
+		return
+	}
+	if existing, held := e.probeTargets[allocation]; held {
+		if placed, ok := e.World.World().Allocations[allocation]; ok {
+			existing.Node = placed.Node
+		}
+		e.probeTargets[allocation] = existing
 		return
 	}
 	kind := ProbeProcess
@@ -320,9 +356,16 @@ func (e *Engine) ensureProbeTarget(goal Goal, allocation string) {
 		kind = ProbeAgent
 		provider = goal.Workload.Runtime.Provider
 	}
+	// The node is read from the world rather than from the action, because a
+	// target registered once has to stay correct after the allocation is
+	// replaced somewhere else.
+	node := ""
+	if held, ok := e.World.World().Allocations[allocation]; ok {
+		node = held.Node
+	}
 	e.probeTargets[allocation] = ProbeTarget{
 		Allocation: allocation, Kind: kind, Port: goal.Workload.Port,
-		Engine: goal.Workload.Engine, Provider: provider,
+		Engine: goal.Workload.Engine, Provider: provider, Node: node,
 	}
 }
 

@@ -764,6 +764,20 @@ const (
 	ActionCordonNode ActionKind = "cordon_node"
 	// ActionUncordonNode returns a node to service.
 	ActionUncordonNode ActionKind = "uncordon_node"
+	// ActionProbeReadiness asks a node to measure whether an allocation is
+	// serving, and is the only action here that changes nothing.
+	//
+	// Readiness has to be measured where the workload runs, and the control
+	// plane is a separate process from every node. It travels as an action so it
+	// inherits the trust boundary the protocol already has: a signed envelope
+	// bound to one node with a short expiry, answered with evidence the node
+	// signs with its own identity. Inventing a second message type for it would
+	// mean a second path with its own authentication to keep correct.
+	//
+	// No agent is granted it. The engine issues it directly, because a
+	// measurement an agent could request on its own schedule is a measurement an
+	// agent could time to its advantage.
+	ActionProbeReadiness ActionKind = "probe_readiness"
 )
 
 type Action struct {
@@ -809,8 +823,12 @@ type Action struct {
 	// Reason records why a node was taken out of service. It is carried on the
 	// action so the explanation lands in durable history beside the decision
 	// rather than only in whatever log the proposer happened to write.
-	Reason    string   `json:"reason,omitempty"`
-	DependsOn []string `json:"depends_on,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	// Probe carries what a readiness measurement should look at. It travels in
+	// the signed envelope so the node measures what was authorized rather than
+	// deciding for itself what readiness means for a workload.
+	Probe     *ProbeTarget `json:"probe,omitempty"`
+	DependsOn []string     `json:"depends_on,omitempty"`
 }
 
 // Check declares evidence a proposal must produce before it is considered

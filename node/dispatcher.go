@@ -80,7 +80,12 @@ type Dispatcher struct {
 	// running while the server is unreachable. Optional: without it the node
 	// stays purely reactive.
 	Desired *DesiredState
-	mu      sync.Mutex
+	// Observer measures readiness where the workload runs. Optional: a node
+	// without one refuses probes rather than answering them wrongly, which is
+	// the difference between a control plane that knows it cannot measure and
+	// one that believes nothing is ready.
+	Observer control.ReadinessObserver
+	mu       sync.Mutex
 	// leases records the last accepted lease per target so the node can refuse
 	// an envelope that contradicts a live claim. Guarded by mu.
 	leases map[string]heldLease
@@ -102,6 +107,17 @@ func (d *Dispatcher) Dispatch(ctx context.Context, signed SignedAction) (Dispatc
 	envelope, _, err := Verify(signed, d.Keys, d.NodeID, d.Now().UTC())
 	if err != nil {
 		return DispatchResult{}, err
+	}
+	// A readiness probe is answered before the ledger is consulted, and never
+	// written to it.
+	//
+	// The ledger exists to return the stored result of work already performed,
+	// which is right for a mutation and exactly wrong for a measurement: a
+	// cached readiness is a stale readiness, and the whole reason readiness
+	// expires is that a remembered one must not satisfy a goal. It takes no
+	// lease either, because measuring conflicts with nothing.
+	if envelope.Action.Kind == control.ActionProbeReadiness {
+		return d.probe(envelope)
 	}
 	// Deduplicate on the work being authorized rather than on the exact
 	// envelope, so a legitimate retry is recognized while a key reused for
@@ -149,6 +165,56 @@ func (d *Dispatcher) Dispatch(ctx context.Context, signed SignedAction) (Dispatc
 		return DispatchResult{}, err
 	}
 	return result, nil
+}
+
+// probe measures readiness for one allocation and returns attested evidence.
+//
+// The measurement is attributed and attested exactly like the result of a
+// mutation. That matters more here than anywhere else: readiness is the fact
+// that decides whether a goal is satisfied and whether a route carries traffic,
+// so a node that could report it unsigned would be the cheapest way to lie about
+// the state of the cluster.
+func (d *Dispatcher) probe(envelope ActionEnvelope) (DispatchResult, error) {
+	if d.Observer == nil {
+		return DispatchResult{}, fmt.Errorf("node has no readiness observer")
+	}
+	if envelope.Action.Probe == nil {
+		return DispatchResult{}, fmt.Errorf("probe action carries no target")
+	}
+	target := *envelope.Action.Probe
+	if target.Allocation == "" {
+		return DispatchResult{}, fmt.Errorf("probe target names no allocation")
+	}
+
+	ready, observed, err := d.Observer.ObserveReadiness(target)
+	if err != nil {
+		// A probe that could not be taken is reported as a failure rather than
+		// as a not-ready answer. They mean different things: one is a broken
+		// measurement, the other is a working measurement of a broken workload,
+		// and collapsing them would make a misconfigured node look like an
+		// outage.
+		return DispatchResult{}, fmt.Errorf("probe %q: %w", target.Allocation, err)
+	}
+	if observed == nil {
+		observed = map[string]string{}
+	}
+	observed["ready"] = fmt.Sprint(ready)
+
+	kind := control.EvidenceAllocationReady
+	if target.Kind == control.ProbeAgent {
+		kind = control.EvidenceAgentReady
+	}
+	evidence := d.attribute(control.Evidence{
+		Kind: kind, Target: target.Allocation, Observed: observed,
+		// The expiry travels with the measurement, so a readiness the control
+		// plane keeps is one it knows the age of.
+		ExpiresAt: d.Now().UTC().Add(control.DefaultReadinessTTL),
+	}, envelope.Action)
+	attested, err := d.attest(evidence)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	return DispatchResult{Evidence: evidence, Attested: attested}, nil
 }
 
 // attest signs evidence with this node's identity key.

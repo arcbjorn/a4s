@@ -562,7 +562,16 @@ func runServer(args []string) error {
 	// the authenticated channel to stand behind the claim.
 	executor.NodeKeys = nodeKeys
 	executor.RequireAttestation = *requireAttestation
-	return reconcileLoop(ctx, logger, instance, executor, registry, metrics)
+
+	// Readiness is measured on the node holding each allocation, on the same
+	// terms. Without this the control plane observes readiness once, when an
+	// allocation is created, and then lets it expire with nothing to refresh
+	// it: goals stop being satisfied and routes lose their endpoints for want
+	// of a measurement nobody was taking.
+	observer := a4snode.NewRegistryObserver(registry, *keyID, signingKey)
+	observer.NodeKeys = nodeKeys
+	observer.RequireAttestation = *requireAttestation
+	return reconcileLoop(ctx, logger, instance, executor, observer, registry, metrics)
 }
 
 // watchGitSource tracks a repository, logging what each sync applied.
@@ -597,8 +606,8 @@ func watchGitSource(ctx context.Context, logger *slog.Logger,
 // cannot converge is reported and retried rather than terminating the server,
 // because the cause is usually a node that has not connected yet.
 func reconcileLoop(ctx context.Context, logger *slog.Logger, instance *server.Server,
-	executor *a4snode.RegistryExecutor, registry *a4snode.Registry,
-	metrics *obs.Metrics) error {
+	executor *a4snode.RegistryExecutor, observer *a4snode.RegistryObserver,
+	registry *a4snode.Registry, metrics *obs.Metrics) error {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -620,7 +629,11 @@ func reconcileLoop(ctx context.Context, logger *slog.Logger, instance *server.Se
 			}
 			for _, goal := range instance.Goals() {
 				metrics.Count("a4s_reconciliations_total")
-				if err := instance.Reconcile(goal.ID, executor); err != nil {
+				// The prober is rebuilt per goal because its target set is the
+				// engine's, and the engine is rebuilt per reconciliation. The
+				// observer underneath keeps its node connections.
+				prober := control.NewMeasuredProber(observer, map[string]control.ProbeTarget{})
+				if err := instance.Reconcile(goal.ID, executor, prober); err != nil {
 					// A goal held back by a safeguard is not a failure. Counting
 					// it as one would make a working governor indistinguishable
 					// from a broken cluster on every dashboard watching this.
@@ -980,6 +993,13 @@ func runNode(args []string) error {
 			Volumes:    volumes,
 			Resolver:   resolver,
 			Firewall:   firewall,
+		},
+		// Readiness is measured here because here is where the workload runs.
+		// The observer routes each probe kind to the capability that owns it,
+		// so a database is asked whether it accepts connections rather than
+		// whether its port is open.
+		Observer: &a4snode.CompositeObserver{
+			Runtime: a4snode.NewRuntimeObserver(runtime),
 		},
 		Ledger:      ledger,
 		Desired:     desired,

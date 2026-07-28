@@ -32,6 +32,10 @@ type ProbeTarget struct {
 	Address string `json:"address,omitempty"`
 	// Engine names the database engine for a database probe.
 	Engine string `json:"engine,omitempty"`
+	// Node is where the measurement has to be taken. An allocation is only
+	// observable from the node running it, so a prober that dispatches over the
+	// network needs this to know who to ask; a co-located observer ignores it.
+	Node string `json:"node,omitempty"`
 }
 
 const (
@@ -103,6 +107,12 @@ func (p *MeasuredProber) Probe(world World, check Check) (Evidence, bool) {
 	if target.Address == "" {
 		// The world knows where the allocation actually lives.
 		target.Address = allocation.Address
+	}
+	if target.Node == "" {
+		// Same reason, for the node a remote observer has to reach. A target
+		// registered before the allocation was placed would otherwise name
+		// nowhere to measure.
+		target.Node = allocation.Node
 	}
 	ready, observed, err := p.Observer.ObserveReadiness(target)
 	if err != nil {
