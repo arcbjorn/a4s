@@ -19,6 +19,19 @@ stable version and no compatibility guarantee, so everything below is under
   consecutive failures and resets on observed readiness. All derived from
   recorded evidence, so they survive restart. Repairs and removals are never
   blocked by them, only paced.
+- Node reachability recorded as evidence from the connections the server holds,
+  so node health stops being a fact nobody ever updates. Unreachable stops new
+  placement and nothing more: a partitioned node keeps running what it was told
+  to run, and relocating on silence is how one workload becomes two.
+- Pacing told apart from failure. A goal held back by a safeguard returns a typed
+  result naming the constraint and when it lifts, counted and logged separately
+  from a reconciliation that failed.
+- Two deadlocks fixed, both found by driving the safeguards against each other:
+  a quiet cluster froze its own clock so nothing perishable ever expired, and a
+  converged cluster never re-probed, so readiness lapsed and no agent had
+  anything to propose about it. Readiness is now re-measured every round, and a
+  measurement is applied only when it changes what is observably true, so the
+  projection stays a function of the log.
 - Diagnosis of the safeguards. Each control above stops work deliberately, so the
   diagnoser reports backoffs, cordoned nodes, an unschedulable cluster, and
   disruption pacing, with a named next step for every refusal they produce. The

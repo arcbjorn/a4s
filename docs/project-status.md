@@ -121,6 +121,23 @@ and nothing has been through sustained-failure or penetration testing. See
   target may be created or started again, and observed readiness resets it.
   Removal is never blocked, so backoff paces repair instead of preventing it.
   This is what stops a goal re-proposing the same failing placement every round.
+- Node reachability as evidence. Node health was previously a fact nobody ever
+  updated: it came from the scenario file and stayed there, so a node that died
+  kept attracting placements and the remediation agent's first rung could never
+  fire. The server records reachability from the connections it holds, only when
+  it changes. Unreachable stops new placement and nothing more: a partitioned
+  node keeps running what it was told to run, and relocating on silence is how
+  one workload becomes two.
+- Pacing distinguished from failure. A goal held back by a safeguard returns a
+  typed result naming the constraint and when it lifts, counted and logged
+  separately from a reconciliation that actually failed. Without it a working
+  governor is indistinguishable from a broken cluster on every dashboard.
+- Readiness re-measured every round rather than only after an action, and the
+  world's snapshot time taken from the control plane's clock rather than from
+  the last thing that happened. Both were deadlocks found by driving the
+  safeguards against each other: a quiet cluster froze its own clock so nothing
+  perishable expired, and a converged cluster never re-probed, so readiness
+  lapsed and no agent had anything to propose about it.
 - Diagnosis of the safeguards themselves. Each of the controls above stops work
   on purpose, and a goal stopped on purpose looks exactly like a broken one. The
   deterministic diagnoser reports which targets are waiting out a backoff, which
@@ -507,17 +524,21 @@ risk order:
 1. Finish the container sandbox. Seccomp and user namespaces are in place, but
    a container still runs as the image's own user unless an operator pins one,
    and no AppArmor profile is selected.
-2. Record measured failure behavior under sustained load and multi-node
-   operation, beyond the single verified round trip. The disruption governor
-   and the remediation ladder are the two pieces most in need of this: both are
-   unit-tested and neither has been observed pacing a real cluster in trouble.
-3. Turn on `--require-signed-images` with a real build signer. The mechanism
+2. Wire a readiness prober into the server. `Reconcile` accepts probers and the
+   daemon passes none, so the engine has no readiness source outside the
+   in-memory simulation. The node has a `RuntimeObserver`; nothing connects it
+   to the control loop.
+3. Record measured failure behavior under sustained load and multi-node
+   operation, beyond the single verified round trip. The safeguards are now
+   driven against each other in simulation, which found two deadlocks, but
+   nothing has observed them pacing a real cluster in trouble.
+4. Turn on `--require-signed-images` with a real build signer. The mechanism
    and the `a4s attest` tool exist; nothing in this repository's own examples
    uses them, because their digests are simulation placeholders.
-4. Verify snapshot provenance in the gateway independently, rather than
+5. Verify snapshot provenance in the gateway independently, rather than
    trusting the node that produced it.
-5. Rotate a secret without replacing the allocation that mounts it.
-6. Ship standby records automatically. The follower and its promotion gate
+6. Rotate a secret without replacing the allocation that mounts it.
+7. Ship standby records automatically. The follower and its promotion gate
    exist; moving the records is currently the deployment's job.
 
 Do not treat this as production-ready until those are closed. The runtime and
