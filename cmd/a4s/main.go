@@ -153,7 +153,8 @@ func plan(args []string) error {
 
 	kernel := control.Kernel{Policy: control.DefaultPolicy()}
 	result := control.DryRun(kernel, world, scenario.Goal,
-		control.RolloutAgent{}, control.PlacementAgent{}, control.NetworkAgent{})
+		control.RemediationAgent{}, control.RolloutAgent{},
+		control.PlacementAgent{}, control.NetworkAgent{})
 	if *jsonOutput {
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
@@ -439,7 +440,8 @@ func runServer(args []string) error {
 		ClusterBudget: control.Budget{
 			Tokens: *maxTokens, CostMillis: *maxCost,
 		},
-	}, control.RolloutAgent{}, control.PlacementAgent{}, control.NetworkAgent{})
+	}, control.RemediationAgent{}, control.RolloutAgent{},
+		control.PlacementAgent{}, control.NetworkAgent{})
 	if openErr != nil {
 		return openErr
 	}

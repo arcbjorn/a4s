@@ -75,6 +75,15 @@ func DefaultPolicy() Policy {
 				// tell the data plane where a service currently lives.
 				ActionPublishZone: true,
 			},
+			// The remediation agent repairs what the cluster observed to be
+			// broken. Like the rollout agent it may subtract but never add:
+			// it can take a node out of service and remove an allocation, and
+			// replacement is still placement's job under placement's rules.
+			"remediation-agent": {
+				ActionCordonNode:       true,
+				ActionStopAllocation:   true,
+				ActionDeleteAllocation: true,
+			},
 			// The rollout agent may retire an allocation but may not create
 			// one. Replacement is placement's job, which keeps destruction and
 			// creation in separate capability sets.

@@ -119,6 +119,12 @@ func recordDisruption(world *World, allocation *Allocation, kind string, at time
 	if allocation == nil || at.IsZero() {
 		return
 	}
+	if allocation.Phase == AllocationStopped {
+		// Already dead. Cleaning up an allocation that stopped on its own took
+		// no capacity away, and charging it would spend the budget that paces
+		// live disruption on repairing damage the cluster did not cause.
+		return
+	}
 	domain := ""
 	if node := world.Nodes[allocation.Node]; node != nil {
 		domain = node.FailureDomain()

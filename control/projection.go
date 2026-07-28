@@ -532,12 +532,15 @@ func projectInto(world *World, evidence Evidence) error {
 		if !ok {
 			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, evidence.Target)
 		}
+		// Recorded before the phase changes, because the ledger asks whether
+		// this took away capacity that was live. Replaying a stop onto an
+		// already-stopped allocation therefore charges nothing.
+		recordDisruption(world, allocation, evidence.Kind, evidence.ObservedAt)
 		// A stopped allocation is never ready. Clearing readiness here keeps a
 		// stale ready flag from satisfying a goal or authorizing a route.
 		allocation.Phase = AllocationStopped
 		allocation.Ready = false
 		allocation.ReadySince = time.Time{}
-		recordDisruption(world, allocation, evidence.Kind, evidence.ObservedAt)
 
 	case EvidenceAllocationFailed:
 		allocation, ok := world.Allocations[evidence.Target]
