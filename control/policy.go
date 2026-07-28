@@ -1,6 +1,7 @@
 package control
 
 import (
+	"crypto/ed25519"
 	"fmt"
 	"sort"
 	"strings"
@@ -19,6 +20,19 @@ type Policy struct {
 	// disruption after one of its allocations was disrupted. While it is, no
 	// other domain may be disrupted. Zero disables the rule.
 	DisruptionCooldown time.Duration
+	// ImageSigners are the build signers whose attestations this cluster
+	// accepts, by key id. The kernel holds public keys only: it verifies that
+	// somebody trusted built an image and can never claim so itself.
+	ImageSigners map[string]ed25519.PublicKey
+	// RequireSignedImages refuses to run any image without a valid attestation.
+	//
+	// It is off by default, and that default is a compatibility decision rather
+	// than a security judgement: turning it on refuses every goal written
+	// before provenance existed, including the shipped examples, whose digests
+	// are simulation placeholders that nothing ever built. A production
+	// deployment should enable it. An attestation that is supplied is verified
+	// either way, so leaving this off never makes a forged one acceptable.
+	RequireSignedImages bool
 }
 
 func DefaultPolicy() Policy {
@@ -144,6 +158,9 @@ func (k Kernel) Authorize(actor AgentDescriptor, goal Goal, world World, proposa
 		return err
 	}
 	if err := checkBackoff(world, proposal); err != nil {
+		return err
+	}
+	if err := k.checkImageProvenance(goal, world, proposal); err != nil {
 		return err
 	}
 	return nil

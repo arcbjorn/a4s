@@ -34,6 +34,13 @@ type Config struct {
 	// hash chain catches an edit; only an outside record catches replacement of
 	// the whole store. Empty disables it, which leaves that gap open.
 	Anchor string
+	// ImageSigners are the build signers whose provenance attestations this
+	// cluster accepts, by key id. Public keys only: the server verifies that
+	// something trusted built an image and can never attest to one itself.
+	ImageSigners map[string]ed25519.PublicKey
+	// RequireSignedImages refuses to run any image without a valid attestation.
+	// A production deployment should set it; see docs/security.md.
+	RequireSignedImages bool
 }
 
 // Server owns durable history and the projection derived from it.
@@ -54,6 +61,10 @@ type Server struct {
 	operatorKeys map[string]ed25519.PublicKey
 	// anchor witnesses the chain head outside the store. Nil when disabled.
 	anchor *eventlog.Anchor
+	// policy is the kernel policy every reconciliation and plan runs under, so
+	// a dry run cannot be authorized under different rules than the execution
+	// it is supposed to predict.
+	policy control.Policy
 }
 
 // Open starts a server, rebuilding its world from durable history.
@@ -108,11 +119,17 @@ func Open(config Config, agents ...control.Agent) (*Server, error) {
 	for id, key := range config.OperatorKeys {
 		keys[id] = key
 	}
+	policy := control.DefaultPolicy()
+	policy.RequireSignedImages = config.RequireSignedImages
+	policy.ImageSigners = make(map[string]ed25519.PublicKey, len(config.ImageSigners))
+	for id, key := range config.ImageSigners {
+		policy.ImageSigners[id] = key
+	}
 	return &Server{
 		log: log, projector: projector, agents: agents,
 		leases: control.NewLeaseManager(), maxRounds: rounds,
 		goals: make(map[string]control.Goal), operatorKeys: keys,
-		anchor: anchor,
+		anchor: anchor, policy: policy,
 	}, nil
 }
 
@@ -169,6 +186,7 @@ func (s *Server) Reconcile(goalID string, executor control.Executor, probers ...
 	}
 
 	engine := control.NewEngineWith(executor, s.projector, s.agents...)
+	engine.Kernel = control.Kernel{Policy: s.policy}
 	engine.Leases = s.leases
 	engine.WithEventSink(s.log)
 	if len(probers) > 0 {
@@ -466,8 +484,11 @@ func (s *Server) Plan(goalID string) (control.Plan, error) {
 	if !ok {
 		return control.Plan{}, fmt.Errorf("goal %q was never accepted", goalID)
 	}
-	kernel := control.Kernel{Policy: control.DefaultPolicy()}
-	return control.DryRun(kernel, s.projector.World(), goal, s.agents...), nil
+	// The same policy reconciliation runs under. A plan authorized under looser
+	// rules than execution would predict work the kernel then refuses, which is
+	// the one thing a dry run must never do.
+	return control.DryRun(control.Kernel{Policy: s.policy},
+		s.projector.World(), goal, s.agents...), nil
 }
 
 // Directory reports which endpoints are currently serving each workload. It is

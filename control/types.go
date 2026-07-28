@@ -68,6 +68,11 @@ type WorkloadSpec struct {
 	// Absent means unconstrained, which is what every goal written before this
 	// existed asked for.
 	Placement *Placement `json:"placement,omitempty"`
+	// Attestation is a build signer's signed statement that this image is one
+	// they produced. It travels with the goal rather than being fetched,
+	// because a control plane that resolved provenance over the network would
+	// have made image trust depend on a service being reachable.
+	Attestation *SignedAttestation `json:"attestation,omitempty"`
 }
 
 // Scheduled reports whether this workload runs on a schedule rather than being

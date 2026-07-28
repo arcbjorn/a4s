@@ -57,6 +57,8 @@ func run(args []string) error {
 		return keys(args[1:])
 	case "seal":
 		return seal(args[1:])
+	case "attest":
+		return attest(args[1:])
 	case "explain":
 		return explain(args[1:])
 	case "plan":
@@ -346,6 +348,10 @@ func runServer(args []string) error {
 		"refuse evidence a node did not sign with its identity key")
 	anchorPath := flags.String("anchor", "",
 		"absolute path to the external chain-head anchor (empty disables it)")
+	imageSignerDir := flags.String("image-signers", "",
+		"directory of <key-id>.pub build signer keys for image provenance")
+	requireSignedImages := flags.Bool("require-signed-images", false,
+		"refuse any image without a valid provenance attestation")
 	gitRemote := flags.String("git-remote", "",
 		"repository to read goals from (empty disables the git source)")
 	gitRef := flags.String("git-ref", "main", "branch or tag to track")
@@ -397,9 +403,25 @@ func runServer(args []string) error {
 		return fmt.Errorf("operator-keys is required to serve the API")
 	}
 
+	imageSigners := map[string]ed25519.PublicKey{}
+	if *imageSignerDir != "" {
+		loaded, err := loadNodeKeys(*imageSignerDir)
+		if err != nil {
+			return fmt.Errorf("load image signer keys: %w", err)
+		}
+		imageSigners = loaded
+	}
+	// Requiring provenance with nobody trusted to attest would refuse every
+	// image, so the contradiction is reported at startup rather than as an
+	// unexplained denial on the first goal.
+	if *requireSignedImages && len(imageSigners) == 0 {
+		return fmt.Errorf("image-signers is required to require signed images")
+	}
+
 	instance, openErr := server.Open(server.Config{
 		EventLog: *eventLog, Base: base, OperatorKeys: operatorKeys,
-		Anchor: *anchorPath,
+		Anchor: *anchorPath, ImageSigners: imageSigners,
+		RequireSignedImages: *requireSignedImages,
 	}, control.RolloutAgent{}, control.PlacementAgent{}, control.NetworkAgent{})
 	if openErr != nil {
 		return openErr
@@ -1100,6 +1122,8 @@ Usage:
   a4s keys retire --keyset /path/keyset.json --key-id control-1
   a4s keys list --keyset /path/keyset.json [--json]
   a4s seal --secret NAME --version V --node ID --node-key /path --in /path --out /dir
+  a4s attest --image REF --builder NAME --key /path --key-id ID
+             [--lifetime 720h] [--out /path]
   a4s plan --file scenario.json [--event-log /path] [--json]
   a4s explain --event-log /path --target ID [--json]
   a4s diagnose --event-log /path --goal ID [--file scenario.json] [--json]
