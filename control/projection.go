@@ -32,8 +32,24 @@ const (
 	// EvidenceNodeCordoned and EvidenceNodeUncordoned record a node leaving and
 	// returning to service. They are facts about scheduling intent rather than
 	// about the node's health, which is measured separately and independently.
-	EvidenceNodeCordoned      = "node.cordoned"
-	EvidenceNodeUncordoned    = "node.uncordoned"
+	EvidenceNodeCordoned   = "node.cordoned"
+	EvidenceNodeUncordoned = "node.uncordoned"
+	// EvidenceNodeReachable and EvidenceNodeUnreachable record whether the
+	// control plane can currently talk to a node.
+	//
+	// This is the control plane reporting a fact about its own transport, which
+	// it observes directly, rather than an executor asserting that its work
+	// succeeded. The distinction matters: the rule executors may not assert
+	// state exists because an executor has an interest in its own actions
+	// having worked. Nothing has an interest in a connection being up.
+	//
+	// Unreachable means only that: do not place new work here. It is
+	// deliberately not read as "the workloads there have stopped". A partitioned
+	// node keeps running what it was told to run, which is the property that
+	// makes losing the control plane survivable, and treating silence as death
+	// is how a partition becomes two copies of a workload.
+	EvidenceNodeReachable     = "node.reachable"
+	EvidenceNodeUnreachable   = "node.unreachable"
 	EvidenceAllocationStopped = "allocation.stopped"
 	EvidenceAllocationDeleted = "allocation.deleted"
 	EvidenceAllocationFailed  = "allocation.failed"
@@ -526,6 +542,16 @@ func projectInto(world *World, evidence Evidence) error {
 		}
 		node.Cordoned = false
 		node.CordonReason = ""
+
+	case EvidenceNodeReachable, EvidenceNodeUnreachable:
+		node, ok := world.Nodes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown node %q", evidence.Kind, evidence.Target)
+		}
+		// Only health changes. A cordon is a separate decision and must survive
+		// a node going away and coming back, or a machine an operator took out
+		// of service would return to the scheduler the moment it reconnected.
+		node.Healthy = evidence.Kind == EvidenceNodeReachable
 
 	case EvidenceAllocationStopped:
 		allocation, ok := world.Allocations[evidence.Target]

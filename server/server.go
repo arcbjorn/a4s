@@ -292,18 +292,23 @@ func (s *Server) Approve(signed control.SignedApproval) (control.ApprovalGrant, 
 func (s *Server) recordDecision(grant control.ApprovalGrant, evidence control.Evidence,
 	message string) error {
 
-	return s.appendOperatorEvent(grant.IssuedBy, grant.GoalID, grant.ID,
+	return s.appendObservation("operator:"+grant.IssuedBy, grant.GoalID, grant.ID,
 		message+": "+grant.Scope, evidence)
 }
 
-// appendOperatorEvent writes an operator decision to durable history, witnesses
-// it, and applies it to the projection.
+// appendObservation writes a control-plane-originated fact to durable history,
+// witnesses it, and applies it to the projection.
 //
 // Order matters: a projection updated without a durable record would vanish on
 // restart, silently withdrawing a decision the operator was told had taken
-// effect. Every operator-originated change goes through here so none of them can
-// acquire a different durability story by accident.
-func (s *Server) appendOperatorEvent(operator, goalID, target, message string,
+// effect. Every such change goes through here so none of them can acquire a
+// different durability story by accident.
+//
+// The actor is passed whole rather than assembled here, because these are not
+// all operators: a reachability observation is the controller reporting on its
+// own transport, and attributing it to a person would put a decision nobody
+// made into the audit trail.
+func (s *Server) appendObservation(actor, goalID, target, message string,
 	evidence control.Evidence) error {
 
 	if s.log == nil {
@@ -311,11 +316,11 @@ func (s *Server) appendOperatorEvent(operator, goalID, target, message string,
 	}
 	if err := s.log.Append(control.Event{
 		Sequence: s.log.NextSequence(), At: evidence.ObservedAt,
-		Type: control.EventObservationRecorded, Actor: "operator:" + operator,
+		Type: control.EventObservationRecorded, Actor: actor,
 		GoalID: goalID, Target: target, Kind: evidence.Kind,
 		Message: message, Evidence: &evidence,
 	}); err != nil {
-		return fmt.Errorf("record operator decision: %w", err)
+		return fmt.Errorf("record observation: %w", err)
 	}
 	// Witnessed inline rather than through witnessHead, because callers already
 	// hold the mutex. An operator decision is exactly the kind of history worth
@@ -405,7 +410,63 @@ func (s *Server) setCordon(nodeID, reason, operator string, cordoned bool) error
 	if reason != "" {
 		message += ": " + reason
 	}
-	return s.appendOperatorEvent(operator, "", nodeID, message, evidence)
+	return s.appendObservation("operator:"+operator, "", nodeID, message, evidence)
+}
+
+// ObserveNodes records which nodes the control plane can currently reach.
+//
+// Node health was previously a fact nobody ever updated: it came from the
+// scenario file and stayed there, so a node that died kept attracting
+// placements and the remediation agent's first rung could never fire. The
+// server already knows which nodes hold a connection; this is what turns that
+// into evidence the world is built from.
+//
+// Evidence is recorded only when reachability changes. A tick that observes the
+// same thing as the last one has learned nothing, and appending it every few
+// seconds would grow the log with the age of the cluster rather than with its
+// activity.
+//
+// Unreachable stops new placement and nothing more. It is not read as the
+// workloads there having stopped: a partitioned node keeps running what it was
+// told to run, and relocating on silence is how one workload becomes two.
+// Moving anything off it still requires reaching it, or an operator.
+func (s *Server) ObserveNodes(connected []string) error {
+	reachable := make(map[string]bool, len(connected))
+	for _, id := range connected {
+		reachable[id] = true
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	world := s.projector.World()
+
+	ids := make([]string, 0, len(world.Nodes))
+	for id := range world.Nodes {
+		ids = append(ids, id)
+	}
+	// Sorted so a tick that changes several nodes records them in a stable
+	// order, and a rebuilt projection matches the live one exactly.
+	sort.Strings(ids)
+
+	for _, id := range ids {
+		node := world.Nodes[id]
+		if node.Healthy == reachable[id] {
+			continue
+		}
+		kind, message := control.EvidenceNodeUnreachable, "node stopped answering"
+		if reachable[id] {
+			kind, message = control.EvidenceNodeReachable, "node is answering again"
+		}
+		evidence := control.Evidence{
+			Kind: kind, Target: id, Source: "controller",
+			ObservedAt: time.Now().UTC(),
+			Observed:   map[string]string{"node": id},
+		}
+		if err := s.appendObservation("controller", "", id, message, evidence); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Evacuation reports what draining a node would cost an operator, without
