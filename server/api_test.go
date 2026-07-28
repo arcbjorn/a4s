@@ -325,6 +325,61 @@ func TestAPIReadsRequireAuthentication(t *testing.T) {
 	}
 }
 
+// The window filters bound both ends, and a malformed timestamp is refused
+// rather than silently ignored, which would widen the answer without saying so.
+func TestAPIEventsBoundTheWindow(t *testing.T) {
+	api, key := operatorAPI(t)
+	if err := api.server.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.server.Approve(signedGrant(t, key, "public-route")); err != nil {
+		t.Fatal(err)
+	}
+	all := api.server.Query(HistoryQuery{})
+	if len(all) == 0 {
+		t.Fatal("expected the recorded approval to appear in history")
+	}
+	latest := all[len(all)-1].At.UTC()
+
+	recorder := signedGet(t, api, key, "/v1/events",
+		"until="+latest.Add(-time.Nanosecond).Format(time.RFC3339Nano))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("until = %d, want 200: %s", recorder.Code, recorder.Body)
+	}
+	var bounded []control.Event
+	if err := json.Unmarshal(recorder.Body.Bytes(), &bounded); err != nil {
+		t.Fatal(err)
+	}
+	if len(bounded) >= len(all) {
+		t.Fatalf("expected the upper bound to narrow history, got %d of %d", len(bounded), len(all))
+	}
+
+	for _, bad := range []string{"since=yesterday", "until=yesterday"} {
+		recorder := signedGet(t, api, key, "/v1/events", bad)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("%s = %d, want 400", bad, recorder.Code)
+		}
+	}
+}
+
+// signedGet issues a read whose signature covers the path only, which is how
+// the operator client signs a request that carries query filters.
+func signedGet(t *testing.T, api *API, key ed25519.PrivateKey,
+	path, query string) *httptest.ResponseRecorder {
+
+	t.Helper()
+	now := time.Now().UTC()
+	signed, err := SignRequest(RequestEnvelope{
+		Nonce:  fmt.Sprintf("nonce-%d", time.Now().UnixNano()),
+		Method: http.MethodGet, Path: path, IssuedBy: "arc",
+		IssuedAt: now, ExpiresAt: now.Add(time.Minute),
+	}, "operator-arc", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return issue(t, api, signed, http.MethodGet, path+"?"+query, nil)
+}
+
 func TestAPIRefusesUnknownBodyFields(t *testing.T) {
 	api, key := operatorAPI(t)
 	body := map[string]any{"id": "web", "unexpected_field": true}

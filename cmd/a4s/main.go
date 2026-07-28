@@ -1123,7 +1123,8 @@ than with possession of the network path:
              --key-id ID --operator-key /path [--operator NAME]
   a4s status --server http://host:8443 --key-id ID --operator-key /path [--json]
   a4s events --server http://host:8443 --key-id ID --operator-key /path
-             [--goal ID] [--target ID] [--kind KIND] [--limit N]
+             [--goal ID] [--target ID] [--kind KIND] [--since 1h]
+             [--until 10m] [--limit N]
 
   a4s version [--json] [--short]`)
 }

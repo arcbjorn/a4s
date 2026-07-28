@@ -248,13 +248,23 @@ func (a *API) events(writer http.ResponseWriter, request *http.Request, _ Reques
 		Target: request.URL.Query().Get("target"),
 		Kind:   request.URL.Query().Get("kind"),
 	}
-	if raw := request.URL.Query().Get("since"); raw != "" {
-		since, err := time.Parse(time.RFC3339, raw)
+	// Both ends of the window are parsed here. The query type has always
+	// supported an upper bound; leaving it off the endpoint meant an operator
+	// asking "what happened before the outage" could not express it.
+	for _, bound := range []struct {
+		name  string
+		field *time.Time
+	}{{"since", &query.Since}, {"until", &query.Until}} {
+		raw := request.URL.Query().Get(bound.name)
+		if raw == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			http.Error(writer, "since must be an RFC3339 timestamp", http.StatusBadRequest)
+			http.Error(writer, bound.name+" must be an RFC3339 timestamp", http.StatusBadRequest)
 			return
 		}
-		query.Since = since
+		*bound.field = at
 	}
 	if raw := request.URL.Query().Get("limit"); raw != "" {
 		limit, err := strconv.Atoi(raw)

@@ -233,6 +233,8 @@ func remoteEvents(args []string) error {
 	goalID := flags.String("goal", "", "restrict to one goal")
 	target := flags.String("target", "", "restrict to one allocation or route")
 	kind := flags.String("kind", "", "restrict to one event type")
+	since := flags.Duration("since", 0, "only events within this window")
+	until := flags.Duration("until", 0, "only events older than this")
 	limit := flags.Int("limit", 0, "return at most this many events")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -248,6 +250,15 @@ func remoteEvents(args []string) error {
 	} {
 		if value != "" {
 			query.Set(name, value)
+		}
+	}
+	// The window is expressed as an age here and as a timestamp on the wire,
+	// because an operator reaching for history thinks in "the last ten minutes"
+	// rather than in RFC3339.
+	now := time.Now().UTC()
+	for name, age := range map[string]time.Duration{"since": *since, "until": *until} {
+		if age > 0 {
+			query.Set(name, now.Add(-age).Format(time.RFC3339Nano))
 		}
 	}
 	if *limit > 0 {
