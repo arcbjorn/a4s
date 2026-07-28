@@ -55,7 +55,13 @@ func (e *MemoryExecutor) ObserveReadiness(target ProbeTarget) (bool, map[string]
 	if !ok {
 		return false, nil, fmt.Errorf("allocation %q does not exist", target.Allocation)
 	}
-	return allocation.Phase == AllocationRunning, map[string]string{
+	// A probe against a node the control plane cannot reach does not come back
+	// saying yes. Reporting readiness for a workload on an unreachable node
+	// would make the simulation claim something no real measurement could, and
+	// would hide every failure that begins with a node going away.
+	node, known := e.world.Nodes[allocation.Node]
+	reachable := known && node.Healthy
+	return reachable && allocation.Phase == AllocationRunning, map[string]string{
 		"phase":    string(allocation.Phase),
 		"observer": "memory-executor",
 	}, nil

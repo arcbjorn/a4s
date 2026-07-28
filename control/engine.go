@@ -3,6 +3,7 @@ package control
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -34,6 +35,33 @@ type Engine struct {
 	// probeTargets is populated from the goal so readiness is measured against
 	// the port the workload actually declares.
 	probeTargets map[string]ProbeTarget
+}
+
+// observedWorld returns the projection stamped with the control plane's current
+// time.
+//
+// A stored projection's timestamp is the moment of its last observation, which
+// is the right answer for a snapshot and the wrong one for a decision being made
+// now. Everything perishable is measured against it: readiness expiry, a failure
+// backoff, a disruption window.
+//
+// Without this a quiet cluster freezes its own clock. Nothing is happening, so
+// no evidence is recorded, so the world's time does not advance, so nothing
+// perishable ever expires, so nothing can start happening. That is a deadlock
+// rather than a slowdown, and it is self-reinforcing in the worst way: the
+// backoff preventing progress is the same thing preventing the clock that would
+// clear it from moving. Stale readiness has the same shape, and would keep a
+// dead workload looking healthy for as long as the cluster stayed quiet.
+//
+// Only the snapshot's timestamp comes from the clock. Every fact in the world is
+// still derived from recorded evidence, so the projection remains a function of
+// the log; what changes is when you are standing while you read it.
+func (e *Engine) observedWorld() World {
+	world := e.World.World()
+	if now := e.now().UTC(); now.After(world.ObservedAt) {
+		world.ObservedAt = now
+	}
+	return world
 }
 
 // memoryProjector is the default projection used when an engine is built
@@ -99,7 +127,7 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 		// An operator-approved rollback changes which image the goal means. It
 		// is resolved once per round, before anything reads the goal, so every
 		// agent and validator in the round works from the same version.
-		effective, rolledBackFrom, compensating := CompensatedGoal(goal, e.World.World())
+		effective, rolledBackFrom, compensating := CompensatedGoal(goal, e.observedWorld())
 		if compensating {
 			if err := e.record(Event{
 				Type: EventGoalCompensating, Actor: "coordinator", GoalID: goal.ID,
@@ -111,12 +139,18 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 			}
 		}
 
-		if goalAchieved(effective, e.World.World()) {
+		// Re-measure before deciding anything. Readiness is perishable, and a
+		// round that reasoned about a lapsed observation would either declare a
+		// dead workload healthy or a healthy one unconvergeable.
+		if err := e.refreshReadiness(effective); err != nil {
+			return err
+		}
+		if goalAchieved(effective, e.observedWorld()) {
 			return e.record(Event{Type: EventGoalAchieved, Actor: "verifier", GoalID: goal.ID, Message: "goal conditions verified from current world evidence"})
 		}
 		progress := false
 		for _, agent := range e.Agents {
-			world := e.World.World()
+			world := e.observedWorld()
 			proposal, err := agent.Propose(effective, world)
 			if err != nil {
 				// A required rollback is an operator decision, not a denial to
@@ -173,6 +207,19 @@ func (e *Engine) Run(goal Goal, maxRounds int) error {
 			}
 		}
 		if !progress {
+			// A safeguard that is merely waiting is reported as pacing rather
+			// than as a blockage. Both stop the round; only one of them means
+			// something is wrong, and a caller that cannot tell them apart
+			// alerts on a governor doing its job.
+			if pacing, held := e.Kernel.Paced(effective, e.observedWorld()); held {
+				if err := e.record(Event{
+					Type: EventGoalBlocked, Actor: "coordinator", GoalID: goal.ID,
+					Message: pacing.Error(),
+				}); err != nil {
+					return err
+				}
+				return pacing
+			}
 			if err := e.record(Event{Type: EventGoalBlocked, Actor: "coordinator", GoalID: goal.ID, Message: "no agent produced an authorized action"}); err != nil {
 				return err
 			}
@@ -234,7 +281,7 @@ func (e *Engine) executeProposal(goal Goal, proposal Proposal, leaseID string) (
 	if err := e.observe(goal, proposal); err != nil {
 		return progress, err
 	}
-	if err := verifyChecks(e.World.World(), proposal.ExpectedEvidence); err != nil {
+	if err := verifyChecks(e.observedWorld(), proposal.ExpectedEvidence); err != nil {
 		if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "verifier", GoalID: goal.ID, ProposalID: proposal.ID, Message: err.Error()}); recordErr != nil {
 			return progress, recordErr
 		}
@@ -246,7 +293,15 @@ func (e *Engine) executeProposal(goal Goal, proposal Proposal, leaseID string) (
 // registerProbeTarget records how readiness should be measured for an
 // allocation. The goal's declared port is what a TCP or HTTP probe connects to.
 func (e *Engine) registerProbeTarget(goal Goal, action Action) {
-	if e.probeTargets == nil || action.Kind != ActionCreateAllocation {
+	if action.Kind != ActionCreateAllocation {
+		return
+	}
+	e.ensureProbeTarget(goal, action.Target)
+}
+
+// ensureProbeTarget records what readiness means for one allocation.
+func (e *Engine) ensureProbeTarget(goal Goal, allocation string) {
+	if e.probeTargets == nil || allocation == "" {
 		return
 	}
 	kind := ProbeProcess
@@ -265,10 +320,83 @@ func (e *Engine) registerProbeTarget(goal Goal, action Action) {
 		kind = ProbeAgent
 		provider = goal.Workload.Runtime.Provider
 	}
-	e.probeTargets[action.Target] = ProbeTarget{
-		Allocation: action.Target, Kind: kind, Port: goal.Workload.Port,
+	e.probeTargets[allocation] = ProbeTarget{
+		Allocation: allocation, Kind: kind, Port: goal.Workload.Port,
 		Engine: goal.Workload.Engine, Provider: provider,
 	}
+}
+
+// refreshReadiness re-measures the goal's running allocations.
+//
+// Readiness expires by design, so a goal that has converged still has to be
+// re-observed or it stops being satisfied. Probing only after an action meant a
+// cluster with nothing to change never re-measured anything: readiness lapsed,
+// the goal stopped being achieved, and no agent had anything to propose about
+// it. That is a deadlock presenting as a healthy cluster that refuses to admit
+// it is healthy, and it was invisible for as long as the world's clock was
+// frozen at the last thing that happened.
+//
+// A measurement is applied only when it changes what is observably true, and
+// then it is both projected and recorded. Projecting without recording would let
+// the in-memory world run ahead of the log and quietly break the property that
+// the projection is a function of recorded history; recording every measurement
+// would append an event per allocation per round for the life of the cluster.
+// Applying only real changes keeps both: the world stays truthful, and the log
+// grows with what happened rather than with how long the cluster has been up.
+//
+// A readiness that has lapsed is a change, so an idle cluster re-records each
+// allocation about once per readiness TTL. That is the honest floor for an
+// observation that expires by design.
+func (e *Engine) refreshReadiness(goal Goal) error {
+	if len(e.Probers) == 0 {
+		return nil
+	}
+	world := e.observedWorld()
+	ids := make([]string, 0, len(world.Allocations))
+	for id, allocation := range world.Allocations {
+		if allocation.Workload == goal.Workload.Name && allocation.Phase == AllocationRunning {
+			ids = append(ids, id)
+		}
+	}
+	// Stable order so a round observes the same way every time and a replayed
+	// log matches the run that produced it.
+	sort.Strings(ids)
+
+	check := Check{Kind: CheckAllocationReady, Want: "true"}
+	if goal.Workload.Runtime != nil {
+		check.Kind = CheckAgentReady
+	}
+	for _, id := range ids {
+		e.ensureProbeTarget(goal, id)
+		for _, prober := range e.Probers {
+			before := e.observedWorld()
+			evidence, ok := prober.Probe(before, Check{
+				Kind: check.Kind, Target: id, Want: check.Want,
+			})
+			if !ok {
+				continue
+			}
+			// Decided before touching anything, so an observation that changes
+			// nothing leaves both the world and the log alone.
+			was := before.Allocations[id].ReadyAt(before.Now())
+			willBe := evidence.Observed["ready"] == "true" &&
+				(evidence.ExpiresAt.IsZero() || before.Now().Before(evidence.ExpiresAt))
+			if was == willBe {
+				continue
+			}
+			if err := e.World.Project(evidence); err != nil {
+				return fmt.Errorf("project readiness for %q: %w", id, err)
+			}
+			if err := e.record(Event{
+				Type: EventObservationRecorded, Actor: "prober", GoalID: goal.ID,
+				Target: id, Kind: evidence.Kind, Message: evidence.Kind,
+				Evidence: &evidence,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // observe collects fresh probe evidence for the proposal's declared checks and
@@ -277,7 +405,7 @@ func (e *Engine) registerProbeTarget(goal Goal, action Action) {
 func (e *Engine) observe(goal Goal, proposal Proposal) error {
 	for _, check := range proposal.ExpectedEvidence {
 		for _, prober := range e.Probers {
-			evidence, ok := prober.Probe(e.World.World(), check)
+			evidence, ok := prober.Probe(e.observedWorld(), check)
 			if !ok {
 				continue
 			}

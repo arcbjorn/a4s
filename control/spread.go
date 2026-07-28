@@ -39,6 +39,17 @@ func (p *Placement) Validate() error {
 	return nil
 }
 
+// AllocationID renders the id a workload's replica is placed under.
+//
+// It is a function rather than a format string repeated at each site because
+// state outlives the allocation it describes: a failure backoff is keyed by this
+// id and is still the reason a replica cannot be recreated after the allocation
+// itself has been deleted. Anything reasoning about a replica that does not
+// currently exist has to agree with placement about what it will be called.
+func AllocationID(workload string, replica int) string {
+	return fmt.Sprintf("%s-%d", workload, replica)
+}
+
 // MaxPerDomain reports the effective per-domain ceiling for a goal, or zero when
 // the workload declares none.
 func (g Goal) MaxPerDomain() int {

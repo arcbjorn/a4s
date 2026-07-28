@@ -176,6 +176,118 @@ func clearBackoff(world *World, target string) {
 	delete(world.Backoff, target)
 }
 
+// Pacing describes a goal held back by a safeguard rather than by a fault.
+//
+// The distinction exists because the safeguards made these two look identical
+// from outside. Before them, a reconciliation that produced no authorized action
+// almost always meant something was wrong; now it routinely means a brake is on
+// and the right response is to wait. A caller that cannot tell them apart counts
+// deliberate pacing as failure, which is how a working governor turns into an
+// alert nobody can act on.
+type Pacing struct {
+	// Reason is operator-facing text naming the safeguard.
+	Reason string
+	// Until is when the constraint lifts on its own.
+	Until time.Time
+}
+
+func (p Pacing) Error() string {
+	return fmt.Sprintf("held back until %s: %s", p.Until.UTC().Format(time.RFC3339), p.Reason)
+}
+
+// Paced reports that a goal is waiting on a safeguard that expires.
+//
+// Only constraints with a time at which they lift by themselves count. A cordon
+// does not: it stands until something decides otherwise, so a goal waiting on
+// one is genuinely stuck and should be reported that way. Treating an operator
+// decision as transient would tell a caller to keep waiting for a change that
+// will never come on its own.
+func (k Kernel) Paced(goal Goal, world World) (Pacing, bool) {
+	now := world.Now()
+	var pacing Pacing
+
+	// Backoff on this workload's own targets. The earliest expiry is the one
+	// worth reporting: it is when something could next move.
+	//
+	// The replica slots are checked by name rather than by walking the world's
+	// allocations, because the case that matters most is the one where the
+	// allocation is gone: remediation deletes a failed replica so it can be
+	// recreated, and the backoff on that id is then the only thing standing
+	// between the cluster and its own repair. Looking only at allocations that
+	// still exist would report nothing at exactly that moment.
+	for _, id := range replicaSlots(goal, world) {
+		state := world.Backoff[id]
+		if !state.Active(now) {
+			continue
+		}
+		if pacing.Until.IsZero() || state.Until.Before(pacing.Until) {
+			pacing = Pacing{
+				Reason: fmt.Sprintf("%s is in a failure backoff after %d consecutive failures",
+					id, state.Failures),
+				Until: state.Until,
+			}
+		}
+	}
+
+	// The disruption cooldown, when another domain currently holds it.
+	if cooldown := k.Policy.DisruptionCooldown; cooldown > 0 {
+		for _, disruption := range RecentDisruptions(world, now, cooldown) {
+			until := disruption.At.Add(cooldown)
+			if pacing.Until.IsZero() || until.Before(pacing.Until) {
+				pacing = Pacing{
+					Reason: fmt.Sprintf("failure domain %q is inside its disruption cooldown",
+						disruption.Domain),
+					Until: until,
+				}
+			}
+		}
+	}
+
+	// The budget, once it is actually full. A budget with room left is not
+	// holding anything back and reporting it would be noise.
+	if ceiling := k.Policy.MaxDisruptionsPerWindow; ceiling > 0 {
+		window := k.Policy.DisruptionWindow
+		if window <= 0 {
+			window = DefaultDisruptionWindow
+		}
+		if recent := RecentDisruptions(world, now, window); len(recent) >= ceiling {
+			until := recent[0].At.Add(window)
+			if pacing.Until.IsZero() || until.Before(pacing.Until) {
+				pacing = Pacing{
+					Reason: fmt.Sprintf("the disruption budget is full at %d in %s",
+						len(recent), window),
+					Until: until,
+				}
+			}
+		}
+	}
+	return pacing, !pacing.Until.IsZero()
+}
+
+// replicaSlots lists every allocation id this goal may occupy, whether or not
+// the allocation currently exists.
+//
+// Both sources are needed. The names derived from the replica count cover slots
+// waiting to be filled; the world's own allocations cover a queue-scaled agent
+// workload that has grown past the goal's declared count.
+func replicaSlots(goal Goal, world World) []string {
+	seen := make(map[string]bool)
+	var slots []string
+	for replica := 0; replica < authorizedReplicas(goal, world); replica++ {
+		id := AllocationID(goal.Workload.Name, replica)
+		seen[id] = true
+		slots = append(slots, id)
+	}
+	for id, allocation := range world.Allocations {
+		if allocation.Workload == goal.Workload.Name && !seen[id] {
+			seen[id] = true
+			slots = append(slots, id)
+		}
+	}
+	sort.Strings(slots)
+	return slots
+}
+
 // RecentDisruptions returns the disruptions inside a window ending now.
 func RecentDisruptions(world World, now time.Time, window time.Duration) []Disruption {
 	if window <= 0 {

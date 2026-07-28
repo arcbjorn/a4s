@@ -89,7 +89,7 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 			}
 			node = pinned
 		}
-		allocationID := fmt.Sprintf("%s-%d", goal.Workload.Name, replica)
+		allocationID := AllocationID(goal.Workload.Name, replica)
 		var pullID string
 		if !node.Images[goal.Workload.Image] {
 			pullID = "pull-" + allocationID

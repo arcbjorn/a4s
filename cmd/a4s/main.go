@@ -607,13 +607,32 @@ func reconcileLoop(ctx context.Context, logger *slog.Logger, instance *server.Se
 			logger.Info("shutting down")
 			return nil
 		case <-ticker.C:
-			metrics.SetGauge("a4s_connected_nodes", int64(len(registry.Nodes())))
-			if len(registry.Nodes()) == 0 {
+			connected := registry.Nodes()
+			metrics.SetGauge("a4s_connected_nodes", int64(len(connected)))
+			// Reachability is recorded before reconciling, so this round's
+			// placement decisions are made against what the control plane can
+			// actually talk to rather than against last tick's belief.
+			if err := instance.ObserveNodes(connected); err != nil {
+				logger.Warn("record node reachability", slog.Any("error", err))
+			}
+			if len(connected) == 0 {
 				continue
 			}
 			for _, goal := range instance.Goals() {
 				metrics.Count("a4s_reconciliations_total")
 				if err := instance.Reconcile(goal.ID, executor); err != nil {
+					// A goal held back by a safeguard is not a failure. Counting
+					// it as one would make a working governor indistinguishable
+					// from a broken cluster on every dashboard watching this.
+					var pacing control.Pacing
+					if errors.As(err, &pacing) {
+						metrics.Count("a4s_reconciliations_paced_total")
+						logger.Info("goal paced by a safeguard",
+							slog.String("goal", goal.ID),
+							slog.String("reason", pacing.Reason),
+							slog.Time("until", pacing.Until))
+						continue
+					}
 					metrics.Count("a4s_reconcile_failures_total")
 					logger.Warn("reconcile failed",
 						slog.String("goal", goal.ID), slog.Any("error", err))
