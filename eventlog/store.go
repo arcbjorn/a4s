@@ -287,6 +287,63 @@ func (f *File) Append(event control.Event) error {
 	return nil
 }
 
+// Ingest appends records from a primary log, re-deriving every hash locally.
+//
+// It deliberately does not copy the primary's hashes. Each event is appended
+// through the ordinary path, which computes the hash from this store's own chain
+// head, and the result is then compared with what the primary recorded. Agreement
+// means the follower independently derived the same history; a copy would only
+// mean it faithfully reproduced whatever it was sent, which is not the same
+// claim and is exactly the one that matters when deciding whether a standby may
+// take over.
+//
+// Records at or below the current head are skipped, so ingesting an overlapping
+// batch is idempotent and a follower can be fed the whole log repeatedly.
+// Returns how many records were appended.
+func (f *File) Ingest(records []Record) (int, error) {
+	appended := 0
+	for _, record := range records {
+		if record.Sequence <= f.NextSequence()-1 {
+			// Already held. Verify it agrees rather than silently skipping,
+			// because a divergence in history the follower already has is the
+			// most important kind to notice.
+			if err := f.confirmRecord(record); err != nil {
+				return appended, err
+			}
+			continue
+		}
+		if err := f.Append(record.Event); err != nil {
+			return appended, fmt.Errorf("ingest record %d: %w", record.Sequence, err)
+		}
+		if head := f.Head(); head.Hash != record.Hash {
+			return appended, fmt.Errorf(
+				"ingested record %d derives hash %s but the primary recorded %s: histories have diverged",
+				record.Sequence, head.Hash, record.Hash)
+		}
+		appended++
+	}
+	return appended, nil
+}
+
+// confirmRecord checks that a record the follower already holds matches what the
+// primary sent.
+func (f *File) confirmRecord(record Record) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	held, err := f.readRecords()
+	if err != nil {
+		return err
+	}
+	if record.Sequence == 0 || record.Sequence > uint64(len(held)) {
+		return nil
+	}
+	if mine := held[record.Sequence-1]; mine.Hash != record.Hash {
+		return fmt.Errorf(
+			"record %d differs from the primary: histories have diverged", record.Sequence)
+	}
+	return nil
+}
+
 // Records returns every record in sequence order.
 func (f *File) Records() []Record {
 	f.mu.Lock()
