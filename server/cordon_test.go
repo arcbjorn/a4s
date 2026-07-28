@@ -89,6 +89,55 @@ func TestCordonIsRecordedAgainstTheOperator(t *testing.T) {
 	}
 }
 
+// A brake nobody can see is indistinguishable from a fault, so the safeguards
+// have to be countable without reading the log.
+func TestStatusReportsWhatIsHoldingTheClusterBack(t *testing.T) {
+	server, _, _ := operatorServer(t)
+	before := server.Status()
+	if before.Cordoned != 0 || before.Schedulable != before.Nodes {
+		t.Fatalf("a healthy cluster reported a brake: %+v", before)
+	}
+
+	if err := server.Cordon("base", "maintenance", "arc"); err != nil {
+		t.Fatal(err)
+	}
+	after := server.Status()
+	if after.Cordoned != 1 {
+		t.Fatalf("cordoned = %d, want 1", after.Cordoned)
+	}
+	if after.Schedulable != before.Schedulable-1 {
+		t.Fatalf("schedulable = %d, want %d", after.Schedulable, before.Schedulable-1)
+	}
+	if after.Nodes != before.Nodes {
+		t.Fatal("cordoning a node removed it from the inventory")
+	}
+}
+
+// The same counts must reach a scraper, or an alert cannot fire on a cluster
+// that has quietly stopped being able to place work.
+func TestMetricsExposeTheSafeguards(t *testing.T) {
+	api, key := operatorAPI(t)
+	if err := api.server.Cordon("base", "maintenance", "arc"); err != nil {
+		t.Fatal(err)
+	}
+	recorder := call(t, api, key, http.MethodGet, "/v1/metrics", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("metrics = %d, want 200", recorder.Code)
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{
+		"a4s_nodes_schedulable", "a4s_nodes_cordoned",
+		"a4s_recent_disruptions", "a4s_targets_backing_off",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics missing %q:\n%s", want, body)
+		}
+	}
+	if !strings.Contains(body, "a4s_nodes_cordoned 1") {
+		t.Fatalf("the cordon did not reach the gauge:\n%s", body)
+	}
+}
+
 // Evacuation answers the question an operator actually asks next.
 func TestEvacuationReportsWhatMustMove(t *testing.T) {
 	server, _, _ := operatorServer(t)

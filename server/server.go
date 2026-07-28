@@ -627,6 +627,19 @@ type Status struct {
 	Allocations int       `json:"allocations"`
 	Routes      int       `json:"routes"`
 	Events      uint64    `json:"events"`
+	// The autonomy safeguards, counted so an operator can see them working.
+	// Each of these makes a cluster deliberately slower or smaller, and a brake
+	// nobody can see is indistinguishable from a fault: without these numbers,
+	// "why is nothing happening" has no answer short of reading the log.
+	//
+	// Schedulable is reported alongside Nodes rather than instead of it,
+	// because the gap between the two is the whole point.
+	Schedulable int `json:"schedulable"`
+	Cordoned    int `json:"cordoned"`
+	// Disruptions counts disruptive actions inside the governor's window.
+	Disruptions int `json:"disruptions"`
+	// BackingOff counts targets that may not be recreated yet.
+	BackingOff int `json:"backing_off"`
 }
 
 func (s *Server) Status() Status {
@@ -638,9 +651,29 @@ func (s *Server) Status() Status {
 		events = s.log.NextSequence() - 1
 	}
 	s.mu.Unlock()
+
+	now := world.Now()
+	schedulable, cordoned := 0, 0
+	for _, node := range world.Nodes {
+		if node.Schedulable() {
+			schedulable++
+		}
+		if node.Cordoned {
+			cordoned++
+		}
+	}
+	backingOff := 0
+	for _, state := range world.Backoff {
+		if state.Active(now) {
+			backingOff++
+		}
+	}
 	return Status{
 		Revision: world.Revision, ObservedAt: world.ObservedAt, Goals: goals,
 		Nodes: len(world.Nodes), Allocations: len(world.Allocations),
 		Routes: len(world.Routes), Events: events,
+		Schedulable: schedulable, Cordoned: cordoned,
+		Disruptions: len(control.RecentDisruptions(world, now, control.DefaultDisruptionWindow)),
+		BackingOff:  backingOff,
 	}
 }

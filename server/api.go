@@ -118,6 +118,12 @@ func (a *API) metrics(writer http.ResponseWriter, _ *http.Request, _ RequestEnve
 	a.config.Metrics.SetGauge("a4s_allocations", int64(status.Allocations))
 	a.config.Metrics.SetGauge("a4s_routes", int64(status.Routes))
 	a.config.Metrics.SetGauge("a4s_events", int64(status.Events))
+	// The safeguards, so an alert can fire on a cluster that has quietly
+	// stopped being able to place work rather than on the symptom hours later.
+	a.config.Metrics.SetGauge("a4s_nodes_schedulable", int64(status.Schedulable))
+	a.config.Metrics.SetGauge("a4s_nodes_cordoned", int64(status.Cordoned))
+	a.config.Metrics.SetGauge("a4s_recent_disruptions", int64(status.Disruptions))
+	a.config.Metrics.SetGauge("a4s_targets_backing_off", int64(status.BackingOff))
 
 	writer.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	writer.WriteHeader(http.StatusOK)

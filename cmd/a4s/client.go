@@ -223,6 +223,13 @@ func status(args []string) error {
 	fmt.Printf("revision %d from %d events: %d goals, %d nodes, %d allocations, %d routes\n",
 		reported.Revision, reported.Events, reported.Goals,
 		reported.Nodes, reported.Allocations, reported.Routes)
+	// Printed only when a safeguard is actually holding something back. A line
+	// of zeroes on every healthy cluster would train an operator to skip the
+	// one line that explains a stalled one.
+	if reported.Cordoned > 0 || reported.BackingOff > 0 || reported.Disruptions > 0 {
+		fmt.Printf("holding back: %d/%d nodes schedulable, %d targets in backoff, %d recent disruptions\n",
+			reported.Schedulable, reported.Nodes, reported.BackingOff, reported.Disruptions)
+	}
 	return nil
 }
 
