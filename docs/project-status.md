@@ -121,6 +121,18 @@ and nothing has been through sustained-failure or penetration testing. See
   target may be created or started again, and observed readiness resets it.
   Removal is never blocked, so backoff paces repair instead of preventing it.
   This is what stops a goal re-proposing the same failing placement every round.
+- Readiness measured across the process boundary. Readiness has to be observed
+  where the workload runs, and the control plane is a different process from
+  every node. Until this existed the only wiring that worked was the acceptance
+  test's, which builds the engine and the node runtime together and hands the
+  observer straight to the prober: a real deployment passed no probers at all,
+  so readiness was asserted once at creation and then left to expire with
+  nothing to refresh it. A probe now travels as a signed action to the node
+  holding the allocation, is answered from the capability that owns that probe
+  kind, and comes back as evidence the node signs with its own identity. It is
+  never served from the idempotency ledger, because a remembered readiness is
+  precisely what an expiring observation must not be, and it never reaches the
+  runtime, because measuring is not mutating.
 - Node reachability as evidence. Node health was previously a fact nobody ever
   updated: it came from the scenario file and stayed there, so a node that died
   kept attracting placements and the remediation agent's first rung could never
@@ -524,21 +536,19 @@ risk order:
 1. Finish the container sandbox. Seccomp and user namespaces are in place, but
    a container still runs as the image's own user unless an operator pins one,
    and no AppArmor profile is selected.
-2. Wire a readiness prober into the server. `Reconcile` accepts probers and the
-   daemon passes none, so the engine has no readiness source outside the
-   in-memory simulation. The node has a `RuntimeObserver`; nothing connects it
-   to the control loop.
-3. Record measured failure behavior under sustained load and multi-node
+2. Record measured failure behavior under sustained load and multi-node
    operation, beyond the single verified round trip. The safeguards are now
    driven against each other in simulation, which found two deadlocks, but
-   nothing has observed them pacing a real cluster in trouble.
-4. Turn on `--require-signed-images` with a real build signer. The mechanism
+   nothing has observed them pacing a real cluster in trouble. The remote probe
+   path is unit-tested over the real transport and has not run against live
+   containerd.
+3. Turn on `--require-signed-images` with a real build signer. The mechanism
    and the `a4s attest` tool exist; nothing in this repository's own examples
    uses them, because their digests are simulation placeholders.
-5. Verify snapshot provenance in the gateway independently, rather than
+4. Verify snapshot provenance in the gateway independently, rather than
    trusting the node that produced it.
-6. Rotate a secret without replacing the allocation that mounts it.
-7. Ship standby records automatically. The follower and its promotion gate
+5. Rotate a secret without replacing the allocation that mounts it.
+6. Ship standby records automatically. The follower and its promotion gate
    exist; moving the records is currently the deployment's job.
 
 Do not treat this as production-ready until those are closed. The runtime and

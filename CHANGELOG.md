@@ -19,6 +19,13 @@ stable version and no compatibility guarantee, so everything below is under
   consecutive failures and resets on observed readiness. All derived from
   recorded evidence, so they survive restart. Repairs and removals are never
   blocked by them, only paced.
+- Readiness measured across the process boundary. A probe travels as a signed
+  action to the node holding the allocation, is answered by the capability that
+  owns that probe kind, and returns evidence the node signs with its own
+  identity. It is never served from the idempotency ledger and never reaches the
+  runtime: measuring is not mutating, and a remembered readiness is exactly what
+  an expiring observation must not be. Before this only the co-located test
+  wiring worked, so a real deployment measured nothing at all.
 - Node reachability recorded as evidence from the connections the server holds,
   so node health stops being a fact nobody ever updates. Unreachable stops new
   placement and nothing more: a partitioned node keeps running what it was told

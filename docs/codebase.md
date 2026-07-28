@@ -173,7 +173,7 @@ The node package owns the host mutation trust boundary.
 | File | Responsibility |
 |---|---|
 | `envelope.go` | Signed action envelope, signing, and verification |
-| `dispatcher.go` | Signature gate, idempotency gate, runtime dispatch |
+| `dispatcher.go` | Signature gate, idempotency gate, runtime dispatch, read-only probes |
 | `file_ledger.go` | Persistent successful-dispatch results |
 | `enroll.go` / `channel.go` / `x25519.go` | Authenticated enrollment and the encrypted channel |
 | `listen.go` / `remote.go` | Enrolled node sessions and short-lived capability issuance |
@@ -190,6 +190,7 @@ The node package owns the host mutation trust boundary.
 | `database.go` / `postgres.go` | Engine-consistent database backup and readiness |
 | `agent.go` | Per-allocation tool envelopes, budget meters, tool-call gate, drain |
 | `probe.go` | Readiness measurement and per-kind observer routing |
+| `observe.go` | Readiness measured remotely, routed to the node holding the allocation |
 | `provider.go` | Model-provider egress measurement, caching, and expiry |
 | `queue.go` | Durable work queue, leased claims, and the agent claim gate |
 | `runtime_api.go` | Workload-facing `a4s.agent/v1` surface and runtime credentials |
