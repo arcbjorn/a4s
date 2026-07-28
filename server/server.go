@@ -41,6 +41,12 @@ type Config struct {
 	// RequireSignedImages refuses to run any image without a valid attestation.
 	// A production deployment should set it; see docs/security.md.
 	RequireSignedImages bool
+	// ClusterCeiling, MaxAllocations, and ClusterBudget bound what the whole
+	// cluster may commit at once. Zero in any dimension means no ceiling there,
+	// which is the behaviour of a server configured before these existed.
+	ClusterCeiling control.Resources
+	MaxAllocations int
+	ClusterBudget  control.Budget
 }
 
 // Server owns durable history and the projection derived from it.
@@ -121,6 +127,9 @@ func Open(config Config, agents ...control.Agent) (*Server, error) {
 	}
 	policy := control.DefaultPolicy()
 	policy.RequireSignedImages = config.RequireSignedImages
+	policy.ClusterCeiling = config.ClusterCeiling
+	policy.MaxAllocations = config.MaxAllocations
+	policy.ClusterBudget = config.ClusterBudget
 	policy.ImageSigners = make(map[string]ed25519.PublicKey, len(config.ImageSigners))
 	for id, key := range config.ImageSigners {
 		policy.ImageSigners[id] = key

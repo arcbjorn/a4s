@@ -33,6 +33,15 @@ type Policy struct {
 	// deployment should enable it. An attestation that is supplied is verified
 	// either way, so leaving this off never makes a forged one acceptable.
 	RequireSignedImages bool
+	// ClusterCeiling bounds the compute every live allocation may commit across
+	// the whole cluster, and MaxAllocations bounds how many there may be. Zero
+	// in any dimension means no ceiling there.
+	ClusterCeiling Resources
+	MaxAllocations int
+	// ClusterBudget bounds the agent spend the cluster may have committed at
+	// once. Per-node budget capacity already stops one machine underwriting
+	// everything; this is the total.
+	ClusterBudget Budget
 }
 
 func DefaultPolicy() Policy {
@@ -161,6 +170,9 @@ func (k Kernel) Authorize(actor AgentDescriptor, goal Goal, world World, proposa
 		return err
 	}
 	if err := k.checkImageProvenance(goal, world, proposal); err != nil {
+		return err
+	}
+	if err := k.checkClusterBudget(world, proposal); err != nil {
 		return err
 	}
 	return nil

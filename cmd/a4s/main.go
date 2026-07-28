@@ -352,6 +352,16 @@ func runServer(args []string) error {
 		"directory of <key-id>.pub build signer keys for image provenance")
 	requireSignedImages := flags.Bool("require-signed-images", false,
 		"refuse any image without a valid provenance attestation")
+	maxCPU := flags.Int("cluster-cpu", 0,
+		"cluster-wide cpu ceiling in millis; zero means no ceiling")
+	maxMemory := flags.Int("cluster-memory", 0,
+		"cluster-wide memory ceiling in MB; zero means no ceiling")
+	maxAllocations := flags.Int("cluster-allocations", 0,
+		"cluster-wide allocation ceiling; zero means no ceiling")
+	maxTokens := flags.Int("cluster-tokens", 0,
+		"cluster-wide agent token ceiling; zero means no ceiling")
+	maxCost := flags.Int("cluster-cost-millis", 0,
+		"cluster-wide agent cost ceiling in millis; zero means no ceiling")
 	gitRemote := flags.String("git-remote", "",
 		"repository to read goals from (empty disables the git source)")
 	gitRef := flags.String("git-ref", "main", "branch or tag to track")
@@ -422,6 +432,13 @@ func runServer(args []string) error {
 		EventLog: *eventLog, Base: base, OperatorKeys: operatorKeys,
 		Anchor: *anchorPath, ImageSigners: imageSigners,
 		RequireSignedImages: *requireSignedImages,
+		ClusterCeiling: control.Resources{
+			CPUMillis: *maxCPU, MemoryMB: *maxMemory,
+		},
+		MaxAllocations: *maxAllocations,
+		ClusterBudget: control.Budget{
+			Tokens: *maxTokens, CostMillis: *maxCost,
+		},
 	}, control.RolloutAgent{}, control.PlacementAgent{}, control.NetworkAgent{})
 	if openErr != nil {
 		return openErr
