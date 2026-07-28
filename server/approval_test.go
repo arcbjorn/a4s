@@ -237,6 +237,29 @@ func TestQueryNarrowsHistory(t *testing.T) {
 	if limited[0].Sequence != all[len(all)-1].Sequence {
 		t.Fatal("expected the limit to keep the most recent event")
 	}
+
+	// The window bounds both ends. An operator narrowing to "before this
+	// happened" needs the upper bound as much as the lower one.
+	latest := all[len(all)-1].At
+	if before := server.Query(HistoryQuery{Until: latest.Add(-time.Nanosecond)}); len(before) >= len(all) {
+		t.Fatalf("expected the upper bound to exclude the newest event, got %d of %d",
+			len(before), len(all))
+	}
+	if window := server.Query(HistoryQuery{Since: latest, Until: latest}); len(window) == 0 {
+		t.Fatal("expected an inclusive window to match the event on its bound")
+	}
+}
+
+// A shutdown that races a query must refuse it rather than dereference the log
+// the server has already closed.
+func TestQueryAfterCloseReturnsNothing(t *testing.T) {
+	server, _, _ := operatorServer(t)
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if events := server.Query(HistoryQuery{}); events != nil {
+		t.Fatalf("expected a closed server to answer nothing, got %d events", len(events))
+	}
 }
 
 // A server that has not been told who its operators are must not authorize

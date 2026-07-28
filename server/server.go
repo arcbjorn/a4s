@@ -383,37 +383,60 @@ type HistoryQuery struct {
 func (s *Server) Query(query HistoryQuery) []control.Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A closed server answers nothing rather than dereferencing a log it no
+	// longer holds. History and Rebuild already guard this; a query that did
+	// not would turn an ordinary shutdown race into a panic.
+	if s.log == nil {
+		return nil
+	}
 
+	records := s.log.Records()
+	events := make([]control.Event, 0, len(records))
+	for _, record := range records {
+		events = append(events, record.Event)
+	}
+	return query.Apply(events)
+}
+
+// Apply filters events to those matching the query, oldest first, and caps the
+// result at the query's limit.
+//
+// It is exported because the CLI answers `a4s history` straight from an event
+// log file rather than through a running server. Both paths run this function,
+// which is what keeps them from drifting into answering the same question
+// differently.
+func (q HistoryQuery) Apply(events []control.Event) []control.Event {
 	var matched []control.Event
-	for _, record := range s.log.Records() {
-		if matchesQuery(record.Event, query) {
-			matched = append(matched, record.Event)
+	for _, event := range events {
+		if q.Matches(event) {
+			matched = append(matched, event)
 		}
 	}
-	if query.Limit > 0 && len(matched) > query.Limit {
-		matched = matched[len(matched)-query.Limit:]
+	if q.Limit > 0 && len(matched) > q.Limit {
+		matched = matched[len(matched)-q.Limit:]
 	}
 	return matched
 }
 
-func matchesQuery(event control.Event, query HistoryQuery) bool {
-	if query.GoalID != "" && event.GoalID != query.GoalID {
+// Matches reports whether one event satisfies every filter in the query.
+func (q HistoryQuery) Matches(event control.Event) bool {
+	if q.GoalID != "" && event.GoalID != q.GoalID {
 		return false
 	}
-	if query.Target != "" && event.Target != query.Target {
+	if q.Target != "" && event.Target != q.Target {
 		// Evidence often names the target the event itself does not, so an
 		// operator searching for an allocation finds its observations too.
-		if event.Evidence == nil || event.Evidence.Target != query.Target {
+		if event.Evidence == nil || event.Evidence.Target != q.Target {
 			return false
 		}
 	}
-	if query.Kind != "" && string(event.Type) != query.Kind && event.Kind != query.Kind {
+	if q.Kind != "" && string(event.Type) != q.Kind && event.Kind != q.Kind {
 		return false
 	}
-	if !query.Since.IsZero() && event.At.Before(query.Since) {
+	if !q.Since.IsZero() && event.At.Before(q.Since) {
 		return false
 	}
-	if !query.Until.IsZero() && event.At.After(query.Until) {
+	if !q.Until.IsZero() && event.At.After(q.Until) {
 		return false
 	}
 	return true
