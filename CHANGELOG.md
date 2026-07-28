@@ -33,11 +33,14 @@ stable version and no compatibility guarantee, so everything below is under
   kernel-recomputed worker ceiling.
 - Model-backed diagnosis in `reason`, outside the stdlib-only kernel, with
   deterministic fallback so model availability is never a dependency.
-- Canary rollout with weighted traffic. A goal declares traffic steps; the kernel
-  derives the authorized share from the proportion of ready allocations running
-  the target image, and the gateway applies per-endpoint weights. The share is
-  derived rather than latched, so a new version that stops being measured ready
-  loses its traffic instead of holding it on the strength of an earlier advance.
+- Canary rollout with weighted traffic. A goal declares traffic steps and an
+  optional hold; the kernel derives the authorized share from the proportion of
+  ready allocations running the target image, capped by how long the target side
+  has been continuously healthy, and the gateway applies per-endpoint weights.
+  The share is derived rather than latched, so a new version that stops being
+  measured ready loses its traffic instead of holding it on the strength of an
+  earlier advance. The hold is measured from the least-established target
+  replica, so scaling the target side up starts the new step's hold.
 - Scheduled and batch workloads: cron schedule, run deadline, required
   completions, retries, and a concurrency policy. Schedules are a pure function
   of the observed world's time and always evaluated in UTC, so placement stays
@@ -110,6 +113,9 @@ stable version and no compatibility guarantee, so everything below is under
   projection updates. Revocation is authenticated the same way granting is.
 - Causal explanation of any allocation or route, dry-run planning that reuses
   the kernel's own simulation, and deterministic diagnosis of a stuck goal.
+- History narrowed by goal, target, kind, or a window bounded at both ends,
+  through one filter shared by `a4s history` and the operator API, so reading a
+  log file and querying a running server cannot answer differently.
 - Controller keyset with active, accepted, and retired states, so a fleet
   rotates without a coordinated restart; retiring the active key is refused.
 - Structured logging and in-process metrics with a Prometheus endpoint.
