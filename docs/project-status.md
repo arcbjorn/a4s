@@ -165,12 +165,15 @@ and nothing has been through sustained-failure or penetration testing. See
   egress rules naming workloads or CIDRs; the compiler expands names to
   observed endpoints and fails closed when nothing is serving. a4s owns one
   table and replaces it wholesale, so applied state equals authorized state.
-- Canary rollout with weighted traffic. A goal declares traffic steps; the
-  kernel derives the authorized share from the proportion of ready allocations
-  running the target image, and the gateway applies per-endpoint weights.
+- Canary rollout with weighted traffic. A goal declares traffic steps and an
+  optional hold; the kernel derives the authorized share from the proportion of
+  ready allocations running the target image, capped by how long the target side
+  has been continuously healthy, and the gateway applies per-endpoint weights.
   Because the share is derived rather than latched, a new version that stops
   being measured ready loses its traffic automatically instead of holding it on
-  the strength of an earlier advance.
+  the strength of an earlier advance. The hold is measured from the target's
+  least-established replica, so scaling the target side up starts the new step's
+  hold rather than inheriting the previous step's.
 - Scheduled and batch workloads. A workload declares a cron schedule, a run
   deadline, required completions, retries, and a concurrency policy. Schedules
   are evaluated as a pure function of the observed world's time and always in

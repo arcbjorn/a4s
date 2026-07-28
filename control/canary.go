@@ -3,6 +3,7 @@ package control
 import (
 	"fmt"
 	"sort"
+	"time"
 )
 
 // Canary declares gradual traffic shifting for a rollout.
@@ -80,9 +81,11 @@ type CanaryState struct {
 	PreviousReady int `json:"previous_ready"`
 	// Complete is true when every ready allocation runs the target image.
 	Complete bool `json:"complete"`
-	// Advanced is true when this evaluation moved to a later step, which is what
-	// makes the progression recordable as an event.
-	Advanced bool `json:"advanced"`
+	// HeldFor is how long the target side has been continuously healthy, taken
+	// from its least-established replica. It is what a hold is measured against,
+	// and reporting it is what lets an operator see why a canary is waiting
+	// rather than guessing that it is stuck.
+	HeldFor Duration `json:"held_for,omitempty"`
 }
 
 // EvaluateCanary computes the authorized traffic share for a canary rollout.
@@ -98,6 +101,11 @@ func EvaluateCanary(goal Goal, world World) CanaryState {
 		return state
 	}
 	now := world.Now()
+	// The hold clock is the shortest continuous readiness on the target side.
+	// Taking the minimum rather than the maximum means adding a replica starts
+	// the new step's hold instead of inheriting the previous step's, which is
+	// what makes each step actually observed before the next.
+	held := time.Duration(-1)
 	for _, allocation := range world.Allocations {
 		if allocation.Workload != goal.Workload.Name {
 			continue
@@ -107,9 +115,15 @@ func EvaluateCanary(goal Goal, world World) CanaryState {
 		}
 		if allocation.Image == goal.Workload.Image {
 			state.TargetReady++
+			if ready := allocation.ReadyFor(now); held < 0 || ready < held {
+				held = ready
+			}
 		} else {
 			state.PreviousReady++
 		}
+	}
+	if held > 0 {
+		state.HeldFor = Duration(held)
 	}
 
 	// Nothing else is serving, so the target carries everything. This covers the
@@ -133,18 +147,26 @@ func EvaluateCanary(goal Goal, world World) CanaryState {
 	// replica count can carry.
 	total := state.TargetReady + state.PreviousReady
 	proportion := state.TargetReady * 100 / total
-	state.Step = canary.Steps[0]
-	for _, step := range canary.Steps {
+	// Index zero rather than the largest matching step, so the first step is
+	// always available once one replica is ready: a canary with a 10% first step
+	// still starts on a 3-replica workload where one ready replica is 33%.
+	index := 0
+	for position, step := range canary.Steps {
 		if step <= proportion {
-			state.Step = step
+			index = position
 		}
 	}
-	// The first step is always available once one replica is ready, so a canary
-	// with a 10% first step still starts on a 3-replica workload where one ready
-	// replica is 33%.
-	if state.Step < canary.Steps[0] {
-		state.Step = canary.Steps[0]
+	// A hold caps how far the ladder may climb. Each step must be observed
+	// healthy for HoldFor before the next becomes available, so a version that
+	// is ready but has not been ready for long enough waits at its current
+	// share. The bound is derived from observation rather than latched, which
+	// means a replica that flaps back also pulls the authorized share down.
+	if hold := canary.HoldFor.Duration(); hold > 0 {
+		if reached := int(time.Duration(state.HeldFor) / hold); reached < index {
+			index = reached
+		}
 	}
+	state.Step = canary.Steps[index]
 	return state
 }
 

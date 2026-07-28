@@ -113,6 +113,77 @@ func TestCanaryRetreatsWhenReadinessRegresses(t *testing.T) {
 	}
 }
 
+// readyFor backdates the target side's readiness clock, which is what a hold is
+// measured against.
+func readyFor(world World, image string, age time.Duration) World {
+	for _, allocation := range world.Allocations {
+		if allocation.Image == image {
+			allocation.ReadySince = world.Now().Add(-age)
+		}
+	}
+	return world
+}
+
+// A declared hold must actually hold. Advancing on readiness alone would let a
+// version that has been healthy for one second take the share meant for one
+// that has been healthy for the whole interval.
+func TestCanaryHoldsEachStepForItsDuration(t *testing.T) {
+	goal := canaryGoal(10, 50, 100)
+	goal.Canary.HoldFor = Duration(2 * time.Minute)
+
+	// Two of four ready supports 50% by proportion, but nothing has been ready
+	// long enough to leave the first step.
+	fresh := readyFor(canaryWorld(2, 2), newImage, 10*time.Second)
+	if got := EvaluateCanary(goal, fresh).Step; got != 10 {
+		t.Fatalf("a canary with no elapsed hold authorized %d%%, want 10%%", got)
+	}
+
+	// One hold elapsed unlocks the next step, and the proportion still allows it.
+	held := readyFor(canaryWorld(2, 2), newImage, 2*time.Minute+time.Second)
+	state := EvaluateCanary(goal, held)
+	if state.Step != 50 {
+		t.Fatalf("an elapsed hold authorized %d%%, want 50%%", state.Step)
+	}
+	if state.HeldFor.Duration() < 2*time.Minute {
+		t.Fatalf("HeldFor = %s, want at least 2m", state.HeldFor.Duration())
+	}
+
+	// The proportion still caps the ladder: a long hold cannot buy a share the
+	// replica count cannot carry.
+	long := readyFor(canaryWorld(1, 3), newImage, time.Hour)
+	if got := EvaluateCanary(goal, long).Step; got != 10 {
+		t.Fatalf("a long hold on one of four authorized %d%%, want 10%%", got)
+	}
+}
+
+// The hold is measured from the least-established replica, so scaling the target
+// side up starts the new step's hold rather than inheriting the previous one's.
+func TestCanaryHoldFollowsTheNewestReplica(t *testing.T) {
+	goal := canaryGoal(10, 50, 100)
+	goal.Canary.HoldFor = Duration(2 * time.Minute)
+
+	world := readyFor(canaryWorld(2, 2), newImage, time.Hour)
+	// One target replica was replaced moments ago.
+	for _, allocation := range world.Allocations {
+		if allocation.Image == newImage {
+			allocation.ReadySince = world.Now().Add(-time.Second)
+			break
+		}
+	}
+	if got := EvaluateCanary(goal, world).Step; got != 10 {
+		t.Fatalf("a freshly added replica did not restart the hold: got %d%%", got)
+	}
+}
+
+// A canary that declares no hold advances on readiness alone, which is the
+// behaviour every existing rollout depends on.
+func TestCanaryWithoutHoldAdvancesOnReadiness(t *testing.T) {
+	goal := canaryGoal(10, 50, 100)
+	if got := EvaluateCanary(goal, canaryWorld(2, 2)).Step; got != 50 {
+		t.Fatalf("a canary with no hold authorized %d%%, want 50%%", got)
+	}
+}
+
 // Weights split traffic between versions and sum to 100, so a gateway needs no
 // floating point.
 func TestWeightEndpointsSplitsByVersion(t *testing.T) {
