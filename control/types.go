@@ -425,6 +425,16 @@ type Node struct {
 	// string rather than a label hierarchy: a4s needs to know what fails
 	// together, not how the operator names their datacentre.
 	Domain string `json:"domain,omitempty"`
+	// Cordoned stops this node attracting new allocations. It is separate from
+	// Healthy because the two mean different things and are reversed by
+	// different parties: health is measured and clears itself when the node
+	// recovers, while a cordon is a decision that stands until something
+	// decides otherwise. Draining a node that healed would otherwise restart
+	// the moment a heartbeat arrived mid-evacuation.
+	Cordoned bool `json:"cordoned,omitempty"`
+	// CordonReason records why, so an operator finding a node out of service
+	// can tell a deliberate maintenance cordon from an automatic one.
+	CordonReason string `json:"cordon_reason,omitempty"`
 	// Address is where other nodes reach this one, conventionally its tailnet
 	// address. Allocation addresses are node-local: an allocation IP on one
 	// node means nothing on another, so a cross-node service name resolves to
@@ -737,6 +747,18 @@ const (
 	// finish what it holds. It is the agent equivalent of quiescing a volume:
 	// the step that makes the following stop non-destructive.
 	ActionDrainAllocation ActionKind = "drain_allocation"
+	// ActionCordonNode stops a node attracting new allocations without touching
+	// what already runs on it.
+	//
+	// Draining deliberately has no action of its own. A drain is a cordon
+	// followed by ordinary stop and delete actions on that node's allocations,
+	// which means evacuation passes through the same authorization, disruption
+	// budget, and stateful-data gates as any other removal. A dedicated
+	// drain_node action would be a second path to the same destruction with its
+	// own policy to keep in step, and the two would eventually disagree.
+	ActionCordonNode ActionKind = "cordon_node"
+	// ActionUncordonNode returns a node to service.
+	ActionUncordonNode ActionKind = "uncordon_node"
 )
 
 type Action struct {
@@ -778,7 +800,11 @@ type Action struct {
 	Tools []ToolGrant `json:"tools,omitempty"`
 	// Budget is the ceiling a create_allocation action reserves for an agent
 	// instance. It is empty for ordinary workloads.
-	Budget    Budget   `json:"budget,omitempty"`
+	Budget Budget `json:"budget,omitempty"`
+	// Reason records why a node was taken out of service. It is carried on the
+	// action so the explanation lands in durable history beside the decision
+	// rather than only in whatever log the proposer happened to write.
+	Reason    string   `json:"reason,omitempty"`
 	DependsOn []string `json:"depends_on,omitempty"`
 }
 

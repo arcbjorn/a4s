@@ -131,6 +131,16 @@ func (e *MemoryExecutor) Execute(action Action) (Evidence, error) {
 			},
 		}, nil
 
+	case ActionCordonNode, ActionUncordonNode:
+		// Cordoning changes no host state, so there is nothing for a data-plane
+		// executor to do. It is still an action rather than a control-plane
+		// side effect, because it is a decision that must be proposed,
+		// authorized, and recorded like any other.
+		if _, ok := e.world.Nodes[action.Target]; !ok {
+			return Evidence{}, fmt.Errorf("node %q does not exist", action.Target)
+		}
+		return CordonEvidence(action)
+
 	case ActionDetachVolume:
 		if action.Volume == nil {
 			return Evidence{}, fmt.Errorf("detach volume requires a volume reference")
@@ -440,6 +450,22 @@ func simulateAction(world *World, action Action) error {
 			allocation.Volumes = make(map[string]uint64)
 		}
 		allocation.Volumes[action.Volume.Name] = volume.Generation
+
+	case ActionCordonNode:
+		node, ok := world.Nodes[action.Target]
+		if !ok {
+			return fmt.Errorf("node %q does not exist", action.Target)
+		}
+		node.Cordoned = true
+		node.CordonReason = action.Reason
+
+	case ActionUncordonNode:
+		node, ok := world.Nodes[action.Target]
+		if !ok {
+			return fmt.Errorf("node %q does not exist", action.Target)
+		}
+		node.Cordoned = false
+		node.CordonReason = ""
 
 	case ActionDetachVolume:
 		if action.Volume == nil {

@@ -213,6 +213,8 @@ var actionValidators = map[ActionKind]func(Goal, World, Action) error{
 	ActionStopAllocation:   validateStopAllocation,
 	ActionDeleteAllocation: validateDeleteAllocation,
 	ActionPublishRoute:     validatePublishRoute,
+	ActionCordonNode:       validateCordonNode,
+	ActionUncordonNode:     validateUncordonNode,
 }
 
 func validateAction(goal Goal, world World, action Action) error {
@@ -241,6 +243,12 @@ func validateCreateAllocation(goal Goal, world World, action Action) error {
 	node, ok := world.Nodes[action.Node]
 	if !ok || !node.Healthy {
 		return fmt.Errorf("node %q is missing or unhealthy", action.Node)
+	}
+	if node.Cordoned {
+		// Refused here and not only in the agent. A cordon that only the
+		// proposing agent respected would be advisory, and the whole point of
+		// draining a node is that nothing lands on it while it empties.
+		return fmt.Errorf("node %q is cordoned: %s", action.Node, node.CordonReason)
 	}
 	if !nodeAllowed(goal.Constraints, *node) {
 		return fmt.Errorf("node %q violates placement constraints", action.Node)
@@ -282,6 +290,11 @@ func validateCreateVolume(goal Goal, world World, action Action) error {
 	node, ok := world.Nodes[action.Node]
 	if !ok || !node.Healthy {
 		return fmt.Errorf("node %q is missing or unhealthy", action.Node)
+	}
+	if node.Cordoned {
+		// New durable state must not land on a node that is being emptied, or
+		// the drain would never finish.
+		return fmt.Errorf("node %q is cordoned: %s", action.Node, node.CordonReason)
 	}
 	if existing, exists := world.Volumes[action.Volume.Name]; exists && existing.Node != action.Node {
 		// Creating the same volume on a second node would silently produce
@@ -395,6 +408,11 @@ func validateQuiesceVolume(goal Goal, world World, action Action) error {
 	target, ok := world.Nodes[action.Node]
 	if !ok || !target.Healthy {
 		return fmt.Errorf("handoff target %q is missing or unhealthy", action.Node)
+	}
+	if target.Cordoned {
+		// Moving data onto a node that is being drained would mean moving it
+		// straight back off again.
+		return fmt.Errorf("handoff target %q is cordoned: %s", action.Node, target.CordonReason)
 	}
 	if action.Node == volume.Node {
 		return fmt.Errorf("volume %q already lives on node %q", action.Volume.Name, action.Node)

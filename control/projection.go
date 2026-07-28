@@ -29,6 +29,11 @@ const (
 	EvidenceNetworkDetached   = "network.detached"
 	EvidenceAllocationRunning = "allocation.running"
 	EvidenceAllocationReady   = "allocation.ready"
+	// EvidenceNodeCordoned and EvidenceNodeUncordoned record a node leaving and
+	// returning to service. They are facts about scheduling intent rather than
+	// about the node's health, which is measured separately and independently.
+	EvidenceNodeCordoned      = "node.cordoned"
+	EvidenceNodeUncordoned    = "node.uncordoned"
 	EvidenceAllocationStopped = "allocation.stopped"
 	EvidenceAllocationDeleted = "allocation.deleted"
 	EvidenceAllocationFailed  = "allocation.failed"
@@ -505,6 +510,22 @@ func projectInto(world *World, evidence Evidence) error {
 			return fmt.Errorf("allocation %q cannot be ready in phase %q", evidence.Target, allocation.Phase)
 		}
 		applyReadiness(world, allocation, evidence)
+
+	case EvidenceNodeCordoned:
+		node, ok := world.Nodes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown node %q", evidence.Kind, evidence.Target)
+		}
+		node.Cordoned = true
+		node.CordonReason = evidence.Observed["reason"]
+
+	case EvidenceNodeUncordoned:
+		node, ok := world.Nodes[evidence.Target]
+		if !ok {
+			return fmt.Errorf("evidence %q names unknown node %q", evidence.Kind, evidence.Target)
+		}
+		node.Cordoned = false
+		node.CordonReason = ""
 
 	case EvidenceAllocationStopped:
 		allocation, ok := world.Allocations[evidence.Target]

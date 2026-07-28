@@ -78,7 +78,11 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 		}
 		if home := volumeHome(goal, world); home != "" {
 			pinned, ok := world.Nodes[home]
-			if !ok || !pinned.Healthy {
+			if !ok || !pinned.Schedulable() {
+				// A cordoned home node is reported the same way an unhealthy
+				// one is. Both mean the data has to move before the workload
+				// can run, and moving it is an approved decision rather than
+				// something placement may do on its own.
 				return proposal, fmt.Errorf(
 					"volume for workload %q lives on node %q, which is not available",
 					goal.Workload.Name, home)
@@ -214,7 +218,7 @@ func selectNode(goal Goal, world World, reserved map[string]Resources,
 	crowded := 0
 	for _, id := range ids {
 		node := world.Nodes[id]
-		if !node.Healthy || !nodeAllowed(goal.Constraints, *node) {
+		if !node.Schedulable() || !nodeAllowed(goal.Constraints, *node) {
 			continue
 		}
 		if ceiling > 0 && occupancy[node.FailureDomain()] >= ceiling {

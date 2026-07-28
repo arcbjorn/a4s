@@ -89,12 +89,13 @@ func DomainOccupancy(world World, workload string) map[string]int {
 	return counts
 }
 
-// FailureDomains lists the distinct domains the world's healthy nodes occupy, in
-// a stable order.
+// FailureDomains lists the distinct domains the world's schedulable nodes
+// occupy, in a stable order. A cordoned node's domain is not capacity a goal can
+// be admitted against, because nothing new may be placed there.
 func FailureDomains(world World) []string {
 	seen := make(map[string]bool, len(world.Nodes))
 	for _, node := range world.Nodes {
-		if !node.Healthy {
+		if !node.Schedulable() {
 			continue
 		}
 		seen[node.FailureDomain()] = true

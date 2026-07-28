@@ -94,6 +94,13 @@ func (e *RemoteExecutor) Execute(action control.Action) (control.Evidence, error
 	if goalID == "" || proposalID == "" {
 		return control.Evidence{}, fmt.Errorf("remote executor was not bound to an authorized proposal")
 	}
+	// A control-plane-local action never reaches a node. Taking an unresponsive
+	// node out of service must not require that node's cooperation, and asking
+	// it to attest to a scheduling decision it cannot observe would be asking
+	// for a signature on something it does not know.
+	if action.Kind.ControlPlaneLocal() {
+		return control.CordonEvidence(action)
+	}
 
 	now := e.now()
 	ttl := e.TTL
