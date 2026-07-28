@@ -1,6 +1,6 @@
 # Project status
 
-Status date: 2026-07-25
+Status date: 2026-07-28
 
 Version: `0.2.0-dev`
 
@@ -80,9 +80,12 @@ and nothing has been through sustained-failure or penetration testing. See
   and container liveness.
 - An operator surface: `a4s approve` issues and revokes Ed25519-signed grants
   for the five gated decisions, and `a4s history` narrows recorded history by
-  goal, target, kind, or window. Approvals carry a mandatory expiry, are checked
-  against the world's observation time, and survive restart because they are
-  appended to durable history before the projection is updated.
+  goal, target, kind, or a window bounded at both ends. The filter itself is one
+  implementation shared by the CLI and the operator API, so reading a log file
+  and querying a running server cannot answer the same question differently.
+  Approvals carry a mandatory expiry, are checked against the world's
+  observation time, and survive restart because they are appended to durable
+  history before the projection is updated.
 - The first model-backed control agent: a diagnoser that explains a
   non-converging goal. It lives in `reason`, outside the stdlib-only `control`
   package, and falls back to the deterministic `LogDiagnoser` on every failure of
@@ -229,9 +232,12 @@ and nothing has been through sustained-failure or penetration testing. See
 - Intent persisted as `action.dispatched` before mutation.
 
 The hash chain detects edits and reordering relative to the local first record.
-It does not prevent undetected truncation or replacement unless the latest hash
-is anchored outside the store. It is an integrity aid, not yet a complete audit
-security system.
+Truncation and wholesale replacement are caught by the external anchor, which
+witnesses the chain head outside the store it describes; without an anchor path
+configured that gap stays open. The anchor is a single local file, so it raises
+the cost of forging history rather than making it impossible: an attacker with
+write access to both the store and the anchor can still produce a consistent
+pair.
 
 ### Operator API and observability
 
@@ -423,19 +429,24 @@ restore, rollback execution, cross-node name resolution, and firewall
 compilation, with the denial matrix exercised over the real protocol and the
 runtime adapter driven against real containerd.
 
+Four of the five milestones this section previously named are closed: evidence
+is signed by the node that measured it, the chain head is anchored outside its
+own store, containers run under a seccomp profile with user-namespace mapping
+available, and both daemons ship as hardened systemd units under a
+least-privilege identity.
+
 What remains is the operational surface a production deployment needs, in
 risk order:
 
-1. Sign evidence with a per-node identity distinct from the controller signing
-   key, so a compromised node cannot lie undetectably about what it observed.
-2. Anchor the latest audit hash outside the event store, closing the wholesale
-   replacement gap the chain alone cannot detect.
-3. Complete the container sandbox: seccomp/AppArmor profile selection, user
-   namespaces, and non-root execution.
-4. Package service units, signal handling, and graceful shutdown, with a
-   least-privilege service identity.
-5. Record measured failure behavior under sustained load and multi-node
+1. Finish the container sandbox. Seccomp and user namespaces are in place, but
+   a container still runs as the image's own user unless an operator pins one,
+   and no AppArmor profile is selected.
+2. Record measured failure behavior under sustained load and multi-node
    operation, beyond the single verified round trip.
+3. Verify snapshot provenance in the gateway independently, rather than
+   trusting the node that produced it.
+4. Rotate a secret without replacing the allocation that mounts it.
 
-Do not treat this as production-ready until those are closed. The runtime
-adapter is proven; the audit and sandbox boundaries are not.
+Do not treat this as production-ready until those are closed. The runtime and
+audit boundaries are proven; the sandbox boundary and sustained-failure
+behavior are not.
