@@ -29,6 +29,14 @@ const (
 	// DefaultDisruptionCooldown is how long a failure domain counts as under
 	// disruption after one of its allocations was disrupted. While it is, no
 	// other domain may be disrupted.
+	//
+	// It is set to the readiness TTL on purpose: one cooldown is roughly one
+	// observation cycle, so the effect of the last disruption has been measured
+	// before another domain is touched. The cost is rollout latency, and it is
+	// real — a rolling update that crosses domains advances no faster than this,
+	// and a large workload feels it. That is the trade being made, not an
+	// oversight: an unattended control plane that replaces faster than it can
+	// observe is the thing this exists to prevent.
 	DefaultDisruptionCooldown = 30 * time.Second
 	// DisruptionRetention bounds how much disruption history the world carries.
 	// The projection is rebuilt from the whole log, so without a bound this

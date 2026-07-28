@@ -208,6 +208,15 @@ func (e *Engine) executeProposal(goal Goal, proposal Proposal, leaseID string) (
 		// Declare what readiness means for a new allocation before any
 		// probe runs, so readiness is measured rather than assumed.
 		e.registerProbeTarget(goal, action)
+		// A node stamps its own observation time onto everything it reports, and
+		// that stamp is never overwritten here. An in-memory executor has no
+		// node to do it, so the engine fills the gap: evidence with no time is
+		// invisible to every rule measured against a window, which would leave
+		// the disruption budget silently inert in simulation and let a dry run
+		// predict work a real cluster would refuse.
+		if evidence.ObservedAt.IsZero() {
+			evidence.ObservedAt = e.now().UTC()
+		}
 		// Evidence, not the action, advances the world.
 		if err := e.World.Project(evidence); err != nil {
 			if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "projection", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Target: action.Target, Kind: string(action.Kind), Message: err.Error()}); recordErr != nil {
