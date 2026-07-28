@@ -12,6 +12,7 @@ import (
 
 	"github.com/arcbjorn/a4s/control"
 	"github.com/arcbjorn/a4s/eventlog"
+	"github.com/arcbjorn/a4s/server"
 )
 
 // approve issues an operator-signed grant for one gated decision.
@@ -184,6 +185,7 @@ func history(args []string) error {
 	target := flags.String("target", "", "only events naming this target")
 	kind := flags.String("kind", "", "only this event type or evidence kind")
 	since := flags.Duration("since", 0, "only events within this window")
+	until := flags.Duration("until", 0, "only events older than this")
 	limit := flags.Int("limit", 0, "keep at most this many of the most recent events")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 	if err := flags.Parse(args); err != nil {
@@ -197,32 +199,21 @@ func history(args []string) error {
 	if err != nil {
 		return err
 	}
-	var window time.Time
-	if *since > 0 {
-		window = time.Now().Add(-*since)
-	}
 
-	var matched []control.Event
-	for _, event := range events {
-		if *goalID != "" && event.GoalID != *goalID {
-			continue
-		}
-		if *target != "" && event.Target != *target {
-			if event.Evidence == nil || event.Evidence.Target != *target {
-				continue
-			}
-		}
-		if *kind != "" && string(event.Type) != *kind && event.Kind != *kind {
-			continue
-		}
-		if !window.IsZero() && event.At.Before(window) {
-			continue
-		}
-		matched = append(matched, event)
+	// The filter itself lives in the server package and is shared with the
+	// operator API, so reading a log directly and querying a running control
+	// plane cannot answer the same question differently.
+	query := server.HistoryQuery{
+		GoalID: *goalID, Target: *target, Kind: *kind, Limit: *limit,
 	}
-	if *limit > 0 && len(matched) > *limit {
-		matched = matched[len(matched)-*limit:]
+	now := time.Now()
+	if *since > 0 {
+		query.Since = now.Add(-*since)
 	}
+	if *until > 0 {
+		query.Until = now.Add(-*until)
+	}
+	matched := query.Apply(events)
 
 	if *jsonOutput {
 		return json.NewEncoder(os.Stdout).Encode(matched)

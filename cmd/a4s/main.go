@@ -1110,7 +1110,7 @@ Usage:
               --operator NAME --key /path --key-id ID [--from IMAGE] [--to IMAGE]
   a4s approve --scopes
   a4s history --event-log /path [--goal ID] [--target ID] [--kind KIND]
-              [--since 1h] [--limit N] [--json]
+              [--since 1h] [--until 10m] [--limit N] [--json]
   a4s backup --event-log /path --out /path/backup.log [--json]
   a4s backup --verify /path/backup.log [--json]
   a4s restore --from /path/backup.log --event-log /path [--json]
