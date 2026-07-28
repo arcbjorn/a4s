@@ -54,7 +54,13 @@ containerd, networking implementations, model SDKs, and transport libraries.
 | `netpolicy.go` | Typed network intent compiled toward nftables |
 | `attest.go` | Node evidence signing and verification |
 | `schedule.go` | Cron parsing and scheduled-run evaluation |
-| `canary.go` | Canary steps and endpoint traffic weights |
+| `canary.go` | Canary steps, hold durations, and endpoint traffic weights |
+| `spread.go` | Failure domains and per-domain replica ceilings |
+| `disruption.go` | Cluster disruption budget and per-target failure backoff |
+| `clusterbudget.go` | Cluster-wide compute, allocation, and agent spend ceilings |
+| `node_lifecycle.go` | Cordon, evacuation planning, and schedulability |
+| `remediation.go` | The repair ladder: cordon, retire, evacuate |
+| `provenance.go` | Image build attestations and trusted signers |
 | `storage_agent.go` | Volume backup, restore verification, and handoff proposals |
 | `plan.go` / `explain.go` / `diagnose.go` | Dry run, causal history, and deterministic diagnosis |
 | `modelcontext.go` | Redacted model input and explanation provenance |
@@ -97,6 +103,7 @@ serves the authenticated operator API.
 | `api.go` | Operator HTTP surface and the request-body limit applied before auth |
 | `apiauth.go` | Signed-envelope verification and the single-use nonce ledger |
 | `apibody.go` | Carries the pre-read body to handlers, since the signature covers its digest |
+| `standby.go` | Follower log ingestion and the anchored promotion gate |
 | `approval_test.go` | Durable approval admission and restart survival |
 
 ```text

@@ -105,6 +105,44 @@ and nothing has been through sustained-failure or penetration testing. See
   provider facts are measurements rather than flags, and unmeasured, unreachable,
   and expired all read alike, so a node that loses egress stops attracting agent
   placements.
+- Failure domains and replica spread. A node declares the domain it fails with;
+  a node that declares none is its own, so spreading works before any topology
+  is described. A workload declares at most how many replicas may share a
+  domain, the placement agent selects against it, and the kernel enforces it
+  independently. Without it the availability floor, the canary ladder, and
+  rolling replacement are all satisfied by replicas a single reboot ends.
+- A cluster-wide disruption governor. A budget bounds how many disruptive
+  actions the whole cluster may take in a window, and only one failure domain
+  may be under disruption at a time. Both are derived from recorded evidence
+  rather than counted in memory, so they survive restart. A failure is not
+  charged, and neither is clearing an allocation that already stopped: the
+  budget paces change the control plane causes, not damage it repairs.
+- Per-target failure backoff. Consecutive failures escalate the delay before a
+  target may be created or started again, and observed readiness resets it.
+  Removal is never blocked, so backoff paces repair instead of preventing it.
+  This is what stops a goal re-proposing the same failing placement every round.
+- Node cordon and evacuation. Cordoning is separate from health, because health
+  is measured and clears itself while a cordon is a decision that stands.
+  Draining has no action of its own: it is a cordon plus ordinary stop and
+  delete, so evacuation passes through the same authorization, disruption
+  budget, and stateful-data approval as any other removal. Cordon settles in
+  the control plane rather than on the node, since the usual reason to cordon
+  is that the node has stopped answering.
+- A remediation agent that closes the loop diagnosis opened. It walks a fixed
+  ladder cheapest-first: cordon an unhealthy node, retire an allocation that
+  stopped and is holding its replica slot, then evacuate a cordoned node one
+  allocation at a time. It may subtract but never add, so a remediation loop
+  that went wrong cannot conjure capacity, and it stops after a bounded number
+  of attempts so a goal that cannot be repaired stays visibly unconverged.
+- Image provenance as kernel policy. A build signer's attestation names the
+  digest it covers, and the kernel verifies it against trusted signers before
+  authorizing a pull. An attestation that is supplied is always verified, so
+  attaching a forged one is never better than attaching none. `a4s attest`
+  produces them. Requiring one is off by default for compatibility with goals
+  written before it existed; see "required before production".
+- Cluster-wide ceilings on compute, allocation count, and agent spend. Node
+  capacity bounds one machine and per-node budget capacity bounds one node's
+  agents; these bound the total, so a runaway control loop has a maximum cost.
 - Stateful workloads limited to one replica, pinned to the node holding their
   data, and never relocated on a missing heartbeat.
 - Separate authenticated approval record for public routes.
@@ -275,6 +313,15 @@ pair.
 - Lease manager shared across reconciliations, so goals touching the same
   allocation cannot interleave.
 - Repeatable rebuild, proving the projection is a function of the log.
+- An anchored warm standby. A follower ingests records from the primary and
+  re-derives every hash against its own chain, so agreement means it computed
+  the same history rather than faithfully copying what it was sent. Promotion
+  is refused unless the chain verifies and the follower is at or beyond the
+  externally witnessed head, which is the check that stops a replica promoted
+  mid-replication from silently rolling history back. It is not consensus and
+  holds no election: it makes an operator's failover decision safe to make.
+  The follower must be configured with the same base world as the primary,
+  since the log carries node inventory and pre-existing approvals nowhere.
 
 ### Node trust boundary
 
@@ -360,7 +407,11 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 
 ## Not implemented
 
-- Multi-server consensus or high availability. One server owns the event log.
+- Multi-server consensus or automatic failover. One server owns the event log.
+  A warm standby exists and refuses to promote unless it can prove it is caught
+  up, but nothing elects it: promotion is an operator or supervisor decision,
+  and shipping records to the follower is left to the deployment rather than
+  built in as a replication protocol.
 - A dedicated transfer transport. The node moves data through the shared backup
   store, so a move needs a store both nodes can reach; direct node-to-node
   streaming is not implemented.
@@ -442,10 +493,17 @@ risk order:
    a container still runs as the image's own user unless an operator pins one,
    and no AppArmor profile is selected.
 2. Record measured failure behavior under sustained load and multi-node
-   operation, beyond the single verified round trip.
-3. Verify snapshot provenance in the gateway independently, rather than
+   operation, beyond the single verified round trip. The disruption governor
+   and the remediation ladder are the two pieces most in need of this: both are
+   unit-tested and neither has been observed pacing a real cluster in trouble.
+3. Turn on `--require-signed-images` with a real build signer. The mechanism
+   and the `a4s attest` tool exist; nothing in this repository's own examples
+   uses them, because their digests are simulation placeholders.
+4. Verify snapshot provenance in the gateway independently, rather than
    trusting the node that produced it.
-4. Rotate a secret without replacing the allocation that mounts it.
+5. Rotate a secret without replacing the allocation that mounts it.
+6. Ship standby records automatically. The follower and its promotion gate
+   exist; moving the records is currently the deployment's job.
 
 Do not treat this as production-ready until those are closed. The runtime and
 audit boundaries are proven; the sandbox boundary and sustained-failure
