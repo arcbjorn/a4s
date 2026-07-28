@@ -84,6 +84,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/plan/{goal}", a.authenticated(a.plan))
 	mux.HandleFunc("GET /v1/diagnose/{goal}", a.authenticated(a.diagnose))
 	mux.HandleFunc("GET /v1/nodes/{node}/evacuation", a.authenticated(a.evacuation))
+	mux.HandleFunc("GET /v1/records", a.authenticated(a.records))
 
 	// Writes.
 	mux.HandleFunc("POST /v1/goals", a.authenticated(a.submitGoal))
@@ -390,6 +391,33 @@ func (a *API) uncordon(writer http.ResponseWriter, request *http.Request, envelo
 	a.config.Logger.Info("node uncordoned",
 		slog.String("node", node), slog.String("operator", envelope.IssuedBy))
 	writeJSON(writer, http.StatusOK, map[string]string{"node": node, "status": "schedulable"})
+}
+
+// records serves hashed history to a follower catching up.
+//
+// It is authenticated like every other read, and for a stronger reason than
+// most: this is the whole of the cluster's history, which is the most complete
+// description of the deployment that exists anywhere.
+func (a *API) records(writer http.ResponseWriter, request *http.Request, _ RequestEnvelope) {
+	var after uint64
+	if raw := request.URL.Query().Get("after"); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			http.Error(writer, "after must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		after = parsed
+	}
+	limit := 0
+	if raw := request.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			http.Error(writer, "limit must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		limit = parsed
+	}
+	writeJSON(writer, http.StatusOK, a.server.Records(after, limit))
 }
 
 // evacuation reports what draining a node would cost, changing nothing.

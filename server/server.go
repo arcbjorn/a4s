@@ -246,6 +246,35 @@ func (s *Server) History() []eventlog.Record {
 	return s.log.Records()
 }
 
+// MaxRecordBatch bounds how many records one replication request returns.
+//
+// The follower's response reader is bounded, so an unbounded batch would be
+// truncated mid-record and the chain would fail to derive rather than fail to
+// arrive — a confusing way to report "the log is long". Batching makes catching
+// up a loop instead of one large transfer.
+const MaxRecordBatch = 500
+
+// Records returns hashed records after a sequence, for a follower catching up.
+//
+// Hashes travel with the events on purpose. A follower re-derives every hash
+// against its own chain and compares, which is what makes agreement mean it
+// computed the same history rather than that it faithfully copied whatever it
+// was sent. Sending bare events would make that check impossible.
+func (s *Server) Records(after uint64, limit int) []eventlog.Record {
+	if limit <= 0 || limit > MaxRecordBatch {
+		limit = MaxRecordBatch
+	}
+	records := s.History()
+	if uint64(len(records)) <= after {
+		return nil
+	}
+	batch := records[after:]
+	if len(batch) > limit {
+		batch = batch[:limit]
+	}
+	return batch
+}
+
 // Events returns the recorded control events in order.
 func (s *Server) Events() []control.Event {
 	records := s.History()
