@@ -81,6 +81,8 @@ func run(args []string) error {
 		return remoteEvents(args[1:])
 	case "cordon":
 		return cordon(args[1:])
+	case "standby":
+		return standby(args[1:])
 	case "version":
 		return showVersion(args[1:])
 	case "help", "-h", "--help":
@@ -1211,6 +1213,9 @@ than with possession of the network path:
              [--until 10m] [--limit N]
   a4s cordon --node ID --server http://host:8443 --key-id ID
              --operator-key /path [--reason TEXT] [--undo] [--json]
+  a4s standby --event-log /path --anchor /path --file scenario.json
+              --server http://host:8443 --key-id ID --operator-key /path
+              [--interval 5s] [--once]
 
   a4s version [--json] [--short]`)
 }
