@@ -114,6 +114,47 @@ func TestCronNextTerminatesOnImpossibleSchedule(t *testing.T) {
 	}
 }
 
+// Skipping a non-matching day whole must not skip past a match inside it, which
+// is the way a date-level shortcut goes wrong.
+func TestCronNextFindsAMatchLateInTheDay(t *testing.T) {
+	schedule, err := ParseCron("59 23 1 * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, ok := schedule.Next(at("2026-07-25T00:00:00Z"))
+	if !ok {
+		t.Fatal("no next occurrence")
+	}
+	if !next.Equal(at("2026-08-01T23:59:00Z")) {
+		t.Fatalf("next occurrence is %s, want 2026-08-01T23:59:00Z", next)
+	}
+
+	// A match later on the same day the search starts must still be found.
+	sameDay, ok := schedule.Next(at("2026-08-01T00:00:00Z"))
+	if !ok || !sameDay.Equal(at("2026-08-01T23:59:00Z")) {
+		t.Fatalf("same-day occurrence is %s, want 2026-08-01T23:59:00Z", sameDay)
+	}
+}
+
+// An impossible schedule is re-evaluated on every reconciliation, so the search
+// has to reject a non-matching date without walking its minutes.
+func TestCronNextRejectsImpossibleDatesCheaply(t *testing.T) {
+	impossible, err := ParseCron("0 0 30 2 *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, ok := impossible.Next(at("2026-07-25T00:00:00Z")); ok {
+		t.Fatal("February 30th resolved to a real time")
+	}
+	// Four years of minute-stepping takes tens of milliseconds; four years of
+	// day-stepping takes well under one. The bound is loose enough not to be
+	// flaky and tight enough to catch a regression to the minute-by-minute scan.
+	if elapsed := time.Since(start); elapsed > 5*time.Millisecond {
+		t.Fatalf("impossible schedule took %s to reject, want under 5ms", elapsed)
+	}
+}
+
 // Standard cron semantics: with both day-of-month and day-of-week restricted,
 // either match is enough.
 func TestCronDayAndWeekdayAreUnioned(t *testing.T) {

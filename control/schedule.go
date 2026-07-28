@@ -193,6 +193,12 @@ func (c CronSchedule) Matches(at time.Time) bool {
 	if !contains(c.minutes, at.Minute()) || !contains(c.hours, at.Hour()) {
 		return false
 	}
+	return c.matchesDate(at)
+}
+
+// matchesDate reports whether a date falls on this schedule, ignoring the time
+// of day. It is separate so Next can reject a whole day at once.
+func (c CronSchedule) matchesDate(at time.Time) bool {
 	if !contains(c.months, int(at.Month())) {
 		return false
 	}
@@ -217,12 +223,20 @@ func (c CronSchedule) Matches(at time.Time) bool {
 
 // Next reports the first matching time strictly after the given time.
 //
-// It steps minute by minute over at most four years, which terminates on an
-// impossible schedule such as February 30th rather than looping forever.
+// It searches at most four years, which terminates on an impossible schedule
+// such as February 30th rather than looping forever. A day whose date does not
+// match is skipped whole rather than a minute at a time: an impossible schedule
+// is evaluated on every reconciliation, and walking four years in one-minute
+// steps costs milliseconds each time for an answer that is always the same.
 func (c CronSchedule) Next(after time.Time) (time.Time, bool) {
 	candidate := after.UTC().Truncate(time.Minute).Add(time.Minute)
 	limit := candidate.AddDate(4, 0, 0)
 	for candidate.Before(limit) {
+		if !c.matchesDate(candidate) {
+			candidate = time.Date(candidate.Year(), candidate.Month(),
+				candidate.Day()+1, 0, 0, 0, 0, time.UTC)
+			continue
+		}
 		if c.Matches(candidate) {
 			return candidate, true
 		}
