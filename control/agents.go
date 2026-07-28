@@ -49,6 +49,11 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 	}
 	reserved := make(map[string]Resources)
 	reservedBudget := make(map[string]Budget)
+	// Domain occupancy is carried across the loop so replicas placed within one
+	// proposal spread against each other, not just against what was already
+	// running. Recomputing it from the world each time would let a proposal put
+	// its whole batch in one domain and be refused by the kernel afterwards.
+	occupancy := DomainOccupancy(world, goal.Workload.Name)
 	placed := 0
 	// A queue-backed agent workload is sized by observed demand rather than by a
 	// fixed replica count, bounded by the queue's own worker ceiling.
@@ -57,7 +62,7 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 		if existing[replica] {
 			continue
 		}
-		node, err := selectNode(goal, world, reserved, reservedBudget)
+		node, err := selectNode(goal, world, reserved, reservedBudget, occupancy)
 		if err != nil {
 			return proposal, err
 		}
@@ -179,6 +184,7 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 		if runtime := goal.Workload.Runtime; runtime != nil {
 			reservedBudget[node.ID] = reservedBudget[node.ID].Add(runtime.Budget)
 		}
+		occupancy[node.FailureDomain()]++
 		placed++
 		// Placing every missing replica in one proposal would make the blast
 		// radius of a single authorization the whole workload. Batching keeps
@@ -192,19 +198,30 @@ func (PlacementAgent) Propose(goal Goal, world World) (Proposal, error) {
 	return proposal, nil
 }
 
-func selectNode(goal Goal, world World, reserved map[string]Resources, reservedBudget map[string]Budget) (*Node, error) {
+func selectNode(goal Goal, world World, reserved map[string]Resources,
+	reservedBudget map[string]Budget, occupancy map[string]int) (*Node, error) {
+
 	ids := make([]string, 0, len(world.Nodes))
 	for id := range world.Nodes {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	runtime := goal.Workload.Runtime
+	ceiling := goal.MaxPerDomain()
 	var selected *Node
 	bestFreeMemory := -1
 	unreachable := 0
+	crowded := 0
 	for _, id := range ids {
 		node := world.Nodes[id]
 		if !node.Healthy || !nodeAllowed(goal.Constraints, *node) {
+			continue
+		}
+		if ceiling > 0 && occupancy[node.FailureDomain()] >= ceiling {
+			// The domain is full. Counting these separately is what lets the
+			// failure say "spread" rather than "capacity", which are different
+			// problems with different fixes.
+			crowded++
 			continue
 		}
 		used := node.Used.Add(reserved[id]).Add(goal.Workload.Resources)
@@ -234,6 +251,11 @@ func selectNode(goal Goal, world World, reserved map[string]Resources, reservedB
 			return nil, fmt.Errorf(
 				"no healthy node can reach provider %q with budget capacity for workload %q",
 				runtime.Provider, goal.Workload.Name)
+		}
+		if crowded > 0 {
+			return nil, fmt.Errorf(
+				"every candidate failure domain already holds %d replicas of workload %q",
+				ceiling, goal.Workload.Name)
 		}
 		return nil, fmt.Errorf("no healthy node satisfies placement and capacity constraints")
 	}

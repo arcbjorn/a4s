@@ -64,6 +64,10 @@ type WorkloadSpec struct {
 	// container exits successfully, so an exit is a success rather than the
 	// failure it would be for a service.
 	Schedule *Schedule `json:"schedule,omitempty"`
+	// Placement declares how replicas must spread across failure domains.
+	// Absent means unconstrained, which is what every goal written before this
+	// existed asked for.
+	Placement *Placement `json:"placement,omitempty"`
 }
 
 // Scheduled reports whether this workload runs on a schedule rather than being
@@ -407,6 +411,13 @@ type Node struct {
 	Used     Resources         `json:"used"`
 	Images   map[string]bool   `json:"images,omitempty"`
 	Healthy  bool              `json:"healthy"`
+	// Domain names the failure domain this node shares with others: a rack, a
+	// hypervisor, an availability zone, whatever fails together in this
+	// deployment. Empty means the node is its own domain, so spreading works
+	// before any topology has been described. It is deliberately one opaque
+	// string rather than a label hierarchy: a4s needs to know what fails
+	// together, not how the operator names their datacentre.
+	Domain string `json:"domain,omitempty"`
 	// Address is where other nodes reach this one, conventionally its tailnet
 	// address. Allocation addresses are node-local: an allocation IP on one
 	// node means nothing on another, so a cross-node service name resolves to

@@ -62,6 +62,9 @@ func (s *Scenario) NormalizeAndValidate() error {
 	if err := validateCanary(s.Goal); err != nil {
 		return err
 	}
+	if err := validateSpread(s.Goal, s.World); err != nil {
+		return err
+	}
 	if err := validateQueues(s.Goal, &s.World); err != nil {
 		return err
 	}

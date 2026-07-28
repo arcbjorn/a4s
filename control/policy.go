@@ -238,6 +238,12 @@ func validateCreateAllocation(goal Goal, world World, action Action) error {
 	if action.Replica < 0 || action.Replica >= authorizedReplicas(goal, world) {
 		return fmt.Errorf("replica index is outside goal")
 	}
+	// Spread is enforced here rather than trusted from the proposing agent. An
+	// agent that could choose its own domain distribution could satisfy every
+	// replica count while leaving the workload one reboot from an outage.
+	if err := checkSpread(goal, world, action); err != nil {
+		return err
+	}
 	return validateAgentPlacement(goal, *node, action, world.Now())
 }
 
