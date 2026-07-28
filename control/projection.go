@@ -3,6 +3,7 @@ package control
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Evidence kinds are the only vocabulary that advances the world projection.
@@ -503,19 +504,7 @@ func projectInto(world *World, evidence Evidence) error {
 		if allocation.Phase != AllocationRunning {
 			return fmt.Errorf("allocation %q cannot be ready in phase %q", evidence.Target, allocation.Phase)
 		}
-		allocation.Ready = evidence.Observed["ready"] == "true"
-		// Carrying the expiry into the world lets the verifier reject a goal
-		// whose readiness is merely remembered rather than currently observed.
-		allocation.ReadyExpiresAt = evidence.ExpiresAt
-		if allocation.Ready {
-			// An image that has been observed serving becomes the version a
-			// failed rollout may return to. Recording it here, from evidence,
-			// means a rollback target is always one this cluster saw working.
-			if world.KnownGood == nil {
-				world.KnownGood = make(map[string]string)
-			}
-			world.KnownGood[allocation.Workload] = allocation.Image
-		}
+		applyReadiness(world, allocation, evidence)
 
 	case EvidenceAllocationStopped:
 		allocation, ok := world.Allocations[evidence.Target]
@@ -526,6 +515,7 @@ func projectInto(world *World, evidence Evidence) error {
 		// stale ready flag from satisfying a goal or authorizing a route.
 		allocation.Phase = AllocationStopped
 		allocation.Ready = false
+		allocation.ReadySince = time.Time{}
 
 	case EvidenceAllocationFailed:
 		allocation, ok := world.Allocations[evidence.Target]
@@ -534,6 +524,7 @@ func projectInto(world *World, evidence Evidence) error {
 		}
 		allocation.Phase = AllocationStopped
 		allocation.Ready = false
+		allocation.ReadySince = time.Time{}
 		allocation.ExitCode = observedInt(evidence, "exit_code")
 		allocation.Restarts = observedInt(evidence, "restarts")
 
@@ -589,14 +580,7 @@ func projectInto(world *World, evidence Evidence) error {
 		}
 		// Agent readiness means provider reachable and budget remaining. Both
 		// are observed by the node runtime; neither is the agent's own claim.
-		allocation.Ready = evidence.Observed["ready"] == "true"
-		allocation.ReadyExpiresAt = evidence.ExpiresAt
-		if allocation.Ready {
-			if world.KnownGood == nil {
-				world.KnownGood = make(map[string]string)
-			}
-			world.KnownGood[allocation.Workload] = allocation.Image
-		}
+		applyReadiness(world, allocation, evidence)
 
 	case EvidenceAgentSpent:
 		allocation, ok := world.Allocations[evidence.Target]
@@ -762,6 +746,46 @@ func observedBudget(evidence Evidence) Budget {
 		CostMillis:  observedInt(evidence, "cost_millis"),
 		WallSeconds: observedInt(evidence, "wall_seconds"),
 		ToolCalls:   observedInt(evidence, "tool_calls"),
+	}
+}
+
+// applyReadiness records a readiness observation on an allocation.
+//
+// Container readiness and agent readiness both land here. They differ in what
+// the node measures, not in what readiness means to the world, and keeping one
+// implementation is what stops the two from drifting apart.
+//
+// ReadySince is restarted whenever readiness lapses rather than accumulated, so
+// a consumer asking how long an allocation has been healthy gets the length of
+// the current run and not the sum of several interrupted ones.
+func applyReadiness(world *World, allocation *Allocation, evidence Evidence) {
+	ready := evidence.Observed["ready"] == "true"
+	// Readiness lapsed if it was never held, or if the previous observation had
+	// already expired by the time this one was made. An expiry that has run out
+	// is a gap in measurement, which is exactly what must not be counted as
+	// continuous health.
+	lapsed := !allocation.Ready ||
+		(!allocation.ReadyExpiresAt.IsZero() &&
+			!evidence.ObservedAt.Before(allocation.ReadyExpiresAt))
+	switch {
+	case !ready:
+		allocation.ReadySince = time.Time{}
+	case lapsed || allocation.ReadySince.IsZero():
+		allocation.ReadySince = evidence.ObservedAt
+	}
+
+	allocation.Ready = ready
+	// Carrying the expiry into the world lets the verifier reject a goal whose
+	// readiness is merely remembered rather than currently observed.
+	allocation.ReadyExpiresAt = evidence.ExpiresAt
+	if ready {
+		// An image that has been observed serving becomes the version a failed
+		// rollout may return to. Recording it here, from evidence, means a
+		// rollback target is always one this cluster saw working.
+		if world.KnownGood == nil {
+			world.KnownGood = make(map[string]string)
+		}
+		world.KnownGood[allocation.Workload] = allocation.Image
 	}
 }
 

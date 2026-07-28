@@ -231,6 +231,9 @@ func sameAllocations(a, b control.World) bool {
 		if !left.ReadyExpiresAt.Equal(right.ReadyExpiresAt) {
 			return false
 		}
+		if !left.ReadySince.Equal(right.ReadySince) {
+			return false
+		}
 		// Compare secret versions explicitly; a map field makes the struct
 		// itself uncomparable.
 		if len(left.Secrets) != len(right.Secrets) {
@@ -246,6 +249,7 @@ func sameAllocations(a, b control.World) bool {
 		// skipped.
 		leftCopy, rightCopy := *left, *right
 		leftCopy.ReadyExpiresAt, rightCopy.ReadyExpiresAt = time.Time{}, time.Time{}
+		leftCopy.ReadySince, rightCopy.ReadySince = time.Time{}, time.Time{}
 		leftCopy.Secrets, rightCopy.Secrets = nil, nil
 		if !reflect.DeepEqual(leftCopy, rightCopy) {
 			return false

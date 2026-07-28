@@ -89,6 +89,66 @@ func TestRunningEvidenceDoesNotImplyReadiness(t *testing.T) {
 	}
 }
 
+// ReadySince measures the current unbroken run of readiness. A gap in
+// measurement must restart it, or a version that flapped would look as though it
+// had been healthy the whole time and a canary hold would pass on that strength.
+func TestReadySinceRestartsAfterReadinessLapses(t *testing.T) {
+	start := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	world := projectionWorld()
+	world, err := Project(world, createdEvidence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	world, err = Project(world, Evidence{
+		Kind: EvidenceAllocationRunning, Target: "app-0",
+		Observed: map[string]string{"node": "base"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ready := func(at time.Time) Evidence {
+		return Evidence{
+			Kind: EvidenceAllocationReady, Target: "app-0", ObservedAt: at,
+			ExpiresAt: at.Add(30 * time.Second),
+			Observed:  map[string]string{"ready": "true"},
+		}
+	}
+
+	if world, err = Project(world, ready(start)); err != nil {
+		t.Fatal(err)
+	}
+	// A refresh inside the previous expiry continues the same run.
+	if world, err = Project(world, ready(start.Add(20*time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	if since := world.Allocations["app-0"].ReadySince; !since.Equal(start) {
+		t.Fatalf("a continuous run restarted its clock: %s, want %s", since, start)
+	}
+	if held := world.Allocations["app-0"].ReadyFor(start.Add(20 * time.Second)); held != 20*time.Second {
+		t.Fatalf("ReadyFor = %s, want 20s", held)
+	}
+
+	// An observation made after the previous one expired is a new run.
+	resumed := start.Add(5 * time.Minute)
+	if world, err = Project(world, ready(resumed)); err != nil {
+		t.Fatal(err)
+	}
+	if since := world.Allocations["app-0"].ReadySince; !since.Equal(resumed) {
+		t.Fatalf("a lapsed run kept its old clock: %s, want %s", since, resumed)
+	}
+
+	// Losing readiness outright clears it.
+	notReady := ready(resumed.Add(10 * time.Second))
+	notReady.Observed["ready"] = "false"
+	if world, err = Project(world, notReady); err != nil {
+		t.Fatal(err)
+	}
+	if since := world.Allocations["app-0"].ReadySince; !since.IsZero() {
+		t.Fatalf("an unready allocation kept a readiness clock: %s", since)
+	}
+}
+
 // Readiness for an allocation that was never observed running is incoherent and
 // must be refused rather than silently accepted.
 func TestProjectionRejectsReadinessWithoutRunning(t *testing.T) {

@@ -498,6 +498,12 @@ type Allocation struct {
 	// ReadyExpiresAt is when the readiness observation stops being trustworthy.
 	// Zero means readiness was never observed with an expiry.
 	ReadyExpiresAt time.Time `json:"ready_expires_at,omitempty"`
+	// ReadySince is when the current unbroken run of readiness began. It is
+	// cleared whenever readiness lapses, so it measures the length of the
+	// current healthy run rather than the total time ever spent ready. A canary
+	// hold is derived from it, which is why it has to reset: a version that
+	// flapped and recovered has not been healthy for the whole interval.
+	ReadySince time.Time `json:"ready_since,omitempty"`
 	// Budget is the ceiling this agent allocation holds against its node, and
 	// Spent is what it has consumed so far. Both are empty for ordinary
 	// workloads. Spent comes from runtime evidence, never from the agent.
@@ -543,6 +549,18 @@ func (a *Allocation) ReadyAt(now time.Time) bool {
 		return false
 	}
 	return a.ReadyExpiresAt.IsZero() || now.Before(a.ReadyExpiresAt)
+}
+
+// ReadyFor reports how long the allocation has been continuously ready.
+//
+// It is zero unless readiness is currently held and unexpired, so an allocation
+// that has stopped being measured contributes nothing to a hold rather than
+// carrying its last known duration forward.
+func (a *Allocation) ReadyFor(now time.Time) time.Duration {
+	if !a.ReadyAt(now) || a.ReadySince.IsZero() || now.Before(a.ReadySince) {
+		return 0
+	}
+	return now.Sub(a.ReadySince)
 }
 
 type AllocationPhase string
