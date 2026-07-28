@@ -349,6 +349,58 @@ Cordon is recorded in durable history against the operator who issued it and
 survives restart, so a machine somebody is working on does not return to the
 scheduler because the control plane bounced.
 
+### Running a standby
+
+A follower shortens the window in which nothing can be changed. It is not
+consensus: there is one writer, there is no election, and promotion is a
+decision a person or a supervisor makes.
+
+```bash
+a4s standby --event-log /var/lib/a4s/replica.db \
+  --anchor /shared/a4s/primary.anchor \
+  --file /etc/a4s/scenario.json \
+  --server http://primary:8443 --key-id ID --operator-key /path
+```
+
+Two parts of that command are easy to get wrong and both fail quietly:
+
+- **The anchor must be the primary's**, on storage both machines can reach. It
+  is the outside witness of the true head, and it is read by the follower and
+  never written. A replica-local anchor witnesses whatever the replica last
+  ingested, so it agrees with itself and a copy an hour behind would promote.
+- **`--file` must supply the same base world the primary was started with.** The
+  log carries node inventory, capacity, and approvals granted outside recorded
+  history nowhere. A follower without it promotes into a server missing exactly
+  those facts.
+
+The follower re-derives every hash against its own chain rather than copying the
+primary's, so agreement means it computed the same history. A divergence stops
+replication rather than being stored.
+
+### Promoting a standby
+
+Stop the primary, then start an ordinary server on the replica's log and the
+same anchor:
+
+```bash
+a4s server --event-log /var/lib/a4s/replica.db \
+  --anchor /shared/a4s/primary.anchor --file /etc/a4s/scenario.json ...
+```
+
+Promotion is deliberately not a mode of `a4s standby`. Starting a server runs
+the same recovery, chain verification, and anchor check as any other start, so
+there is no promotion-only path that nothing else exercises. A replica that is
+behind is refused there:
+
+```text
+event log failed its anchor check: event log is at sequence 5 but the
+anchor witnessed 6: the log was truncated or replaced
+```
+
+Catch the replica up and retry. Never delete the anchor to get past this: it is
+the only thing standing between a stale promotion and a cluster that has
+silently forgotten what it was doing.
+
 ### Controller unavailable
 
 Existing tasks continue and the node keeps its desired state true, bounded by

@@ -357,15 +357,20 @@ pair.
 - Lease manager shared across reconciliations, so goals touching the same
   allocation cannot interleave.
 - Repeatable rebuild, proving the projection is a function of the log.
-- An anchored warm standby. A follower ingests records from the primary and
+- An anchored warm standby, with `a4s standby` following a primary over the
+  operator API. The primary serves hashed records in batches; the follower
   re-derives every hash against its own chain, so agreement means it computed
-  the same history rather than faithfully copying what it was sent. Promotion
-  is refused unless the chain verifies and the follower is at or beyond the
-  externally witnessed head, which is the check that stops a replica promoted
+  the same history rather than faithfully copying what it was sent, and a
+  divergence stops replication rather than being stored. Promotion is refused
+  unless the chain verifies and the follower is at or beyond the externally
+  witnessed head, which is the check that stops a replica promoted
   mid-replication from silently rolling history back. It is not consensus and
   holds no election: it makes an operator's failover decision safe to make.
-  The follower must be configured with the same base world as the primary,
-  since the log carries node inventory and pre-existing approvals nowhere.
+  Two deployment requirements fail quietly if got wrong, and both are checked
+  in operations: the anchor must be the primary's, on storage both can reach,
+  because a replica-local one witnesses whatever the replica last ingested and
+  agrees with itself; and the follower needs the same base world, since the log
+  carries node inventory and pre-existing approvals nowhere.
 
 ### Node trust boundary
 
@@ -452,10 +457,10 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 ## Not implemented
 
 - Multi-server consensus or automatic failover. One server owns the event log.
-  A warm standby exists and refuses to promote unless it can prove it is caught
-  up, but nothing elects it: promotion is an operator or supervisor decision,
-  and shipping records to the follower is left to the deployment rather than
-  built in as a replication protocol.
+  A warm standby replicates over the operator API and refuses to promote unless
+  it can prove it is caught up, but nothing elects it: promotion is an operator
+  or supervisor decision, and the anchor it checks against has to be on storage
+  both machines can reach.
 - A dedicated transfer transport. The node moves data through the shared backup
   store, so a move needs a store both nodes can reach; direct node-to-node
   streaming is not implemented.
@@ -548,8 +553,9 @@ risk order:
 4. Verify snapshot provenance in the gateway independently, rather than
    trusting the node that produced it.
 5. Rotate a secret without replacing the allocation that mounts it.
-6. Ship standby records automatically. The follower and its promotion gate
-   exist; moving the records is currently the deployment's job.
+6. Automatic failover. A follower replicates and refuses an unsafe promotion,
+   but nothing elects one: stopping the primary and starting a server on the
+   replica is an operator or supervisor decision.
 
 Do not treat this as production-ready until those are closed. The runtime and
 audit boundaries are proven; the sandbox boundary and sustained-failure

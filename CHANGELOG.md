@@ -105,10 +105,14 @@ stable version and no compatibility guarantee, so everything below is under
 
 - `a4s server`: durable event log, world projection rebuilt on every start,
   shared lease manager, and goal admission.
-- An anchored warm standby. The follower re-derives every ingested hash against
-  its own chain rather than copying the primary's, and refuses to promote unless
-  it verifies and is at or beyond the externally witnessed head. Not consensus:
-  it makes a failover decision safe rather than making it automatically.
+- An anchored warm standby, driven by `a4s standby` over the operator API. The
+  primary serves hashed records in batches; the follower re-derives every hash
+  against its own chain rather than copying the primary's, and refuses to
+  promote unless it verifies and is at or beyond the externally witnessed head.
+  The anchor is read and never written by the follower, because one that
+  witnessed its own ingested head would agree with itself and let a stale copy
+  promote. Not consensus: it makes a failover decision safe rather than making
+  it automatically.
 - Authenticated operator HTTP API. Every request carries an Ed25519-signed
   envelope bound to method, path, and body digest, made single-use by a nonce
   ledger and bounded by a five-minute lifetime. Reads are authenticated; only
@@ -161,7 +165,7 @@ stable version and no compatibility guarantee, so everything below is under
 
 - `validate`, `simulate`, `node`, `server`, `keygen`, `keys`, `seal`, `attest`,
   `plan`, `explain`, `diagnose`, `approve`, `history`, `backup`, `restore`,
-  `submit`, `status`, `events`, `cordon`, and `version`.
+  `submit`, `status`, `events`, `cordon`, `standby`, and `version`.
 - Signed operator approvals for the gated decisions, with mandatory expiry
   checked against observation time and appended to durable history before the
   projection updates. Revocation is authenticated the same way granting is.
