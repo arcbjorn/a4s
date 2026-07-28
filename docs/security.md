@@ -177,6 +177,16 @@ schemas. Each a4s adapter exposes a smaller contract.
 - Node health, label, allowed-node, capacity, and replica-index checks.
 - Explicit public-route approval.
 - Privileged and stateful workload rejection.
+- Failure-domain ceilings, so an agent cannot satisfy a replica count while
+  leaving the workload one reboot from an outage.
+- A cluster-wide disruption budget and a one-domain-at-a-time rule, so many
+  individually legal proposals cannot add up to an outage nobody authorized.
+- Per-target failure backoff, so a goal that cannot converge stops re-proposing
+  the same placement every round. Removal is never blocked by it.
+- Cluster ceilings on compute, allocation count, and agent spend.
+- Image provenance, when `RequireSignedImages` is set: a build signer's
+  attestation bound to the exact digest, verified before a pull is authorized.
+  An attestation that is supplied is verified whether or not policy demands one.
 
 ### Node envelope
 
@@ -475,11 +485,22 @@ ever being authorized to act.
 
 ## Supply-chain requirements
 
-Digest pinning provides immutability, not provenance. Before production add:
+Digest pinning provides immutability, not provenance.
+
+Attestation verification is implemented: a build signer signs a statement naming
+the exact digest, `a4s attest` produces it, and the kernel verifies it against
+the configured signers before authorizing a pull. Run the server with
+`--image-signers` and `--require-signed-images` to enforce it. It is off by
+default only because enabling it refuses every goal written before it existed,
+including this repository's own examples, whose digests are placeholders nothing
+ever built. A production deployment should turn it on.
+
+Still to add before production:
 
 - Registry allowlists.
-- Signature or attestation verification.
-- Policy for trusted builders and source repositories.
+- Policy for trusted builders and source repositories, beyond the key that
+  signs. The kernel currently answers "did a trusted key vouch for this
+  digest", not "was it built from the source we expect".
 - Vulnerability and malware scanning policy.
 - SBOM retention.
 - Controlled dependency update and Go checksum verification.
