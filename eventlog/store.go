@@ -287,6 +287,15 @@ func (f *File) Append(event control.Event) error {
 	return nil
 }
 
+// ErrDiverged marks two logs that were never the same history.
+//
+// It exists so a follower can tell this failure from a transport one. An
+// unreachable primary is the case retrying exists for; a divergence is
+// permanent, because no amount of pulling turns a different history into the
+// primary's, and a loop that retries it forever is hiding the one failure its
+// operator most needs to hear about.
+var ErrDiverged = errors.New("histories have diverged")
+
 // Ingest appends records from a primary log, re-deriving every hash locally.
 //
 // It deliberately does not copy the primary's hashes. Each event is appended
@@ -317,8 +326,8 @@ func (f *File) Ingest(records []Record) (int, error) {
 		}
 		if head := f.Head(); head.Hash != record.Hash {
 			return appended, fmt.Errorf(
-				"ingested record %d derives hash %s but the primary recorded %s: histories have diverged",
-				record.Sequence, head.Hash, record.Hash)
+				"ingested record %d derives hash %s but the primary recorded %s: %w",
+				record.Sequence, head.Hash, record.Hash, ErrDiverged)
 		}
 		appended++
 	}
@@ -342,7 +351,7 @@ func (f *File) confirmRecord(record Record) error {
 	}
 	if hash != record.Hash {
 		return fmt.Errorf(
-			"record %d differs from the primary: histories have diverged", record.Sequence)
+			"record %d differs from the primary: %w", record.Sequence, ErrDiverged)
 	}
 	return nil
 }

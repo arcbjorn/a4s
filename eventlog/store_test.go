@@ -2,6 +2,7 @@ package eventlog
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -569,5 +570,10 @@ func TestIngestConfirmsRecordsAlreadyHeld(t *testing.T) {
 	_, err := store.Ingest(records)
 	if err == nil || !strings.Contains(err.Error(), "diverged") {
 		t.Fatalf("expected a divergence refusal, got %v", err)
+	}
+	// The sentinel is what lets a follower tell this permanent failure from a
+	// transport one it should retry.
+	if !errors.Is(err, ErrDiverged) {
+		t.Fatalf("divergence did not wrap ErrDiverged: %v", err)
 	}
 }
