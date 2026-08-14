@@ -154,8 +154,8 @@ establishes that the rows are the ones committed, and the chain establishes
 that they are the ones a4s wrote.
 
 It is an event durability primitive rather than a complete server database.
-World projections are rebuilt from it in `control`; external hash anchoring and
-compaction remain future work.
+World projections are rebuilt from it in `control`; compaction remains future
+work.
 
 Dependency direction:
 
@@ -221,10 +221,12 @@ Commands:
 | `server` | Event log, projection rebuild, node listener, operator API, leases |
 | `node` | Key loader, containerd runtime, ledgers, dispatcher, supervisor, enrollment |
 | `keygen` / `keys` / `seal` | Key material: single keys, rotatable keyset, sealed secrets |
+| `attest` | Signed build-provenance statement for a digest-pinned image |
 | `plan` / `explain` / `diagnose` | Read-only introspection over the kernel and history |
 | `approve` / `history` | Signed operator grants and recorded-history queries |
 | `backup` / `restore` | Verified controller-state archives |
-| `submit` / `status` / `events` | Signed operator requests against a running server |
+| `submit` / `status` / `events` / `cordon` | Signed operator requests against a running server |
+| `standby` | Follower replicating a primary's history over the operator API |
 | `version` | Stamped version, commit, and build date |
 
 Keep business and policy logic out of `main.go`.
@@ -326,9 +328,11 @@ The current backend is SQLite. Anything replacing it must define:
 - Recovery after an action is dispatched but completion is absent.
 - Backup, restore, and corruption checks.
 
-External anchoring of the latest audit hash remains unimplemented in every
-backend. The chain detects edits and reordering; only an outside anchor detects
-wholesale replacement.
+The chain detects edits and reordering; only an outside anchor detects
+wholesale replacement. That witness is `eventlog/anchor.go`, a separate
+append-only file recording chain heads outside the store. A replacement backend
+must keep the witness outside itself, because an anchor stored inside the thing
+it witnesses is replaced along with it.
 
 ## Test topology
 
@@ -337,11 +341,13 @@ wholesale replacement.
 | `control/engine_test.go` | End-to-end control authorization and convergence |
 | `eventlog/store_test.go` | Persistence, replay, hash chain, tamper rejection, crash durability |
 | `eventlog/backup_test.go` | Archive consistency and read-only verification |
+| `eventlog/anchor_test.go` | Outside witness catching truncation and wholesale replacement |
 | `node/dispatcher_test.go` | Signature, expiry, target, deduplication |
 | `node/acceptance_denial_test.go` | The denial matrix driven over the real protocol |
 | `node/file_ledger_test.go` | Durable idempotency replay and corruption handling |
 | `node/container_runtime_test.go` | Narrow backend contract and hardened create spec |
 | `server/apiauth_test.go` | Envelope binding, nonce single-use, and read authentication |
+| `server/standby_test.go` | Follower hash re-derivation and the anchored promotion gate |
 
 The Linux adapter is compile-checked because unit-test hosts may not be Linux
 and should not mutate a real containerd daemon. Live runtime tests belong on a
