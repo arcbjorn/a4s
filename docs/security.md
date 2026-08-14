@@ -83,7 +83,7 @@ operator / Git / external API
             |
        independent probes
             v
-       signed evidence                    future
+       signed evidence
 ```
 
 ### Agents
