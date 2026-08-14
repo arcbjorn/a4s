@@ -94,7 +94,8 @@ decisions.
 
 An immutable, sourced, time-bounded fact such as node capacity, container state,
 probe result, or image presence. Nodes report observations as evidence over the
-enrolled transport; they are not yet signed by a per-node evidence key.
+enrolled transport, signed with the reporting node's identity key and verified
+against the enrolled identity before they advance the world.
 
 ## Policy
 
