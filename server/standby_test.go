@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -213,6 +214,11 @@ func TestStandbyRefusesDivergentHistory(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "diverged") {
 		t.Fatalf("expected a divergence refusal, got %v", err)
 	}
+	// The sentinel is what lets the follow loop stop on divergence instead of
+	// retrying it like an unreachable primary.
+	if !errors.Is(err, eventlog.ErrDiverged) {
+		t.Fatalf("divergence did not wrap ErrDiverged: %v", err)
+	}
 }
 
 // The check that matters: a follower promoted mid-replication would silently
@@ -307,4 +313,38 @@ func TestStandbyPromotesWhenCaughtUp(t *testing.T) {
 	if _, err := standby.Promote(); err == nil {
 		t.Fatal("a consumed standby promoted twice")
 	}
+}
+
+// The primary keeps witnessing new heads into the shared anchor for as long as
+// it lives, so promotion must judge against the witness on disk at the moment
+// of decision, not the copy loaded when the standby opened. And a refusal must
+// not consume the standby: refusal is exactly the moment the operator most
+// needs it to keep catching up.
+func TestPromotionRereadsTheAnchorAndSurvivesRefusal(t *testing.T) {
+	primary, private, standby, _ := standbyPair(t)
+	if _, err := standby.Ingest(primary.History()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The primary records another operator decision after the standby opened
+	// its anchor handle; approving witnesses the new head inline.
+	if _, err := primary.Approve(signedGrant(t, private, "rollback")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := standby.Promote(); err == nil {
+		t.Fatal("a follower behind a witness recorded after it opened was promoted")
+	} else if !strings.Contains(err.Error(), "behind the primary") {
+		t.Fatalf("expected a behind-the-primary refusal, got %v", err)
+	}
+
+	// The refused standby is still a follower: it catches up and then promotes.
+	if _, err := standby.Ingest(primary.History()); err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := standby.Promote(control.PlacementAgent{})
+	if err != nil {
+		t.Fatalf("a caught-up follower refused to promote: %v", err)
+	}
+	promoted.Close()
 }

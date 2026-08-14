@@ -132,6 +132,10 @@ func (s *Standby) Behind(primary eventlog.Record) uint64 {
 // ordinary path, so recovery, verification, and re-anchoring all run exactly as
 // they do on a normal start rather than through a promotion-only shortcut that
 // nothing else exercises.
+//
+// Every refusal happens before the log is released, so a standby that refuses
+// keeps following. That matters because refusal is exactly the moment the
+// operator most needs it to keep catching up.
 func (s *Standby) Promote(agents ...control.Agent) (*Server, error) {
 	if s.log == nil {
 		return nil, fmt.Errorf("standby is closed")
@@ -139,14 +143,23 @@ func (s *Standby) Promote(agents ...control.Agent) (*Server, error) {
 	if err := s.log.Verify(); err != nil {
 		return nil, fmt.Errorf("standby refuses to promote: %w", err)
 	}
-	witnessed := s.anchor.Last()
+	// The witness is re-read from disk at the moment of decision. The primary
+	// keeps appending heads to the shared anchor for as long as it lives, so
+	// the copy loaded when this standby opened is as stale as the process is
+	// old, and a follower that fell behind would pass a check against it.
+	anchor, err := eventlog.OpenAnchor(s.config.Anchor)
+	if err != nil {
+		return nil, fmt.Errorf("standby refuses to promote: reread anchor: %w", err)
+	}
+	s.anchor = anchor
+	witnessed := anchor.Last()
 	head := s.log.Head()
 	if head.Sequence < witnessed.Sequence {
 		return nil, fmt.Errorf(
 			"standby refuses to promote: it holds %d records but %d were witnessed; it is behind the primary",
 			head.Sequence, witnessed.Sequence)
 	}
-	if err := s.anchor.Check(s.log); err != nil {
+	if err := anchor.Check(s.log); err != nil {
 		return nil, fmt.Errorf("standby refuses to promote: %w", err)
 	}
 
@@ -159,6 +172,12 @@ func (s *Standby) Promote(agents ...control.Agent) (*Server, error) {
 
 	server, err := Open(s.config, agents...)
 	if err != nil {
+		// The checks above all passed, so failing here is unexpected. Reopen
+		// the log so a long-running standby survives the attempt and can keep
+		// following rather than dying with the promotion.
+		if log, reopenErr := eventlog.Open(s.config.EventLog); reopenErr == nil {
+			s.log = log
+		}
 		return nil, fmt.Errorf("promote standby: %w", err)
 	}
 	return server, nil
