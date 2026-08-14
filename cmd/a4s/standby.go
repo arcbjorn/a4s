@@ -99,6 +99,13 @@ func standby(args []string) error {
 	defer ticker.Stop()
 	logger.Info("following primary",
 		slog.String("event_log", *eventLog), slog.Duration("interval", *interval))
+	// The first sync happens now rather than one interval from now: a standby
+	// is usually started because the operator wants a current replica, and an
+	// idle first tick is a window in which promotion would refuse for no
+	// reason other than nobody having asked yet.
+	if err := followTick(logger, client, follower); err != nil {
+		return err
+	}
 	for {
 		select {
 		case <-ctx.Done():
