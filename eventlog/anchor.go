@@ -173,21 +173,19 @@ func (a *Anchor) Check(store *File) error {
 	}
 
 	// The store has grown since the last witness, so check that the witnessed
-	// record is still the one at that sequence.
-	records, err := store.readRecords()
+	// record is still the one at that sequence. One hash answers it, and this
+	// runs on every server start, so it must not cost the whole log.
+	hash, err := store.HashAt(witnessed.Sequence)
 	if err != nil {
 		return err
 	}
-	for _, record := range records {
-		if record.Sequence != witnessed.Sequence {
-			continue
-		}
-		if record.Hash != witnessed.Hash {
-			return fmt.Errorf(
-				"event log hash at sequence %d does not match the anchor: history was rewritten",
-				witnessed.Sequence)
-		}
-		return nil
+	if hash == "" {
+		return fmt.Errorf("event log has no record at anchored sequence %d", witnessed.Sequence)
 	}
-	return fmt.Errorf("event log has no record at anchored sequence %d", witnessed.Sequence)
+	if hash != witnessed.Hash {
+		return fmt.Errorf(
+			"event log hash at sequence %d does not match the anchor: history was rewritten",
+			witnessed.Sequence)
+	}
+	return nil
 }

@@ -326,22 +326,46 @@ func (f *File) Ingest(records []Record) (int, error) {
 }
 
 // confirmRecord checks that a record the follower already holds matches what the
-// primary sent.
+// primary sent. One row answers it: only the hash at that sequence is in
+// question, and the chain already commits it to everything before it.
 func (f *File) confirmRecord(record Record) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	held, err := f.readRecords()
+	if record.Sequence == 0 {
+		return nil
+	}
+	hash, err := f.HashAt(record.Sequence)
 	if err != nil {
 		return err
 	}
-	if record.Sequence == 0 || record.Sequence > uint64(len(held)) {
+	if hash == "" {
+		// Beyond what this store holds; Append will derive it when it arrives.
 		return nil
 	}
-	if mine := held[record.Sequence-1]; mine.Hash != record.Hash {
+	if hash != record.Hash {
 		return fmt.Errorf(
 			"record %d differs from the primary: histories have diverged", record.Sequence)
 	}
 	return nil
+}
+
+// HashAt returns the chain hash at a sequence, or empty when no record holds
+// it. The anchor check and ingest confirmation need exactly this: one hash,
+// answered by the sequence index rather than by decoding the whole log.
+func (f *File) HashAt(sequence uint64) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.db == nil {
+		return "", fmt.Errorf("event log is closed")
+	}
+	var hash string
+	err := f.db.QueryRow(
+		`SELECT hash FROM records WHERE sequence = ?`, sequence).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read record %d: %w", sequence, err)
+	}
+	return hash, nil
 }
 
 // Records returns every record in sequence order.
@@ -358,6 +382,38 @@ func (f *File) Records() []Record {
 	return records
 }
 
+// RecordsAfter returns records with a sequence greater than after, in order,
+// at most limit of them. A non-positive limit means no bound.
+//
+// This is the replication read. A follower polls with its own head as after,
+// and the common case is a follower that is already caught up, so the answer
+// has to come from the sequence index rather than from decoding the whole log
+// the way Records does; a poll every few seconds must not cost the primary its
+// entire history each time.
+func (f *File) RecordsAfter(after uint64, limit int) []Record {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.db == nil {
+		return nil
+	}
+	if limit <= 0 {
+		// SQLite reads LIMIT -1 as unbounded.
+		limit = -1
+	}
+	rows, err := f.db.Query(
+		`SELECT sequence, previous_hash, hash, event FROM records
+		 WHERE sequence > ? ORDER BY sequence LIMIT ?`, after, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	records, err := scanRecords(rows)
+	if err != nil {
+		return nil
+	}
+	return records
+}
+
 func (f *File) readRecords() ([]Record, error) {
 	if f.db == nil {
 		return nil, fmt.Errorf("event log is closed")
@@ -368,8 +424,11 @@ func (f *File) readRecords() ([]Record, error) {
 		return nil, fmt.Errorf("read event records: %w", err)
 	}
 	defer rows.Close()
+	return scanRecords(rows)
+}
 
-	records := make([]Record, 0, f.count)
+func scanRecords(rows *sql.Rows) ([]Record, error) {
+	var records []Record
 	for rows.Next() {
 		var record Record
 		var payload string

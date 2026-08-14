@@ -525,3 +525,49 @@ func TestStoreRefusesUndecodableEvents(t *testing.T) {
 		t.Fatalf("the failure did not name verification: %v", err)
 	}
 }
+
+// A follower polls with its own head, which is normally the primary's head too,
+// so the replication read must be answered from the sequence index rather than
+// by decoding the whole log on every poll.
+func TestRecordsAfterServesOnlyTheTail(t *testing.T) {
+	store, _ := appendedStore(t, 5)
+	defer store.Close()
+
+	tail := store.RecordsAfter(3, 0)
+	if len(tail) != 2 || tail[0].Sequence != 4 || tail[1].Sequence != 5 {
+		t.Fatalf("after=3 returned %+v", tail)
+	}
+	// Hashes travel with the tail: the follower re-derives and compares them.
+	if tail[0].Hash == "" || tail[0].PreviousHash == "" {
+		t.Fatal("tail records carried no hashes")
+	}
+	if limited := store.RecordsAfter(0, 2); len(limited) != 2 || limited[0].Sequence != 1 {
+		t.Fatalf("limit=2 returned %+v", limited)
+	}
+	if caught := store.RecordsAfter(5, 0); len(caught) != 0 {
+		t.Fatalf("a caught-up reader was sent %d records", len(caught))
+	}
+	if all := store.RecordsAfter(0, 0); len(all) != 5 {
+		t.Fatalf("unbounded read returned %d records", len(all))
+	}
+
+	store.Close()
+	if got := store.RecordsAfter(0, 0); got != nil {
+		t.Fatalf("a closed store served %d records", len(got))
+	}
+}
+
+// A divergence in history the follower already holds is the most important kind
+// to notice: it means the two logs were never the same history, however
+// plausibly the tail extends.
+func TestIngestConfirmsRecordsAlreadyHeld(t *testing.T) {
+	store, _ := appendedStore(t, 3)
+	defer store.Close()
+
+	records := store.Records()
+	records[1].Hash = "not-what-this-store-derived"
+	_, err := store.Ingest(records)
+	if err == nil || !strings.Contains(err.Error(), "diverged") {
+		t.Fatalf("expected a divergence refusal, got %v", err)
+	}
+}
