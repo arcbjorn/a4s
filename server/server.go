@@ -260,19 +260,19 @@ const MaxRecordBatch = 500
 // against its own chain and compares, which is what makes agreement mean it
 // computed the same history rather than that it faithfully copied whatever it
 // was sent. Sending bare events would make that check impossible.
+//
+// The read is bounded at the store: a caught-up follower's poll costs one
+// indexed query, not a decode of the whole log every few seconds forever.
 func (s *Server) Records(after uint64, limit int) []eventlog.Record {
 	if limit <= 0 || limit > MaxRecordBatch {
 		limit = MaxRecordBatch
 	}
-	records := s.History()
-	if uint64(len(records)) <= after {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.log == nil {
 		return nil
 	}
-	batch := records[after:]
-	if len(batch) > limit {
-		batch = batch[:limit]
-	}
-	return batch
+	return s.log.RecordsAfter(after, limit)
 }
 
 // Events returns the recorded control events in order.
