@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -104,14 +105,32 @@ func standby(args []string) error {
 			logger.Info("shutting down")
 			return nil
 		case <-ticker.C:
-			if err := syncStandby(logger, client, follower); err != nil {
-				// A primary that is unreachable is the case a standby exists
-				// for. Retrying is the whole job, so this is logged and not
-				// fatal.
-				logger.Warn("sync failed", slog.Any("error", err))
+			if err := followTick(logger, client, follower); err != nil {
+				return err
 			}
 		}
 	}
+}
+
+// followTick runs one sync, separating the failure that ends following from
+// the ones retrying exists to absorb.
+//
+// A primary that is unreachable is the case a standby exists for: retrying is
+// the whole job, so transport failures are logged and swallowed. A divergence
+// is the opposite case. The two logs were never the same history, this replica
+// can never legitimately become the primary, and a loop that kept warning
+// every few seconds would bury the one failure its operator most needs to act
+// on. Exiting is what makes a supervisor restart it loudly or a person notice.
+func followTick(logger *slog.Logger, client *operatorClient, follower *server.Standby) error {
+	err := syncStandby(logger, client, follower)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, eventlog.ErrDiverged) {
+		return fmt.Errorf("this replica is not a copy of the primary's history: %w", err)
+	}
+	logger.Warn("sync failed", slog.Any("error", err))
+	return nil
 }
 
 // syncStandby fetches everything the follower is missing and applies it.
