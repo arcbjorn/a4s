@@ -374,8 +374,11 @@ Two parts of that command are easy to get wrong and both fail quietly:
   those facts.
 
 The follower re-derives every hash against its own chain rather than copying the
-primary's, so agreement means it computed the same history. A divergence stops
-replication rather than being stored.
+primary's, so agreement means it computed the same history. A divergence is not
+stored and not retried: the process exits, because the two logs were never the
+same history and a warning every few seconds would bury the one failure that
+needs a person. An unreachable primary, by contrast, is retried indefinitely;
+that is the case a standby exists for.
 
 ### Promoting a standby
 

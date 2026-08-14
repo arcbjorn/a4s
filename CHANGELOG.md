@@ -112,7 +112,12 @@ stable version and no compatibility guarantee, so everything below is under
   The anchor is read and never written by the follower, because one that
   witnessed its own ingested head would agree with itself and let a stale copy
   promote. Not consensus: it makes a failover decision safe rather than making
-  it automatically.
+  it automatically. The witness is re-read from disk at the moment of
+  promotion, since the copy loaded at open is as stale as the process is old; a
+  refused promotion leaves the standby following rather than consuming it; the
+  replication read is answered from the sequence index, so a caught-up
+  follower's poll does not cost the primary its whole history; and a divergent
+  replica exits instead of retrying a history it can never legitimately become.
 - Authenticated operator HTTP API. Every request carries an Ed25519-signed
   envelope bound to method, path, and body digest, made single-use by a nonce
   ledger and bounded by a five-minute lifetime. Reads are authenticated; only
