@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -431,5 +432,54 @@ func TestAnchoredServerRefusesReplacedLog(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "anchor") {
 		t.Fatalf("the failure did not name the anchor check: %v", err)
+	}
+}
+
+// Operator writes and reconciliation share one log. Neither may lose an append
+// to the other on a sequence race; when the engine loses, an executed action is
+// left with no completion record.
+func TestOperatorWritesDoNotRaceReconciliation(t *testing.T) {
+	server := openServer(t, filepath.Join(t.TempDir(), "events.db"))
+	defer server.Close()
+	if err := server.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var collisions []string
+	note := func(err error) {
+		if err != nil && strings.Contains(err.Error(), "event sequence") {
+			mu.Lock()
+			collisions = append(collisions, err.Error())
+			mu.Unlock()
+		}
+	}
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			executor := control.NewMemoryExecutor(baseWorld())
+			note(server.Reconcile("web-public", executorOver{executor},
+				control.NewMeasuredProber(executor, map[string]control.ProbeTarget{
+					"web-0": {Allocation: "web-0", Kind: control.ProbeProcess}})))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 150 {
+			note(server.Cordon("base", "", "arc"))
+			note(server.Uncordon("base", "arc"))
+		}
+		close(stop)
+	}()
+	wg.Wait()
+	if len(collisions) > 0 {
+		t.Fatalf("%d appends failed on a sequence race, first: %s", len(collisions), collisions[0])
 	}
 }
