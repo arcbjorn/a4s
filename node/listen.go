@@ -232,7 +232,15 @@ func DialServer(ctx context.Context, network, address string, nodeID string,
 		}
 		stream = secure
 	}
-	return Serve(ctx, dispatcher, stream, stream)
+	// Serve blocks reading the connection and never sees the context, so the
+	// connection is closed when the context ends. Without this a SIGTERM did
+	// not stop the node until the server happened to close the socket.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+	if err := Serve(ctx, dispatcher, stream, stream); err != nil && ctx.Err() == nil {
+		return err
+	}
+	return nil
 }
 
 // RegistryExecutor issues capabilities to whichever enrolled node an action
