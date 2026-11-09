@@ -175,7 +175,25 @@ func (a *BridgeIPAM) Assign(allocation string) (string, bool, error) {
 	base := binaryIPv4(a.subnet.IP)
 	ones, bits := a.subnet.Mask.Size()
 	capacity := uint32(1) << uint(bits-ones)
-	for offset := a.next; offset < capacity-1; offset++ {
+	// Usable offsets exclude the network address, the bridge at .1, and the
+	// broadcast address.
+	const first = uint32(2)
+	if capacity < 4 {
+		return "", false, fmt.Errorf("allocation subnet %s is too small", a.subnet)
+	}
+	last := capacity - 2
+	span := last - first + 1
+	start := a.next
+	if start < first || start > last {
+		start = first
+	}
+	// The scan starts after the most recent assignment and wraps around, so a
+	// released address is reused only after the rest of the range has been
+	// tried. Scanning forward without wrapping meant a node exhausted its
+	// subnet after one range's worth of lifetime attaches, even with nothing
+	// running.
+	for step := uint32(0); step < span; step++ {
+		offset := first + (start-first+step)%span
 		candidate := ipv4From(base + offset)
 		if a.inUse(candidate) {
 			continue
