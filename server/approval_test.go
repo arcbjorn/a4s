@@ -280,3 +280,20 @@ func TestServerWithoutOperatorKeysApprovesNothing(t *testing.T) {
 		t.Fatal("a server with no operator keys accepted an approval")
 	}
 }
+
+// Granting an approval to one goal must not stop the server admitting others.
+func TestApprovalDoesNotBlockOtherGoalAdmission(t *testing.T) {
+	server, _, key := operatorServer(t)
+	if err := server.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Approve(signedGrant(t, key, "public-route")); err != nil {
+		t.Fatal(err)
+	}
+	other := testGoal()
+	other.ID = "api-internal"
+	other.Workload.Name = "api"
+	if err := server.Submit(other); err != nil {
+		t.Fatalf("an approval for web-public blocked admission of api-internal: %v", err)
+	}
+}
