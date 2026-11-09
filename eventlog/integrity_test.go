@@ -3,6 +3,7 @@ package eventlog
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -106,5 +107,53 @@ func TestVerifyAcceptsEmptyAndGrowingLogs(t *testing.T) {
 		if err := store.Verify(); err != nil {
 			t.Fatalf("verify after append %d: %v", index+1, err)
 		}
+	}
+}
+
+// A record that diverges from the follower's chain must be refused before it
+// is stored, or the follower holds the other history's record and its own
+// chain still verifies around it.
+func TestIngestRefusesDivergenceBeforeStoring(t *testing.T) {
+	primary, _ := appendedStore(t, 3)
+	defer primary.Close()
+	other, _ := appendedStore(t, 0)
+	defer other.Close()
+	for index := 1; index <= 3; index++ {
+		if err := other.Append(testEvent(other.NextSequence(), "other history")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	follower, _ := appendedStore(t, 0)
+	defer follower.Close()
+	if _, err := follower.Ingest(primary.Records()[:2]); err != nil {
+		t.Fatal(err)
+	}
+	before := follower.Head()
+
+	_, err := follower.Ingest(other.Records()[2:])
+	if !errors.Is(err, ErrDiverged) {
+		t.Fatalf("want ErrDiverged, got %v", err)
+	}
+	if head := follower.Head(); head != before {
+		t.Fatalf("a diverged record was stored: head moved from %d to %d", before.Sequence, head.Sequence)
+	}
+	if hash, err := follower.HashAt(3); err != nil || hash != "" {
+		t.Fatalf("record 3 was written despite diverging (hash %q, err %v)", hash, err)
+	}
+	// The follower keeps following the real primary afterwards.
+	if _, err := follower.Ingest(primary.Records()[2:]); err != nil {
+		t.Fatalf("the follower could not continue after refusing a divergence: %v", err)
+	}
+}
+
+func TestIngestRefusesRecordWhoseEventDisagrees(t *testing.T) {
+	primary, _ := appendedStore(t, 1)
+	defer primary.Close()
+	records := primary.Records()
+	records[0].Event.Sequence = 7
+	follower, _ := appendedStore(t, 0)
+	defer follower.Close()
+	if _, err := follower.Ingest(records); err == nil {
+		t.Fatal("a record carrying a different event sequence was ingested")
 	}
 }
