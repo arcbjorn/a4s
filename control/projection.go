@@ -670,14 +670,12 @@ func projectInto(world *World, evidence Evidence) error {
 		if !ok {
 			return fmt.Errorf("evidence %q names unknown allocation %q", evidence.Kind, evidence.Target)
 		}
-		spent := observedBudget(evidence)
-		// Spend only ever increases. A lower reading is a stale or replayed
-		// observation, and accepting it would let an exhausted agent look
-		// affordable again and be restarted into the same ceiling.
-		if spent.Tokens < allocation.Spent.Tokens || spent.CostMillis < allocation.Spent.CostMillis {
-			return nil
-		}
-		allocation.Spent = spent
+		// Spend only ever increases, in every dimension independently. A lower
+		// reading is a stale or replayed observation, and accepting any part of
+		// it would let an exhausted agent look affordable again: a stale tool
+		// call count alone is enough to un-exhaust an agent whose token spend
+		// still reads current.
+		allocation.Spent = maxBudget(allocation.Spent, observedBudget(evidence))
 		// An agent that hit its ceiling is no longer ready. It cannot do work,
 		// and leaving it ready would let it satisfy a goal it cannot serve.
 		if allocation.Exhausted() {
@@ -949,4 +947,14 @@ func prunableSnapshots(volume *Volume, retain int) []string {
 // isDryRun reports evidence describing a rehearsal rather than a change.
 func isDryRun(evidence Evidence) bool {
 	return evidence.Observed["dry_run"] == "true"
+}
+
+// maxBudget takes the larger reading in each dimension.
+func maxBudget(a, b Budget) Budget {
+	return Budget{
+		Tokens:      max(a.Tokens, b.Tokens),
+		CostMillis:  max(a.CostMillis, b.CostMillis),
+		WallSeconds: max(a.WallSeconds, b.WallSeconds),
+		ToolCalls:   max(a.ToolCalls, b.ToolCalls),
+	}
 }
