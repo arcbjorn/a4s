@@ -71,3 +71,33 @@ func TestAdmissionRefusesNullNodeWithoutPanic(t *testing.T) {
 		t.Fatalf("want the null node refused by name, got %v", err)
 	}
 }
+
+// An uncompilable policy must be refused at admission. Accepted, it would be
+// skipped every round and the workload would run with no firewall at all.
+func TestAdmissionRefusesInvalidNetworkPolicy(t *testing.T) {
+	for name, policy := range map[string]*NetworkPolicy{
+		"malformed cidr":   {Egress: []EgressRule{{ToCIDR: "10.0.0.0/33"}}},
+		"no source":        {Ingress: []IngressRule{{Port: 8080}}},
+		"other workload":   {Workload: "billing", Ingress: []IngressRule{{FromCIDR: "10.0.0.0/8"}}},
+		"ambiguous source": {Ingress: []IngressRule{{FromWorkload: "web", FromCIDR: "10.0.0.0/8"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			scenario := validScenario()
+			scenario.Goal.Workload.Policy = policy
+			if err := scenario.NormalizeAndValidate(); err == nil {
+				t.Fatal("an uncompilable network policy was admitted")
+			}
+		})
+	}
+}
+
+func TestAdmissionFillsPolicyWorkload(t *testing.T) {
+	scenario := validScenario()
+	scenario.Goal.Workload.Policy = &NetworkPolicy{Ingress: []IngressRule{{FromCIDR: "10.0.0.0/8", Port: 8080}}}
+	if err := scenario.NormalizeAndValidate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := scenario.Goal.Workload.Policy.Workload; got != "app" {
+		t.Fatalf("policy workload = %q, want the goal's workload", got)
+	}
+}
