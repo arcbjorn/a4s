@@ -260,7 +260,67 @@ func validateAction(goal Goal, world World, action Action) error {
 	if !ok {
 		return fmt.Errorf("unknown action kind %q", action.Kind)
 	}
+	if err := checkActionScope(goal, world, action); err != nil {
+		return err
+	}
 	return validator(goal, world, action)
+}
+
+// allocationScoped are the actions whose target is an existing allocation.
+var allocationScoped = map[ActionKind]bool{
+	ActionAttachNetwork:    true,
+	ActionMountSecret:      true,
+	ActionStartAllocation:  true,
+	ActionStopAllocation:   true,
+	ActionDeleteAllocation: true,
+	ActionGrantTools:       true,
+	ActionDrainAllocation:  true,
+	ActionAttachVolume:     true,
+	ActionDetachVolume:     true,
+}
+
+// volumeScoped are the actions that read or write one named volume.
+var volumeScoped = map[ActionKind]bool{
+	ActionCreateVolume:    true,
+	ActionAttachVolume:    true,
+	ActionDetachVolume:    true,
+	ActionSnapshotVolume:  true,
+	ActionRestoreSnapshot: true,
+	ActionBackupSnapshot:  true,
+	ActionQuiesceVolume:   true,
+	ActionTransferVolume:  true,
+	ActionAdoptVolume:     true,
+	ActionPruneSnapshots:  true,
+	ActionVerifyBackup:    true,
+	ActionDatabaseBackup:  true,
+}
+
+// checkActionScope confines a proposal to the goal it was made for.
+//
+// Every gate the kernel applies is evaluated for one goal: its approvals, its
+// availability floor, its declared secrets and tools. An action reaching a
+// different workload's allocation or volume would be judged by this goal's
+// rules while acting on another's state, so one goal's restore-volume approval
+// could overwrite another goal's data, and a rollout could stop every replica
+// of a workload whose floor nobody was computing. Checked once here, ahead of
+// the per-kind validators, so no validator can forget it.
+func checkActionScope(goal Goal, world World, action Action) error {
+	if action.Workload != "" && action.Workload != goal.Workload.Name {
+		return fmt.Errorf("action %q names workload %q, but goal %q owns workload %q",
+			action.ID, action.Workload, goal.ID, goal.Workload.Name)
+	}
+	if allocationScoped[action.Kind] {
+		if allocation, ok := world.Allocations[action.Target]; ok &&
+			allocation.Workload != goal.Workload.Name {
+			return fmt.Errorf("allocation %q belongs to workload %q, not to goal %q",
+				action.Target, allocation.Workload, goal.ID)
+		}
+	}
+	if volumeScoped[action.Kind] && action.Volume != nil &&
+		!workloadDeclaresVolume(goal, action.Volume.Name) {
+		return fmt.Errorf("volume %q is not declared by goal %q", action.Volume.Name, goal.ID)
+	}
+	return nil
 }
 
 func validatePullImage(goal Goal, world World, action Action) error {
