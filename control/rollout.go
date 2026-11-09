@@ -92,14 +92,8 @@ func RollbackTarget(goal Goal, world World) (string, bool) {
 // The second return value is the image being rolled back from, which the
 // rollout agent needs in order to know what to retire.
 func CompensatedGoal(goal Goal, world World) (Goal, string, bool) {
-	approval := rollbackApproval(world, goal.ID)
+	approval := rollbackApproval(world, goal)
 	if approval == nil {
-		return goal, "", false
-	}
-	// The approval names the version it was issued against. Once the goal no
-	// longer asks for that version an operator has moved on, and the
-	// compensation stops rather than pinning the workload to an old image.
-	if approval.Subject != "" && approval.Subject != goal.Workload.Image {
 		return goal, "", false
 	}
 
@@ -124,15 +118,32 @@ func CompensatedGoal(goal Goal, world World) (Goal, string, bool) {
 	return goal, failedImage, true
 }
 
-// rollbackApproval returns the live rollback grant for a goal, if any.
-func rollbackApproval(world World, goalID string) *Approval {
+// rollbackApproval returns the live rollback grant that applies to a goal's
+// current image, if any.
+//
+// An approval names the version it was issued against. Once the goal no longer
+// asks for that version an operator has moved on, so a grant for another
+// subject is skipped rather than chosen and then discarded: with two live
+// grants, picking one in map order and rejecting it would make compensation
+// flip between images from one round to the next and on every replay. Among
+// the grants that apply, the most recently issued wins, with the id breaking a
+// tie, so the choice is a function of the world alone.
+func rollbackApproval(world World, goal Goal) *Approval {
 	now := world.Now()
+	var chosen *Approval
 	for _, approval := range world.Approvals {
-		if approval.GoalID == goalID && approval.Scope == "rollback" && approval.Valid(now) {
-			return approval
+		if approval.GoalID != goal.ID || approval.Scope != "rollback" || !approval.Valid(now) {
+			continue
+		}
+		if approval.Subject != "" && approval.Subject != goal.Workload.Image {
+			continue
+		}
+		if chosen == nil || approval.IssuedAt.After(chosen.IssuedAt) ||
+			(approval.IssuedAt.Equal(chosen.IssuedAt) && approval.ID > chosen.ID) {
+			chosen = approval
 		}
 	}
-	return nil
+	return chosen
 }
 
 func (r RolloutAgent) Propose(goal Goal, world World) (Proposal, error) {
