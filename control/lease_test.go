@@ -142,3 +142,47 @@ func TestEngineReleasesLeasesAfterExecution(t *testing.T) {
 		}
 	}
 }
+
+// Proposal ids repeat across goals reconciled at the same revision, so a
+// lease must not treat another goal's identical proposal id as a retry.
+func TestLeaseRefusesSameProposalIDFromAnotherGoal(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	leases := NewLeaseManager().WithClock(func() time.Time { return now })
+	if _, err := leases.Acquire("goal-a", "rollout-agent-r7", []string{"api-0"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := leases.Acquire("goal-b", "rollout-agent-r7", []string{"api-0"}); err == nil {
+		t.Fatal("a second goal acquired a target leased by another goal")
+	}
+	// A retry by the holder succeeds and re-issues the lease under a new id.
+	retry, err := leases.Acquire("goal-a", "rollout-agent-r7", []string{"api-0"})
+	if err != nil {
+		t.Fatalf("the holder's own retry was refused: %v", err)
+	}
+	leases.Release(retry)
+	if _, err := leases.Acquire("goal-b", "rollout-agent-r7", []string{"api-0"}); err != nil {
+		t.Fatalf("a released target stayed leased: %v", err)
+	}
+}
+
+// Two leases acquired at the same clock reading must have distinct ids, or
+// releasing one drops the other.
+func TestLeaseIDsAreUniqueAtOneInstant(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	leases := NewLeaseManager().WithClock(func() time.Time { return now })
+	first, err := leases.Acquire("goal-a", "p", []string{"a-0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := leases.Acquire("goal-a", "p", []string{"b-0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("two leases share id %q", first)
+	}
+	leases.Release(first)
+	if _, held := leases.Holder("b-0"); !held {
+		t.Fatal("releasing one lease dropped another acquired at the same instant")
+	}
+}
