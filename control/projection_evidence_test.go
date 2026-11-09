@@ -56,3 +56,34 @@ func TestDryRunCollectLeavesImagesRecorded(t *testing.T) {
 		t.Fatal("a real collection must still forget the reclaimed image")
 	}
 }
+
+// The tool count is node-supplied and sizes an allocation. A negative value
+// must be refused, not panic the projection on every replay of the log.
+func TestToolCountIsBounded(t *testing.T) {
+	for _, count := range []string{"-1", "33", "9223372036854775807"} {
+		t.Run(count, func(t *testing.T) {
+			world := evidenceWorld()
+			world.Allocations["a-0"] = &Allocation{ID: "a-0", Workload: "a", Node: "base",
+				Phase: AllocationCreated}
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("a tool count of %s panicked the projection: %v", count, recovered)
+				}
+			}()
+			if _, err := Project(world, Evidence{Kind: EvidenceToolsGranted, Target: "a-0",
+				Observed: map[string]string{"count": count}}); err == nil {
+				t.Fatalf("a tool count of %s was accepted", count)
+			}
+		})
+	}
+	world := evidenceWorld()
+	world.Allocations["a-0"] = &Allocation{ID: "a-0", Workload: "a", Node: "base", Phase: AllocationCreated}
+	next, err := Project(world, Evidence{Kind: EvidenceToolsGranted, Target: "a-0",
+		Observed: map[string]string{"count": "3"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(next.Allocations["a-0"].Tools); got != 3 {
+		t.Fatalf("recorded %d tools, want 3", got)
+	}
+}
