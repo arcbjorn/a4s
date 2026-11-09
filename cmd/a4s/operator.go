@@ -249,7 +249,16 @@ func rollbackVersions(world control.World, workload, from, to string) (string, s
 	}
 	failed := from
 	if failed == "" {
-		for _, allocation := range world.Allocations {
+		// Allocations are visited in id order. With two failing images on
+		// record, map order would make the image an operator approves rolling
+		// back from differ between runs of the same command.
+		ids := make([]string, 0, len(world.Allocations))
+		for id := range world.Allocations {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			allocation := world.Allocations[id]
 			if allocation.Workload == workload && allocation.Phase == control.AllocationStopped &&
 				(allocation.ExitCode != 0 || allocation.Restarts > 0) {
 				failed = allocation.Image
