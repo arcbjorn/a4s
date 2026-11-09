@@ -70,10 +70,10 @@ func TestKernelRefusesRetentionBelowOne(t *testing.T) {
 	world := World{Nodes: map[string]*Node{"base": {ID: "base", Healthy: true}}}
 	world.normalize()
 	world.Volumes["app-data"] = volumeWithSnapshots("s1", "s2")
-	goal := Goal{APIVersion: APIVersion, ID: "app-public",
-		Workload: WorkloadSpec{Name: "app"}}
-
 	ref := VolumeRef{Name: "app-data", MountPath: "/var/lib/app"}
+	goal := Goal{APIVersion: APIVersion, ID: "app-public",
+		Workload: WorkloadSpec{Name: "app", Volumes: []VolumeRef{ref}}}
+
 	proposal := Proposal{
 		ID: "p1", AgentID: "storage-agent", GoalID: goal.ID,
 		BasedOnRevision: world.Revision,
@@ -97,9 +97,10 @@ func TestPruneRefusedDuringHandoff(t *testing.T) {
 	volume := volumeWithSnapshots("s1", "s2")
 	volume.Handoff = &VolumeHandoff{From: "base", To: "other", Phase: HandoffSnapshotted}
 	world.Volumes["app-data"] = volume
-	goal := Goal{APIVersion: APIVersion, ID: "app-public", Workload: WorkloadSpec{Name: "app"}}
-
 	ref := VolumeRef{Name: "app-data", MountPath: "/var/lib/app"}
+	goal := Goal{APIVersion: APIVersion, ID: "app-public",
+		Workload: WorkloadSpec{Name: "app", Volumes: []VolumeRef{ref}}}
+
 	proposal := Proposal{
 		ID: "p1", AgentID: "storage-agent", GoalID: goal.ID,
 		BasedOnRevision: world.Revision,
