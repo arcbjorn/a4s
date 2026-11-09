@@ -546,6 +546,20 @@ observed, and `control.Project` independently interprets that evidence. A
 faulty or adversarial executor can therefore only report evidence, never assert
 world state.
 
+Before anything is projected, the engine admits it against a default-deny
+table. Executor evidence must be a kind the dispatched action produces, about
+the target that action named; probe evidence must be the measurement its check
+asked for, about the checked target. `approval.*`, `diagnosis.recorded`, and
+`node.reachable`/`node.unreachable` appear in neither table, so they enter the
+log only through the server's own verified paths. Refused evidence blocks the
+goal and is recorded.
+
+Node-reported values are bounded before use: `network.attached` must observe an
+IPv4 address, stored canonically; `agent.tools_granted` counts are limited to
+0 through the tool-grant maximum; `agent.spent` takes the larger reading in each
+dimension independently; and dry-run `volume.snapshots_pruned` and
+`images.collected` evidence changes nothing.
+
 `Project` is pure and idempotent. It never mutates its input world, and applying
 the same evidence twice yields the same result. That property is what makes
 action replay safe after a node crashes between host mutation and recording the
