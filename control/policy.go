@@ -611,6 +611,18 @@ func validateApplyPolicy(goal Goal, world World, action Action) error {
 	if len(action.Policy.Rules) == 0 {
 		return fmt.Errorf("compiled policy holds no rules")
 	}
+	// The rules are piped to nft as root, so the kernel does not trust the
+	// proposal's text at all. It recompiles the goal's declared intent itself
+	// and authorizes only an exact match. Checking the table name alone would
+	// admit "flush ruleset", or any statement an agent cared to write.
+	expected, err := compileGoalPolicy(goal, world, action.Node)
+	if err != nil {
+		return fmt.Errorf("apply policy: %w", err)
+	}
+	if action.Policy.Fingerprint() != expected.Fingerprint() {
+		return fmt.Errorf("policy for node %q differs from the ruleset the kernel compiles for goal %q",
+			action.Node, goal.ID)
+	}
 	return nil
 }
 
