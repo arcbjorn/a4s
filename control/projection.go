@@ -385,6 +385,12 @@ func projectInto(world *World, evidence Evidence) error {
 		if !ok {
 			return fmt.Errorf("evidence %q names unknown node %q", evidence.Kind, evidence.Target)
 		}
+		// A dry run lists what it would reclaim and reclaims nothing. Treating
+		// that list as removed would make the world forget images still on
+		// disk and pull them again for no reason.
+		if isDryRun(evidence) {
+			break
+		}
 		// A reclaimed image is no longer present on the node, so anything that
 		// needs it must pull again. Recording that is what keeps the world from
 		// believing an image is cached when its bytes are gone.
@@ -396,6 +402,12 @@ func projectInto(world *World, evidence Evidence) error {
 		volume, ok := world.Volumes[evidence.Target]
 		if !ok {
 			return fmt.Errorf("evidence %q names unknown volume %q", evidence.Kind, evidence.Target)
+		}
+		// A dry run reports what it would remove. Projecting that as removal
+		// would make every listed snapshot unrestorable while its bytes are
+		// still on disk, which is the opposite of what a rehearsal is for.
+		if isDryRun(evidence) {
+			break
 		}
 		// The removed ids are reported as a newline-separated list. Dropping
 		// them from the world is what makes a pruned snapshot unrestorable, so
@@ -924,4 +936,9 @@ func prunableSnapshots(volume *Volume, retain int) []string {
 		}
 	}
 	return removable
+}
+
+// isDryRun reports evidence describing a rehearsal rather than a change.
+func isDryRun(evidence Evidence) bool {
+	return evidence.Observed["dry_run"] == "true"
 }
