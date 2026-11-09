@@ -55,12 +55,17 @@ func (c *cli) keysInit(args []string) error {
 		return fmt.Errorf("keyset %s already exists; use keys rotate", *keysetPath)
 	}
 
-	public, err := generateSigningKey(*out)
+	public, private, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate signing key: %w", err)
+	}
+	// The keyset is built before anything touches disk, so a rejected key id
+	// leaves no orphaned private key behind to block the corrected re-run.
+	set, err := control.NewKeySet(*keyID, public, nowUTC())
 	if err != nil {
 		return err
 	}
-	set, err := control.NewKeySet(*keyID, public, nowUTC())
-	if err != nil {
+	if err := writeKeypair(*out, public, private); err != nil {
 		return err
 	}
 	if err := writeKeySet(*keysetPath, set); err != nil {
@@ -91,12 +96,21 @@ func (c *cli) keysRotate(args []string) error {
 	if err != nil {
 		return err
 	}
-	public, err := generateSigningKey(*out)
+	public, private, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate signing key: %w", err)
+	}
+	// Rotation is validated before the key is written. A refused rotation, such
+	// as a reused key id, must not leave a private key on disk that nothing
+	// trusts and that blocks the next attempt at the same path.
+	rotated, err := set.Rotate(*keyID, public, nowUTC())
 	if err != nil {
 		return err
 	}
-	rotated, err := set.Rotate(*keyID, public, nowUTC())
-	if err != nil {
+	// The private key is written before the keyset that trusts it. The reverse
+	// order could leave nodes trusting an active key whose private half was
+	// never stored, which no one could ever sign with.
+	if err := writeKeypair(*out, public, private); err != nil {
 		return err
 	}
 	if err := writeKeySet(*keysetPath, rotated); err != nil {
@@ -170,28 +184,6 @@ func (c *cli) keysList(args []string) error {
 			key.CreatedAt.Format("2006-01-02 15:04:05"), note)
 	}
 	return nil
-}
-
-// generateSigningKey writes a new private signing key and returns its public
-// half. The private key is written 0600 and never printed.
-func generateSigningKey(path string) (ed25519.PublicKey, error) {
-	if _, err := os.Stat(path); err == nil {
-		return nil, fmt.Errorf("refusing to overwrite existing key %s", path)
-	}
-	public, private, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		return nil, fmt.Errorf("generate signing key: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("create key directory: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(encodeBase64(private)+"\n"), 0o600); err != nil {
-		return nil, fmt.Errorf("write signing key: %w", err)
-	}
-	if err := os.WriteFile(path+".pub", []byte(encodeBase64(public)+"\n"), 0o644); err != nil {
-		return nil, fmt.Errorf("write public key: %w", err)
-	}
-	return public, nil
 }
 
 func readKeySet(path string) (control.KeySet, error) {
