@@ -645,6 +645,14 @@ func validatePublishZone(goal Goal, world World, action Action) error {
 		return fmt.Errorf("zone was built for node %q but is addressed to %q",
 			action.Zone.Node, action.Node)
 	}
+	// Every record is what the kernel itself resolves from observed
+	// endpoints. A zone taken on trust could point any service name at any
+	// address, which is in-cluster DNS hijack.
+	expected := goalZone(goal, world, action.Node)
+	if action.Zone.Fingerprint() != expected.Fingerprint() {
+		return fmt.Errorf("zone for node %q differs from the records the kernel resolves for goal %q",
+			action.Node, goal.ID)
+	}
 	return nil
 }
 
