@@ -159,6 +159,11 @@ The default kernel allows at most eight actions per proposal. Action IDs must
 be nonempty and unique within the proposal. Every `depends_on` ID must refer to
 an earlier action that has already been simulated.
 
+Every action is confined to its goal before its kind-specific validator runs: a
+named `workload` must be the goal's, an allocation target must belong to the
+goal's workload, a volume must be one the goal declares, and a
+`create_allocation` target must be exactly `AllocationID(workload, replica)`.
+
 ## Implemented actions
 
 ### `pull_image`
