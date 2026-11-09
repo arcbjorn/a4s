@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -231,4 +232,71 @@ func answerCount(response []byte) int {
 		return 0
 	}
 	return int(response[6])<<8 | int(response[7])
+}
+
+// rawQuery builds a DNS message for name with the given header flags.
+func rawQuery(name string, flags uint16) []byte {
+	message := []byte{0x12, 0x34, byte(flags >> 8), byte(flags), 0, 1, 0, 0, 0, 0, 0, 0}
+	for _, label := range strings.Split(name, ".") {
+		message = append(message, byte(len(label)))
+		message = append(message, label...)
+	}
+	return append(message, 0, 0, 1, 0, 1)
+}
+
+// A response must never be answered, or two resolvers bounce datagrams
+// between each other indefinitely from one spoofed packet.
+func TestResolverDoesNotAnswerResponses(t *testing.T) {
+	resolver := NewResolver("alpha")
+	resolver.Apply(control.ServiceZone{Node: "alpha", Records: map[string][]control.ResolvedEndpoint{
+		control.ServiceName("web"): {{Address: "10.42.0.2", Port: 80}},
+	}})
+	if _, err := resolver.answer(rawQuery("web.a4s.internal", 0x8100)); err == nil {
+		t.Fatal("a message with the response bit set was answered")
+	}
+	if _, err := resolver.answer(rawQuery("web.a4s.internal", 0x2100)); err == nil {
+		t.Fatal("an update (opcode 5) was answered")
+	}
+	if _, err := resolver.answer(rawQuery("web.a4s.internal", 0x0100)); err != nil {
+		t.Fatalf("a standard query was refused: %v", err)
+	}
+}
+
+func TestTwoResolversDoNotLoop(t *testing.T) {
+	rawA, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawB, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &countingConn{PacketConn: rawA}
+	b := &countingConn{PacketConn: rawB}
+	go func() { _ = NewResolver("alpha").serve(a) }()
+	go func() { _ = NewResolver("beta").serve(b) }()
+	defer a.Close()
+	defer b.Close()
+	// A query that appears to come from resolver B reaches resolver A; A's
+	// answer goes to B, which must drop it rather than answer the answer.
+	if _, err := rawB.WriteTo(rawQuery("web.a4s.internal", 0x0100), rawA.LocalAddr()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if total := a.reads.Load() + b.reads.Load(); total > 4 {
+		t.Fatalf("one packet produced %d datagrams between two resolvers", total)
+	}
+}
+
+type countingConn struct {
+	net.PacketConn
+	reads atomic.Int64
+}
+
+func (c *countingConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
+	read, from, err := c.PacketConn.ReadFrom(buffer)
+	if err == nil {
+		c.reads.Add(1)
+	}
+	return read, from, err
 }
