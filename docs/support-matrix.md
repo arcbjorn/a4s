@@ -9,7 +9,7 @@ run by hand; it does not imply production readiness. See
 
 | Component | Version | Notes |
 | --- | --- | --- |
-| Go | 1.26.3 or later | Required by containerd v2.3.2, which declares it. Earlier toolchains cannot build the module. |
+| Go | 1.26.3 or later; build releases with 1.26.10 or later | 1.26.3 is required by containerd v2.3.2, which declares it. Releases before 1.26.10 carry standard-library vulnerabilities the server reaches, so `.go-version` pins 1.26.10. |
 | containerd | 2.3.x | The node uses the official v2 Go client. v1 is not supported: the client API differs. |
 | runc | 1.1 or later | Whatever containerd is configured to use. a4s does not invoke runc directly. |
 | CNI plugins | 1.4 or later | The node writes a `bridge` network configuration with `host-local` IPAM and invokes the plugin binaries in `--cni-bin`. |
