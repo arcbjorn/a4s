@@ -4,7 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"net"
+	"net/netip"
 	"sort"
 	"strings"
 )
@@ -102,13 +102,15 @@ func (p NetworkPolicy) Validate() error {
 // catches later: nft would reject the whole ruleset, taking every other
 // workload's policy down with it.
 func validateCIDR(value string) error {
-	_, network, err := net.ParseCIDR(value)
+	prefix, err := netip.ParsePrefix(value)
 	if err != nil {
 		return fmt.Errorf("%q is not a valid CIDR", value)
 	}
-	if network.IP.To4() == nil {
-		// The compiler emits an IPv4 table; accepting a v6 prefix here would
-		// produce a rule that silently never matches.
+	// Is4 rather than a To4 conversion: an IPv4-mapped IPv6 prefix such as
+	// ::ffff:10.0.0.0/104 converts cleanly, renders as an ip6 address, and
+	// makes nft reject the whole script. The compiler emits an IPv4 table, so
+	// anything else would either never match or take every policy down.
+	if !prefix.Addr().Is4() {
 		return fmt.Errorf("%q is not an IPv4 CIDR", value)
 	}
 	return nil
