@@ -184,7 +184,8 @@ Release mechanics are in place:
 
 - Apache-2.0 licensed; see [LICENSE](../LICENSE).
 - CI runs race tests, vet, gofmt, `go mod tidy`, Linux cross-builds, the
-  example simulation, and documentation link checks. Fuzzing is local.
+  example simulation, `govulncheck`, and documentation link checks. Fuzzing is
+  local.
 - Version, commit, and build date are injected at link time. A plain
   `go build` still self-identifies from the toolchain's VCS stamps.
 - `scripts/build-release.sh <version>` produces stamped binaries for
