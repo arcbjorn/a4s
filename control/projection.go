@@ -783,6 +783,9 @@ func projectInto(world *World, evidence Evidence) error {
 		// happened needs to see that a grant existed and was withdrawn, not an
 		// absence that looks like it was never issued.
 		approval.Granted = false
+		if evidence.ObservedAt.After(approval.RevokedAt) {
+			approval.RevokedAt = evidence.ObservedAt
+		}
 
 	case EvidenceDiagnosisRecorded:
 		// Deliberately projects nothing. A diagnosis explains recorded history;
