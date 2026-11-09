@@ -497,7 +497,14 @@ func projectInto(world *World, evidence Evidence) error {
 		if address == "" {
 			return fmt.Errorf("evidence %q must observe an address", evidence.Kind)
 		}
-		allocation.Address = address
+		// The address is rendered into other nodes' firewall rules and service
+		// zones, so it must be exactly an address. A node reporting text with a
+		// newline in it would otherwise be writing nft statements of its own.
+		canonical, err := canonicalIPv4(address)
+		if err != nil {
+			return fmt.Errorf("evidence %q: %w", evidence.Kind, err)
+		}
+		allocation.Address = canonical
 
 	case EvidenceNetworkDetached:
 		allocation, ok := world.Allocations[evidence.Target]
