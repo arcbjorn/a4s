@@ -640,8 +640,16 @@ func projectInto(world *World, evidence Evidence) error {
 		// The grants themselves come from the authorized action, not from what
 		// the node reports back, so a compromised node cannot widen its own
 		// envelope by describing a larger one in evidence.
-		allocation.Tools = make([]ToolGrant, 0, observedInt(evidence, "count"))
-		for i := 0; i < observedInt(evidence, "count"); i++ {
+		// The count is node-supplied and sizes an allocation, so it is bounded
+		// before use: a negative value would panic the projection and a huge
+		// one would exhaust memory, on every replay of the log that holds it.
+		count := observedInt(evidence, "count")
+		if count < 0 || count > maxToolGrants {
+			return fmt.Errorf("evidence %q reports %d tools, outside 0-%d",
+				evidence.Kind, count, maxToolGrants)
+		}
+		allocation.Tools = make([]ToolGrant, 0, count)
+		for i := 0; i < count; i++ {
 			allocation.Tools = append(allocation.Tools, ToolGrant{})
 		}
 
