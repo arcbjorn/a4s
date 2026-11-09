@@ -1,7 +1,6 @@
 package node
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -116,7 +115,11 @@ func acceptNode(conn net.Conn, nodeKeys map[string]ed25519.PublicKey,
 	// Clear the handshake deadline so it does not later expire mid-session.
 	defer conn.SetDeadline(time.Time{})
 
-	decoder := json.NewDecoder(bufio.NewReader(io.LimitReader(conn, maxHandshakeBytes)))
+	// The decoder reads the connection directly. It already buffers, and
+	// decoder.Buffered is carried into the channel afterward; an extra
+	// buffered reader underneath would hold bytes that Buffered never sees, so
+	// a first record arriving with the last handshake message was lost.
+	decoder := json.NewDecoder(io.LimitReader(conn, maxHandshakeBytes))
 	decoder.DisallowUnknownFields()
 	encoder := json.NewEncoder(conn)
 
@@ -262,7 +265,11 @@ func connectToServer(conn net.Conn, nodeID string, nodeKey ed25519.PrivateKey,
 	}
 	defer conn.SetDeadline(time.Time{})
 
-	decoder := json.NewDecoder(bufio.NewReader(io.LimitReader(conn, maxHandshakeBytes)))
+	// The decoder reads the connection directly. It already buffers, and
+	// decoder.Buffered is carried into the channel afterward; an extra
+	// buffered reader underneath would hold bytes that Buffered never sees, so
+	// a first record arriving with the last handshake message was lost.
+	decoder := json.NewDecoder(io.LimitReader(conn, maxHandshakeBytes))
 	decoder.DisallowUnknownFields()
 	encoder := json.NewEncoder(conn)
 
