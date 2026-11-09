@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -155,5 +156,38 @@ func TestIngestRefusesRecordWhoseEventDisagrees(t *testing.T) {
 	defer follower.Close()
 	if _, err := follower.Ingest(records); err == nil {
 		t.Fatal("a record carrying a different event sequence was ingested")
+	}
+}
+
+// Concurrent writers sharing one store must each get a distinct sequence and
+// none may fail, which the two-step NextSequence then Append could not ensure.
+func TestAppendNextIsAtomicAcrossWriters(t *testing.T) {
+	store, _ := appendedStore(t, 0)
+	defer store.Close()
+	const writers, each = 8, 25
+	var wg sync.WaitGroup
+	errs := make(chan error, writers*each)
+	for writer := 0; writer < writers; writer++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := 0; index < each; index++ {
+				event := testEvent(0, "concurrent")
+				if _, err := store.AppendNext(event); err != nil {
+					errs <- err
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("a concurrent append failed: %v", err)
+	}
+	if head := store.Head(); head.Sequence != writers*each {
+		t.Fatalf("head is %d, want %d", head.Sequence, writers*each)
+	}
+	if err := store.Verify(); err != nil {
+		t.Fatal(err)
 	}
 }
