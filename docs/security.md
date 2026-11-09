@@ -569,6 +569,19 @@ Closed:
 
 Still required:
 
+- Server authentication during the node handshake. The server signs nothing
+  while enrolling a node, so a peer able to intercept the connection can
+  complete enrollment, read what the node sends, and hold it captive. It still
+  cannot issue actions, which require a trusted controller signature.
+- Authenticated replication. A standby verifies that records chain, but the
+  responses it pulls over the operator API are not signed by the primary, so on
+  an untrusted network a forged suffix beyond the anchored head can reach a
+  promoted replica.
+- A single-writer lock on the event log. A second process appending to a live
+  log, including `a4s approve --event-log`, makes the server's later appends
+  fail until it restarts.
+- Byte budgets on the node session stream. The handshake is bounded; framed
+  session messages are not.
 - Gateway snapshot authenticity. The node applies whole snapshots, but the
   gateway does not verify their provenance independently.
 - Secret rotation without workload restart.
