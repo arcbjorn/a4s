@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -347,4 +348,41 @@ func TestPromotionRereadsTheAnchorAndSurvivesRefusal(t *testing.T) {
 		t.Fatalf("a caught-up follower refused to promote: %v", err)
 	}
 	promoted.Close()
+}
+
+// An anchor on an unmounted share, or a mistyped path, must not be quietly
+// replaced by an empty local file that lets an empty replica promote.
+func TestStandbyRefusesMissingAnchorDirectory(t *testing.T) {
+	primary, _, _, config := standbyPair(t)
+	defer primary.Close()
+	config.EventLog = filepath.Join(t.TempDir(), "stale.db")
+	config.Anchor = filepath.Join(t.TempDir(), "unmounted", "primary.anchor")
+	if stale, err := OpenStandby(config); err == nil {
+		stale.Close()
+		t.Fatal("a standby opened against an anchor directory that does not exist")
+	}
+	if _, err := os.Stat(filepath.Dir(config.Anchor)); !os.IsNotExist(err) {
+		t.Fatal("opening created the missing anchor directory")
+	}
+}
+
+// An anchor holding no witness proves nothing about the primary's head.
+func TestStandbyRefusesToPromoteWithoutAWitness(t *testing.T) {
+	primary, _, _, config := standbyPair(t)
+	defer primary.Close()
+	config.EventLog = filepath.Join(t.TempDir(), "stale.db")
+	config.Anchor = filepath.Join(t.TempDir(), "empty.anchor")
+	stale, err := OpenStandby(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stale.Close()
+	promoted, err := stale.Promote(control.PlacementAgent{})
+	if err == nil {
+		promoted.Close()
+		t.Fatal("an empty replica promoted against an anchor with no witness")
+	}
+	if !strings.Contains(err.Error(), "no witnessed head") {
+		t.Fatalf("want a missing-witness refusal, got %v", err)
+	}
 }
