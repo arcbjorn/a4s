@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/arcbjorn/a4s/internal/fsutil"
 )
 
 // BackupManifest describes one controller state backup.
@@ -266,39 +268,7 @@ func hashBytes(payload []byte) string {
 // during a backup leaves either the previous file or the complete new one and
 // never a half-written archive presented as a recovery point.
 func writeFileAtomic(path string, payload []byte, mode os.FileMode) error {
-	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".a4s-backup-*")
-	if err != nil {
-		return fmt.Errorf("create temporary file: %w", err)
-	}
-	name := temporary.Name()
-	defer os.Remove(name)
-
-	if err := temporary.Chmod(mode); err != nil {
-		temporary.Close()
-		return fmt.Errorf("set backup permissions: %w", err)
-	}
-	if _, err := temporary.Write(payload); err != nil {
-		temporary.Close()
-		return fmt.Errorf("write backup: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
-		return fmt.Errorf("sync backup: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close backup: %w", err)
-	}
-	if err := os.Rename(name, path); err != nil {
-		return fmt.Errorf("install backup: %w", err)
-	}
-	// Syncing the directory makes the rename itself durable, so a crash cannot
-	// leave the entry unrecorded.
-	if handle, err := os.Open(directory); err == nil {
-		_ = handle.Sync()
-		handle.Close()
-	}
-	return nil
+	return fsutil.WriteFileAtomic(path, payload, mode)
 }
 
 // supersededPath names where an existing log is preserved during a restore.
