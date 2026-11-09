@@ -392,3 +392,92 @@ func TestHandshakeCarriesCoalescedFirstRecord(t *testing.T) {
 		t.Fatal("the first record arrived corrupted")
 	}
 }
+
+// waitForNewSession blocks until the registry holds a session for nodeID other
+// than previous.
+func waitForNewSession(t *testing.T, registry *Registry, nodeID string, previous *NodeConnection) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if current, ok := registry.Get(nodeID); ok && current != previous {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("node %q never reconnected", nodeID)
+}
+
+// After a node reconnects, the server must reach it over the new session. A
+// cached executor bound to the closed one made every later action fail until
+// the control plane restarted.
+func TestRegistryExecutorFollowsReconnect(t *testing.T) {
+	fixture := newEnrollFixture(t)
+	defer fixture.stop()
+	address := fixture.listener.Addr().String()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = DialServer(ctx, "tcp", address, "base", fixture.nodeKey, fixture.dispatcher, 2*time.Second)
+	}()
+	waitForNode(t, fixture.registry, "base")
+	first, _ := fixture.registry.Get("base")
+
+	executor := NewRegistryExecutor(fixture.registry, "control-1", fixture.serverKey)
+	executor.Bind("web-public", "placement-r0", 0, "lease-1")
+	create := func(id string) control.Action {
+		return control.Action{ID: "create-" + id, Kind: control.ActionCreateAllocation, Target: id,
+			Workload: "web", Node: "base", Image: testImage,
+			Resources: control.Resources{CPUMillis: 100, MemoryMB: 128}}
+	}
+	if _, err := executor.Execute(create("web-0")); err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		_ = DialServer(ctx, "tcp", address, "base", fixture.nodeKey, fixture.dispatcher, 2*time.Second)
+	}()
+	waitForNewSession(t, fixture.registry, "base", first)
+	if _, err := executor.Execute(create("web-1")); err != nil {
+		t.Fatalf("the executor still used the closed session after a reconnect: %v", err)
+	}
+}
+
+func TestRegistryObserverFollowsReconnect(t *testing.T) {
+	fixture := newEnrollFixture(t)
+	defer fixture.stop()
+	fixture.dispatcher.Observer = &CompositeObserver{
+		Runtime: NewRuntimeObserver(NewContainerRuntime(fixture.backend)),
+	}
+	address := fixture.listener.Addr().String()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = DialServer(ctx, "tcp", address, "base", fixture.nodeKey, fixture.dispatcher, 2*time.Second)
+	}()
+	waitForNode(t, fixture.registry, "base")
+	first, _ := fixture.registry.Get("base")
+
+	observer := NewRegistryObserver(fixture.registry, "control-1", fixture.serverKey)
+	target := control.ProbeTarget{Allocation: "web-0", Node: "base", Kind: control.ProbeProcess}
+	if _, _, err := observer.ObserveReadiness(target); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_ = DialServer(ctx, "tcp", address, "base", fixture.nodeKey, fixture.dispatcher, 2*time.Second)
+	}()
+	waitForNewSession(t, fixture.registry, "base", first)
+	if _, _, err := observer.ObserveReadiness(target); err != nil {
+		t.Fatalf("the observer still used the closed session after a reconnect: %v", err)
+	}
+}
+
+// A node that is not connected is reported as such, not measured.
+func TestRegistryObserverReportsDisconnectedNode(t *testing.T) {
+	observer := NewRegistryObserver(NewRegistry(), "control-1", nil)
+	if _, _, err := observer.ObserveReadiness(control.ProbeTarget{Allocation: "web-0", Node: "ghost"}); err == nil {
+		t.Fatal("a disconnected node produced a measurement")
+	}
+	if _, _, err := observer.ObserveReadiness(control.ProbeTarget{Allocation: "web-0"}); err == nil {
+		t.Fatal("a target with no node produced a measurement")
+	}
+}
