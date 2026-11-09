@@ -356,3 +356,65 @@ func TestUnsealRejectsMalformedNonceWithoutPanic(t *testing.T) {
 		})
 	}
 }
+
+// mapBroker serves fixed material by secret name.
+type mapBroker map[string]string
+
+func (b mapBroker) Fetch(_ context.Context, ref control.SecretRef) (SecretMaterial, error) {
+	return SecretMaterial{value: []byte(b[ref.Name])}, nil
+}
+
+func (mapBroker) Close() error { return nil }
+
+// Two secrets whose mount paths share a base name must land in different files,
+// or the workload reads one secret where it expects the other.
+func TestSecretsWithSameBasenameDoNotCollide(t *testing.T) {
+	secrets, err := NewSecrets(mapBroker{"api": "api-token", "db": "db-token"}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []control.SecretRef{
+		{Name: "api", Version: "v1", MountPath: "/etc/api/token"},
+		{Name: "db", Version: "v1", MountPath: "/run/db/token"},
+	}
+	paths := map[string]string{}
+	for i := range refs {
+		ref := refs[i]
+		evidence, err := secrets.Execute(context.Background(), control.Action{
+			Kind: control.ActionMountSecret, Target: "web-0", Secret: &ref})
+		if err != nil {
+			t.Fatalf("mount %s: %v", ref.Name, err)
+		}
+		paths[ref.Name] = evidence.Observed["mount_path"]
+	}
+	if paths["api"] == paths["db"] {
+		t.Fatalf("both secrets map to %s", paths["api"])
+	}
+	for name, want := range map[string]string{"api": "api-token", "db": "db-token"} {
+		got, err := os.ReadFile(paths[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s holds %q, want %q", name, got, want)
+		}
+	}
+}
+
+// A secret name that is not a single path element must never reach the
+// filesystem, whatever upstream validation allowed.
+func TestSecretNameCannotEscapeAllocationDirectory(t *testing.T) {
+	root := t.TempDir()
+	secrets, err := NewSecrets(mapBroker{"../escape": "material"}, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := control.SecretRef{Name: "../escape", Version: "v1", MountPath: "/run/x"}
+	if _, err := secrets.Execute(context.Background(), control.Action{
+		Kind: control.ActionMountSecret, Target: "web-0", Secret: &ref}); err == nil {
+		t.Fatal("a traversing secret name was written")
+	}
+	if _, err := os.Stat(filepath.Join(root, "escape")); !os.IsNotExist(err) {
+		t.Fatal("material was written outside the allocation directory")
+	}
+}
