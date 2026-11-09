@@ -116,6 +116,29 @@ func validateCIDR(value string) error {
 	return nil
 }
 
+// canonicalIPv4 returns an address in canonical dotted form, or an error for
+// anything else. Addresses come from node evidence and are rendered into
+// firewall rules and zones verbatim, so nothing but an address may pass.
+func canonicalIPv4(value string) (string, error) {
+	address, err := netip.ParseAddr(value)
+	if err != nil || !address.Is4() {
+		return "", fmt.Errorf("%q is not an IPv4 address", value)
+	}
+	return address.String(), nil
+}
+
+// hostPrefix renders one allocation address as a /32, or reports false for a
+// value that is not an address. Callers skip what fails, which fails closed: a
+// missing source denies, and a missing local address leaves that allocation
+// under the default-drop policy.
+func hostPrefix(address string) (string, bool) {
+	canonical, err := canonicalIPv4(address)
+	if err != nil {
+		return "", false
+	}
+	return canonical + "/32", true
+}
+
 // CompiledPolicy is the nftables ruleset one node should install.
 //
 // The rules are rendered rather than applied here, so the compilation is
@@ -225,7 +248,11 @@ func localAddresses(world World, workload, node string) []string {
 		if allocation.Address == "" || allocation.Phase == AllocationStopped {
 			continue
 		}
-		addresses = append(addresses, allocation.Address+"/32")
+		prefix, ok := hostPrefix(allocation.Address)
+		if !ok {
+			continue
+		}
+		addresses = append(addresses, prefix)
 	}
 	sort.Strings(addresses)
 	return addresses
@@ -242,7 +269,9 @@ func ruleAddresses(directory map[string]Service, workload, cidr string) []string
 	}
 	addresses := make([]string, 0, len(service.Endpoints))
 	for _, endpoint := range service.Endpoints {
-		addresses = append(addresses, endpoint.Address+"/32")
+		if prefix, ok := hostPrefix(endpoint.Address); ok {
+			addresses = append(addresses, prefix)
+		}
 	}
 	sort.Strings(addresses)
 	return addresses
