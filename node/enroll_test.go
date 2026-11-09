@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"net"
 	"path/filepath"
 	"strings"
@@ -286,4 +287,34 @@ func TestReconnectReplacesPriorSession(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("reconnecting node did not replace its prior session")
+}
+
+// The server reads the hello before any authentication. An unenrolled peer
+// must not be able to make it buffer an arbitrarily large message.
+func TestHandshakeBoundsHelloSize(t *testing.T) {
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverConn, nodeConn := net.Pipe()
+	defer serverConn.Close()
+	defer nodeConn.Close()
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := acceptNode(serverConn, map[string]ed25519.PublicKey{"base": public}, "control-1", 5*time.Second)
+		result <- err
+	}()
+	go func() {
+		_ = json.NewEncoder(nodeConn).Encode(Hello{Version: HandshakeVersion,
+			NodeID: strings.Repeat("a", 4*maxHandshakeBytes)})
+	}()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("an oversized hello was accepted")
+		}
+	case <-time.After(2 * time.Second):
+		// The handshake deadline is 5s; refusing the hello must not wait for it.
+		t.Fatal("the server accepted an oversized hello and carried on")
+	}
 }
