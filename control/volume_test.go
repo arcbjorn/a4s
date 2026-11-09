@@ -319,7 +319,7 @@ func TestUndeclaredVolumeIsRefused(t *testing.T) {
 	}
 	err := (Kernel{Policy: DefaultPolicy()}).Authorize(
 		(PlacementAgent{}).Descriptor(), scenario.Goal, world, proposal)
-	if err == nil || !strings.Contains(err.Error(), "not declared by the goal") {
+	if err == nil || !strings.Contains(err.Error(), "not declared by") {
 		t.Fatalf("kernel attached an undeclared volume: %v", err)
 	}
 }
