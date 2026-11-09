@@ -33,6 +33,9 @@ type LeaseManager struct {
 	leases map[string]Lease
 	ttl    time.Duration
 	now    func() time.Time
+	// issued numbers leases, so two acquired at the same clock reading still
+	// get distinct ids and releasing one never drops the other.
+	issued uint64
 }
 
 func NewLeaseManager() *LeaseManager {
@@ -81,7 +84,8 @@ func (m *LeaseManager) Acquire(goalID, proposalID string, targets []string) (str
 			existing.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 
-	leaseID := fmt.Sprintf("lease-%s-%d", proposalID, now.UnixNano())
+	m.issued++
+	leaseID := fmt.Sprintf("lease-%s-%s-%d-%d", goalID, proposalID, now.UnixNano(), m.issued)
 	expiry := now.Add(m.ttl)
 	for _, target := range ordered {
 		m.leases[target] = Lease{
