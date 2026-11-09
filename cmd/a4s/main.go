@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -24,10 +25,20 @@ type cli struct {
 
 func main() {
 	c := &cli{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}
-	if err := c.run(os.Args[1:]); err != nil {
-		fmt.Fprintln(c.stderr, "a4s:", err)
-		os.Exit(1)
+	os.Exit(c.exitCode(c.run(os.Args[1:])))
+}
+
+// exitCode maps a command's outcome to a process status, reporting any error.
+//
+// A help request is a successful run: the flag package has already printed the
+// command's usage, and exiting non-zero would make "a4s validate -h" look like
+// a failure to every script and service manager that checks it.
+func (c *cli) exitCode(err error) int {
+	if err == nil || errors.Is(err, flag.ErrHelp) {
+		return 0
 	}
+	fmt.Fprintln(c.stderr, "a4s:", err)
+	return 1
 }
 
 // flagSet returns a flag set whose usage and parse errors go to this cli's
