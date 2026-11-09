@@ -71,6 +71,9 @@ func (s *Scenario) NormalizeAndValidate() error {
 	if err := validateSecrets(w.Secrets); err != nil {
 		return err
 	}
+	if err := validateNetworkPolicy(&s.Goal); err != nil {
+		return err
+	}
 	if s.Goal.Route != nil {
 		if strings.TrimSpace(s.Goal.Route.Host) == "" {
 			return fmt.Errorf("route host is required")
@@ -469,6 +472,34 @@ func validateCanary(goal Goal) error {
 	// A run-to-completion job has no steady traffic to shift.
 	if goal.Workload.Schedule != nil {
 		return fmt.Errorf("a scheduled workload cannot use a canary")
+	}
+	return nil
+}
+
+// validateNetworkPolicy refuses a policy that cannot be compiled, at admission.
+//
+// The network agent compiles a goal's policy every round, and a compile error
+// there can only be skipped: the workload would then run with no firewall at
+// all while appearing to have declared one. Refusing the goal up front is the
+// only place the error can surface to the operator who wrote it.
+//
+// A policy names the workload it governs, and it may only govern the goal's
+// own workload. An omitted name means the goal's workload and is filled in, so
+// what is stored says exactly what it applies to.
+func validateNetworkPolicy(goal *Goal) error {
+	policy := goal.Workload.Policy
+	if policy == nil {
+		return nil
+	}
+	if policy.Workload == "" {
+		policy.Workload = goal.Workload.Name
+	}
+	if policy.Workload != goal.Workload.Name {
+		return fmt.Errorf("network policy names workload %q, but the goal runs %q",
+			policy.Workload, goal.Workload.Name)
+	}
+	if err := policy.Validate(); err != nil {
+		return fmt.Errorf("network policy: %w", err)
 	}
 	return nil
 }
