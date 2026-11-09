@@ -814,9 +814,12 @@ Rules:
 - A reconnecting node replaces its prior session, and the stale connection is
   closed rather than left able to receive capabilities.
 
-Enrollment establishes *who* the peer is. It does not encrypt the channel. The
-transport is intended to run over an already-encrypted tailnet; on an untrusted
-network it requires TLS beneath it.
+Enrollment establishes *who* the node is, and when both sides offer ephemeral
+keys it also agrees the keys for an encrypted channel. It does not yet
+authenticate the server to the node: the server signs nothing during the
+handshake, so a node trusts only that the server names a key it already trusts.
+Actions still require a valid controller signature. Each side reads at most
+16 KiB during the handshake.
 
 ## Operator introspection
 
