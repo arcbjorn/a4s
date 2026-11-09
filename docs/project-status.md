@@ -556,7 +556,9 @@ Node:
 ## Known implementation constraints
 
 - The module requires Go 1.26.3 because containerd v2.3.2 declares that Go
-  version.
+  version. `.go-version` pins 1.26.10, the first 1.26 release without
+  standard-library vulnerabilities this code reaches; build anything you deploy
+  with it.
 - The example image digest is all zeroes and exists only for simulation. It
   cannot be pulled on a real node.
 - The node harness reports rejected and failed envelopes per message and keeps
@@ -588,6 +590,7 @@ go run ./cmd/a4s validate --file examples/web-service.json
 go run ./cmd/a4s simulate --file examples/web-service.json
 ./scripts/check-doc-links.sh
 ./scripts/check-nftables.sh
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 git diff --check
 ```
 
