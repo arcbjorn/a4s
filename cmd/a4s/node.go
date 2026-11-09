@@ -354,10 +354,11 @@ func superviseLoop(ctx context.Context, logger *slog.Logger,
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// A pass that failed for one allocation still reports what it did
+			// for the others, so the observations are logged either way.
 			observations, err := supervisor.Reconcile(ctx)
 			if err != nil {
 				logger.Warn("supervision failed", slog.Any("error", err))
-				continue
 			}
 			for _, evidence := range observations {
 				// Local supervision acts during a control-plane outage, so this
