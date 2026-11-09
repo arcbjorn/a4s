@@ -15,7 +15,11 @@ Repository-local instructions also live in `AGENTS.md`.
 ## Toolchain
 
 Use the Go version in `.go-version`. The module currently tracks containerd
-v2.3.2 and therefore declares Go 1.26.3.
+v2.3.2 and therefore declares Go 1.26.3 as its minimum, but `.go-version` pins a
+later patch release: 1.26.3 through 1.26.9 carry standard-library
+vulnerabilities in `net/http`, `crypto/tls`, and `crypto/x509` that this code
+reaches. CI reads `.go-version` directly, and the `known vulnerabilities` job
+runs `govulncheck`, which fails on any reachable vulnerability.
 
 ```bash
 go version
