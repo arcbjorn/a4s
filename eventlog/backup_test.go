@@ -246,3 +246,74 @@ func TestBackupFilePermissionsAreRestrictive(t *testing.T) {
 		t.Fatalf("backup mode = %o, want 600", mode)
 	}
 }
+
+// Two restores in quick succession must each preserve the log they replace.
+func TestRestoreTwicePreservesEverySupersededLog(t *testing.T) {
+	store, _ := loggedStore(t, 2)
+	archive := filepath.Join(t.TempDir(), "backup.db")
+	if _, err := store.Backup(archive); err != nil {
+		t.Fatal(err)
+	}
+	livePath := filepath.Join(t.TempDir(), "live.db")
+	live, err := Open(livePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 5; index++ {
+		if err := live.Append(testEvent(live.NextSequence(), "authoritative")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := live.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(archive, livePath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(archive, livePath); err != nil {
+		t.Fatal(err)
+	}
+
+	preserved, err := filepath.Glob(livePath + ".superseded-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var databases []string
+	for _, path := range preserved {
+		if !strings.HasSuffix(path, "-wal") && !strings.HasSuffix(path, "-shm") {
+			databases = append(databases, path)
+		}
+	}
+	if len(databases) != 2 {
+		t.Fatalf("want two preserved logs, found %v", databases)
+	}
+	found := false
+	for _, path := range databases {
+		records, err := recordsIn(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) == 5 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the original five-record log was overwritten by the second restore")
+	}
+}
+
+// A backup aimed at the live log would delete it before writing.
+func TestBackupRefusesTheLivePath(t *testing.T) {
+	store, path := loggedStore(t, 2)
+	for _, destination := range []string{path, path + "-wal"} {
+		if _, err := store.Backup(destination); err == nil {
+			t.Fatalf("a backup to %s was accepted", destination)
+		}
+	}
+	if err := store.Verify(); err != nil {
+		t.Fatalf("the live log was damaged: %v", err)
+	}
+	if records := store.Records(); len(records) != 2 {
+		t.Fatalf("the live log holds %d records after a refused backup", len(records))
+	}
+}
