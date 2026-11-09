@@ -1061,6 +1061,14 @@ func validatePublishRoute(goal Goal, world World, action Action) error {
 	if action.Workload != goal.Workload.Name {
 		return fmt.Errorf("workload differs from goal")
 	}
+	// A host already routed to another workload is not this goal's to take.
+	// Republishing would silently move live traffic, and a tailnet goal that
+	// needs no approval could capture a public host another goal was approved
+	// for.
+	if existing, ok := world.Routes[action.Target]; ok && existing.Workload != "" &&
+		existing.Workload != goal.Workload.Name {
+		return fmt.Errorf("host %q is already routed to workload %q", action.Target, existing.Workload)
+	}
 	if action.Exposure == "public" && !hasApproval(world, goal.ID, "public-route") {
 		return fmt.Errorf("public route requires public-route approval")
 	}
