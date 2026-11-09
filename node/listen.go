@@ -290,15 +290,23 @@ func (e *RegistryExecutor) Execute(action control.Action) (control.Evidence, err
 	return executor.Execute(action)
 }
 
+// executorFor returns an executor bound to the node's current session.
+//
+// The registry is consulted on every call and a cached executor is reused only
+// while it still speaks over the same connection. A reconnecting node replaces
+// its session and the registry closes the old one; an executor cached by node
+// id alone kept writing to that closed connection, so after any node restart
+// every action to it failed until the control plane itself restarted.
 func (e *RegistryExecutor) executorFor(nodeID string) (*RemoteExecutor, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if executor, ok := e.executors[nodeID]; ok {
-		return executor, nil
-	}
 	connection, ok := e.Registry.Get(nodeID)
 	if !ok {
+		delete(e.executors, nodeID)
 		return nil, fmt.Errorf("node %q is not connected", nodeID)
+	}
+	if executor, ok := e.executors[nodeID]; ok && executor.Transport == Transport(connection) {
+		return executor, nil
 	}
 	executor := NewRemoteExecutor(nodeID, e.KeyID, e.Key, connection)
 	executor.TTL, executor.Now = e.TTL, e.Now
