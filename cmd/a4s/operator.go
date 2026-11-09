@@ -114,7 +114,8 @@ func (c *cli) approve(args []string) error {
 		}
 		revocation := control.Evidence{
 			Kind: control.EvidenceApprovalRevoked, Target: verified.ID,
-			Source: "operator:" + verified.IssuedBy, ObservedAt: now,
+			Source:     "operator:" + verified.IssuedBy,
+			ObservedAt: control.RevocationTime(verified, now),
 			Observed: map[string]string{
 				"goal": verified.GoalID, "scope": verified.Scope,
 				"revoked_by": verified.IssuedBy, "reason": verified.Reason,
@@ -128,6 +129,9 @@ func (c *cli) approve(args []string) error {
 		return nil
 	}
 
+	if err := control.CheckRegrant(projector.World().Approvals[verified.ID], verified); err != nil {
+		return err
+	}
 	if err := recordOperatorDecision(store, projector, verified, verified.Evidence(),
 		"approval granted"); err != nil {
 		return err
