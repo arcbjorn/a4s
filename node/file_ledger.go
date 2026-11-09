@@ -143,14 +143,33 @@ func (l *FileLedger) Put(key string, result DispatchResult) error {
 		return fmt.Errorf("encode ledger record: %w", err)
 	}
 	record = append(record, '\n')
+	if l.broken != nil {
+		return fmt.Errorf("ledger is unusable after an earlier failure: %w", l.broken)
+	}
 	if _, err := l.file.Write(record); err != nil {
+		l.rollback(err)
 		return fmt.Errorf("append ledger record: %w", err)
 	}
 	if err := l.file.Sync(); err != nil {
+		l.rollback(err)
 		return fmt.Errorf("sync ledger record: %w", err)
 	}
+	l.size += int64(len(record))
 	l.results[key] = result
 	return nil
+}
+
+// rollback cuts a partially written record off the end of the file.
+//
+// A write that failed halfway (a full disk, say) leaves a fragment, and the
+// next successful append would follow it on the same line, turning a torn
+// tail into corruption in the middle of the file that no restart could get
+// past. If the fragment cannot be removed the ledger stops accepting appends
+// rather than building on it.
+func (l *FileLedger) rollback(cause error) {
+	if err := l.truncate(l.size); err != nil {
+		l.broken = fmt.Errorf("%v; and the partial record could not be removed: %w", cause, err)
+	}
 }
 
 func (l *FileLedger) Close() error {
