@@ -123,7 +123,10 @@ a4s server --event-log /var/lib/a4s/events.log --status
 `--require-encryption` refuses a node that will not negotiate an encrypted
 channel. Leave it on. The operator API has no TLS of its own, so bind it to
 localhost or a trusted interface and reach it over an authenticated tunnel;
-request authenticity does not depend on the transport, but confidentiality does.
+request authenticity does not depend on the transport, but confidentiality does,
+and so does the integrity of what the server sends back: responses are not
+signed. That matters most for a standby, which replicates history from those
+responses, so run replication only over a tunnel you trust.
 
 ## Start the node
 
