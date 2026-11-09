@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -268,3 +269,44 @@ func (b *brokenNetwork) Check(context.Context, string) (NetworkAttachment, error
 	return NetworkAttachment{}, errors.New("no attachment")
 }
 func (b *brokenNetwork) Close() error { return nil }
+
+// Released addresses must be reused, or a node exhausts its subnet after one
+// range's worth of lifetime attaches with nothing running.
+func TestBridgeIPAMReusesReleasedAddresses(t *testing.T) {
+	ipam, err := NewBridgeIPAM("10.0.0.0/29") // usable .2 through .6
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("alloc-%d", i)
+		if _, _, err := ipam.Assign(id); err != nil {
+			t.Fatalf("assign %d with no live allocations: %v", i, err)
+		}
+		ipam.Release(id)
+	}
+}
+
+func TestBridgeIPAMExhaustsOnlyWhenFull(t *testing.T) {
+	ipam, err := NewBridgeIPAM("10.0.0.0/29")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 5; i++ {
+		address, _, err := ipam.Assign(fmt.Sprintf("alloc-%d", i))
+		if err != nil {
+			t.Fatalf("assign %d: %v", i, err)
+		}
+		if seen[address] || address == "10.0.0.0" || address == "10.0.0.1" || address == "10.0.0.7" {
+			t.Fatalf("assigned reserved or duplicate address %s", address)
+		}
+		seen[address] = true
+	}
+	if _, _, err := ipam.Assign("alloc-overflow"); err == nil {
+		t.Fatal("a full subnet assigned another address")
+	}
+	ipam.Release("alloc-2")
+	if _, _, err := ipam.Assign("alloc-overflow"); err != nil {
+		t.Fatalf("a released address was not reused: %v", err)
+	}
+}
