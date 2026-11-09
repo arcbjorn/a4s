@@ -244,8 +244,13 @@ func listSnapshotDirs(dir string) ([]string, error) {
 		if !entry.IsDir() {
 			continue
 		}
+		// Only names a snapshot could have been created under count. Staging
+		// and scratch directories (.partial, .fetched, .verify, .previous)
+		// are left behind by a crash, and counting one as a snapshot lets it
+		// take a retention slot: with retain=1 a newer scratch directory was
+		// kept and the only real snapshot pruned.
 		name := entry.Name()
-		if strings.HasSuffix(name, ".partial") || strings.HasSuffix(name, ".fetched") {
+		if !snapshotIDPattern.MatchString(name) {
 			continue
 		}
 		ids = append(ids, name)
