@@ -147,7 +147,12 @@ func (c *cli) diagnose(args []string) error {
 		}
 	}
 
-	diagnoser := reason.New(reason.NewAnthropic(), *model)
+	// The flag sets the model the client actually calls, not only the one the
+	// provenance names. Recording one model while consulting another would make
+	// the attribution an explanation carries untrue.
+	client := reason.NewAnthropic()
+	client.Model = *model
+	diagnoser := reason.New(client, *model)
 	audited := diagnoser.ExplainAudited(context.Background(), goal, world, events)
 
 	if *jsonOutput {
