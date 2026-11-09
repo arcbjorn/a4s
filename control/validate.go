@@ -134,6 +134,11 @@ func (w *World) normalize() {
 		w.Backoff = make(map[string]*Backoff)
 	}
 	for _, node := range w.Nodes {
+		// A null node entry is left for validation to refuse by name rather
+		// than dereferenced here.
+		if node == nil {
+			continue
+		}
 		if node.Labels == nil {
 			node.Labels = make(map[string]string)
 		}
