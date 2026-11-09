@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/arcbjorn/a4s/control"
@@ -435,5 +436,26 @@ func TestSupervisorIgnoresSpendForOrdinaryWorkloads(t *testing.T) {
 		if evidence.Kind == control.EvidenceAgentSpent {
 			t.Fatal("reported agent spend for a workload with no meter")
 		}
+	}
+}
+
+// A runtime reporting an enormous spend must exhaust the agent, not wrap the
+// meter negative and hand an exhausted agent unlimited tool calls.
+func TestSpendOverflowCannotReviveAnExhaustedAgent(t *testing.T) {
+	agents := meteredAgents(t, "agent-0", control.ToolGrant{Name: "search", Scope: "web"})
+	for i := 0; i < testBudget().ToolCalls; i++ {
+		if err := agents.AuthorizeToolCall("agent-0", "search", "web"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := agents.AuthorizeToolCall("agent-0", "search", "web"); !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("expected exhaustion, got %v", err)
+	}
+	if _, within := agents.Spend("agent-0", control.Budget{ToolCalls: math.MaxInt}); within {
+		t.Fatal("an overflowing spend reported the agent within budget")
+	}
+	if err := agents.AuthorizeToolCall("agent-0", "search", "web"); err == nil {
+		spent, _ := agents.Spent("agent-0")
+		t.Fatalf("an exhausted agent regained tool calls through overflow; spent=%+v", spent)
 	}
 }
