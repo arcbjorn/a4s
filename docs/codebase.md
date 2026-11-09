@@ -41,7 +41,8 @@ containerd, networking implementations, model SDKs, and transport libraries.
 | `types.go` | Goal, world, agent, proposal, action, evidence, and event vocabulary |
 | `validate.go` | Scenario normalization and input validation |
 | `agents.go` | Deterministic placement and network reference agents |
-| `policy.go` | Capability grants, proposal authorization, plan simulation |
+| `policy.go` | Capability grants, goal scoping, proposal authorization, plan simulation |
+| `admit.go` | Default-deny admission of executor and probe evidence |
 | `executor.go` | Executor interface and simulated memory data plane |
 | `engine.go` | Reconciliation coordination, event ordering, verification |
 | `projection.go` | Pure, idempotent world projection from evidence |
