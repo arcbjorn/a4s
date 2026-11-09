@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/arcbjorn/a4s/control"
+	"github.com/arcbjorn/a4s/internal/fsutil"
 )
 
 // keys manages controller signing key custody.
@@ -210,8 +211,13 @@ func writeKeySet(path string, set control.KeySet) error {
 		return fmt.Errorf("create keyset directory: %w", err)
 	}
 	// The keyset is public material, but it decides what a node trusts, so it
-	// is written read-only to others to make tampering require intent.
-	return os.WriteFile(path, append(encoded, '\n'), 0o644)
+	// is written read-only to others to make tampering require intent. It is
+	// replaced atomically: a crash mid-write must leave the previous keyset,
+	// not a truncated one no node can parse.
+	if err := fsutil.WriteFileAtomic(path, append(encoded, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write keyset: %w", err)
+	}
+	return nil
 }
 
 // encodeBase64 matches the encoding keygen uses, so keys produced by either
