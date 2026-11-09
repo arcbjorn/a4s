@@ -68,12 +68,17 @@ func (m *LeaseManager) Acquire(goalID, proposalID string, targets []string) (str
 		if !held || !now.Before(existing.ExpiresAt) {
 			continue
 		}
-		// Re-acquiring one's own lease is a retry, not a conflict.
-		if existing.ProposalID == proposalID {
+		// Re-acquiring one's own lease is a retry, not a conflict. Both ids
+		// must match: proposal ids are derived from an agent and a revision,
+		// so two goals reconciled at the same revision produce the same one,
+		// and matching on it alone would let the second goal take over a
+		// target the first is still mutating.
+		if existing.ProposalID == proposalID && existing.GoalID == goalID {
 			continue
 		}
-		return "", fmt.Errorf("target %q is leased by proposal %q until %s",
-			target, existing.ProposalID, existing.ExpiresAt.UTC().Format(time.RFC3339))
+		return "", fmt.Errorf("target %q is leased by proposal %q of goal %q until %s",
+			target, existing.ProposalID, existing.GoalID,
+			existing.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 
 	leaseID := fmt.Sprintf("lease-%s-%d", proposalID, now.UnixNano())
