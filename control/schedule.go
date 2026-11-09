@@ -303,6 +303,12 @@ func parseCronField(field string, min, max int) ([]int, error) {
 		}
 		for value := low; value <= high; value += step {
 			set[value] = true
+			// Stop before the increment can pass high. A step near the integer
+			// limit would otherwise wrap value negative and keep the loop
+			// going, adding values far outside the field's range.
+			if high-value < step {
+				break
+			}
 		}
 	}
 	values := make([]int, 0, len(set))
