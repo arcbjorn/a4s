@@ -346,8 +346,11 @@ func (s *Server) appendObservation(actor, goalID, target, message string,
 	if s.log == nil {
 		return fmt.Errorf("event log is closed")
 	}
-	if err := s.log.Append(control.Event{
-		Sequence: s.log.NextSequence(), At: evidence.ObservedAt,
+	// AppendNext rather than NextSequence and Append: reconciliation writes to
+	// the same log without holding s.mu, and the two-step form let an operator
+	// write and an engine write claim one sequence between them.
+	if _, err := s.log.AppendNext(control.Event{
+		At:   evidence.ObservedAt,
 		Type: control.EventObservationRecorded, Actor: actor,
 		GoalID: goalID, Target: target, Kind: evidence.Kind,
 		Message: message, Evidence: &evidence,
