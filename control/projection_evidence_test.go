@@ -87,3 +87,25 @@ func TestToolCountIsBounded(t *testing.T) {
 		t.Fatalf("recorded %d tools, want 3", got)
 	}
 }
+
+// Spend only increases, in every dimension. A stale tool-call count alone must
+// not un-exhaust an agent whose token spend still reads current.
+func TestStaleSpendCannotUnexhaustAnAgent(t *testing.T) {
+	world := evidenceWorld()
+	world.Allocations["a-0"] = &Allocation{ID: "a-0", Workload: "a", Node: "base", Phase: AllocationRunning,
+		Budget: Budget{Tokens: 1000, CostMillis: 1000, WallSeconds: 900, ToolCalls: 50},
+		Spent:  Budget{Tokens: 10, CostMillis: 10, WallSeconds: 100, ToolCalls: 50}}
+	next, err := Project(world, Evidence{Kind: EvidenceAgentSpent, Target: "a-0", Observed: map[string]string{
+		"tokens": "20", "cost_millis": "10", "wall_seconds": "90", "tool_calls": "3"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spent := next.Allocations["a-0"].Spent
+	if !next.Allocations["a-0"].Exhausted() {
+		t.Fatalf("a stale reading un-exhausted the agent: spent %+v", spent)
+	}
+	want := Budget{Tokens: 20, CostMillis: 10, WallSeconds: 100, ToolCalls: 50}
+	if spent != want {
+		t.Fatalf("spent = %+v, want the larger reading in each dimension %+v", spent, want)
+	}
+}
