@@ -238,3 +238,41 @@ func validateGrant(grant ApprovalGrant) error {
 	}
 	return nil
 }
+
+// CheckRegrant refuses a grant that does not postdate the last decision already
+// recorded under its id.
+//
+// A signed grant is a bearer token for as long as it is unexpired, and the log
+// deliberately does not keep signatures, so nothing else stops the original
+// grant for a since-revoked approval from being submitted again and quietly
+// reinstating it. A revocation is signed as the same document type, so its
+// token would reinstate the approval too. Requiring every grant under an id to
+// be issued after that id's last grant and last revocation refuses both
+// replays, while an operator who genuinely re-approves signs a new grant that
+// is later than either.
+func CheckRegrant(existing *Approval, grant ApprovalGrant) error {
+	if existing == nil {
+		return nil
+	}
+	decided := existing.IssuedAt
+	if existing.RevokedAt.After(decided) {
+		decided = existing.RevokedAt
+	}
+	if !grant.IssuedAt.After(decided) {
+		return fmt.Errorf(
+			"approval %q was last decided at %s; a new grant must be issued after that",
+			grant.ID, decided.UTC().Format(time.RFC3339Nano))
+	}
+	return nil
+}
+
+// RevocationTime is when a revocation takes effect: the later of the
+// verifier's clock and the revocation's own signed issue time. Using the later
+// one means the revocation token itself never postdates the recorded decision,
+// so CheckRegrant refuses it even when the operator's clock runs ahead.
+func RevocationTime(revocation ApprovalGrant, now time.Time) time.Time {
+	if revocation.IssuedAt.After(now) {
+		return revocation.IssuedAt.UTC()
+	}
+	return now.UTC()
+}
