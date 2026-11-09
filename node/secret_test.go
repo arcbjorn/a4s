@@ -418,3 +418,21 @@ func TestSecretNameCannotEscapeAllocationDirectory(t *testing.T) {
 		t.Fatal("material was written outside the allocation directory")
 	}
 }
+
+// The node records where the goal declared each secret, so the runtime can
+// bind it there.
+func TestMountRecordsDeclaredMountPath(t *testing.T) {
+	secrets, err := NewSecrets(mapBroker{"db": "token"}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := control.SecretRef{Name: "db", Version: "v1", MountPath: "/run/secrets/db"}
+	if _, err := secrets.Execute(context.Background(), control.Action{
+		Kind: control.ActionMountSecret, Target: "web-0", Secret: &ref}); err != nil {
+		t.Fatal(err)
+	}
+	mounts := secrets.Mounts("web-0")
+	if len(mounts) != 1 || mounts[0].MountPath != "/run/secrets/db" {
+		t.Fatalf("mount does not carry the declared path: %+v", mounts)
+	}
+}
