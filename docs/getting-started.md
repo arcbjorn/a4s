@@ -6,7 +6,8 @@ This guide starts at the repository root, where `go.mod` and `README.md` live.
 
 For control-kernel development on any supported Go host:
 
-- Go 1.26.3 or newer in the Go 1.26 line.
+- Go 1.26.3 or newer in the Go 1.26 line; use the version in `.go-version`
+  (currently 1.26.10) for anything you deploy.
 - Git for normal source-control work.
 - Network access for the initial module download.
 
