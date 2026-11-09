@@ -12,6 +12,22 @@ type EventSink interface {
 	NextSequence() uint64
 }
 
+// SequencingSink is an EventSink that assigns the sequence itself, in the same
+// step as the append.
+//
+// Reading NextSequence and then appending at it is two operations, so two
+// writers sharing one log can both read the same number and one of them fails
+// its append. When that writer is the engine recording an action's completion,
+// the action has already run on a node and the log is left holding a dispatch
+// with no completion. A sink that implements this closes the gap; the engine
+// prefers it whenever it is available.
+type SequencingSink interface {
+	EventSink
+	// AppendNext records the event at the next sequence and returns it as
+	// recorded, sequence included.
+	AppendNext(Event) (Event, error)
+}
+
 // Projector owns the materialized world. The engine advances it only by
 // projecting evidence, so world state is always derived from observation rather
 // than asserted by whatever performed the mutation.
@@ -523,7 +539,13 @@ func (e *Engine) record(event Event) error {
 	}
 	event.At = e.now().UTC()
 	event.WorldRevision = e.World.World().Revision
-	if e.Sink != nil {
+	if sequencing, ok := e.Sink.(SequencingSink); ok {
+		recorded, err := sequencing.AppendNext(event)
+		if err != nil {
+			return fmt.Errorf("persist %s event: %w", event.Type, err)
+		}
+		event = recorded
+	} else if e.Sink != nil {
 		if err := e.Sink.Append(event); err != nil {
 			return fmt.Errorf("persist %s event: %w", event.Type, err)
 		}
