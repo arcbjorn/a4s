@@ -244,16 +244,8 @@ func (c *cli) keygen(args []string) error {
 	if err != nil {
 		return fmt.Errorf("generate key: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(*out), 0o750); err != nil {
-		return fmt.Errorf("create key directory: %w", err)
-	}
-	privateText := base64.RawStdEncoding.EncodeToString(private)
-	if err := os.WriteFile(*out, []byte(privateText+"\n"), 0o600); err != nil {
-		return fmt.Errorf("write private key: %w", err)
-	}
-	publicText := base64.RawStdEncoding.EncodeToString(public)
-	if err := os.WriteFile(*out+".pub", []byte(publicText+"\n"), 0o644); err != nil {
-		return fmt.Errorf("write public key: %w", err)
+	if err := writeKeypair(*out, public, private); err != nil {
+		return err
 	}
 	fmt.Fprintf(c.stdout, "wrote %s and %s.pub\n", *out, *out)
 	return nil
