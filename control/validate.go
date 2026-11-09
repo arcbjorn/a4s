@@ -95,9 +95,14 @@ func (s *Scenario) NormalizeAndValidate() error {
 			return fmt.Errorf("node %q capacity must be positive", id)
 		}
 	}
+	// Approvals are checked for shape only. One belonging to another goal is
+	// inert here, because hasApproval matches on goal id, and refusing it would
+	// mean the first approval granted to any goal blocked admission of every
+	// other goal validated against the same live world.
 	for id, approval := range s.World.Approvals {
-		if approval == nil || approval.ID != id || approval.GoalID != s.Goal.ID || approval.Scope == "" || approval.IssuedBy == "" {
-			return fmt.Errorf("approval %q is malformed or belongs to another goal", id)
+		if approval == nil || approval.ID != id || approval.GoalID == "" ||
+			approval.Scope == "" || approval.IssuedBy == "" {
+			return fmt.Errorf("approval %q is malformed", id)
 		}
 	}
 	return nil
