@@ -417,9 +417,18 @@ func (s *Server) Uncordon(nodeID, operator string) error {
 	return s.setCordon(nodeID, "", operator, false)
 }
 
+// maxCordonReason bounds an operator's free-text cordon reason. It is stored
+// twice in one record, as the message and as evidence, and a single record
+// larger than a follower's read limit would stall replication permanently: the
+// follower can neither read past it nor skip it.
+const maxCordonReason = 512
+
 func (s *Server) setCordon(nodeID, reason, operator string, cordoned bool) error {
 	if nodeID == "" {
 		return fmt.Errorf("a node is required")
+	}
+	if len(reason) > maxCordonReason {
+		return fmt.Errorf("cordon reason is %d bytes; keep it under %d", len(reason), maxCordonReason)
 	}
 	if operator == "" {
 		return fmt.Errorf("an operator is required")
