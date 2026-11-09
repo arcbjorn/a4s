@@ -230,6 +230,13 @@ func (f *File) Close() error {
 func (f *File) Append(event control.Event) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.appendLocked(event, "")
+}
+
+// appendLocked extends the chain with one event. When want is non-empty the
+// derived hash must equal it, and the comparison happens before anything is
+// written, so a record that would diverge never reaches the database.
+func (f *File) appendLocked(event control.Event, want string) error {
 	if f.db == nil {
 		return fmt.Errorf("event log is closed")
 	}
@@ -241,6 +248,11 @@ func (f *File) Append(event control.Event) error {
 	hash, err := eventHash(f.head.Hash, event)
 	if err != nil {
 		return err
+	}
+	if want != "" && hash != want {
+		return fmt.Errorf(
+			"record %d derives hash %s but the primary recorded %s: %w",
+			expected, hash, want, ErrDiverged)
 	}
 	payload, err := json.Marshal(event)
 	if err != nil {
@@ -321,13 +333,21 @@ func (f *File) Ingest(records []Record) (int, error) {
 			}
 			continue
 		}
-		if err := f.Append(record.Event); err != nil {
-			return appended, fmt.Errorf("ingest record %d: %w", record.Sequence, err)
+		// A record whose envelope and event disagree on their sequence is
+		// malformed rather than divergent: the skip test above reads one and
+		// the append the other.
+		if record.Event.Sequence != record.Sequence {
+			return appended, fmt.Errorf("ingest record %d: it carries event %d",
+				record.Sequence, record.Event.Sequence)
 		}
-		if head := f.Head(); head.Hash != record.Hash {
-			return appended, fmt.Errorf(
-				"ingested record %d derives hash %s but the primary recorded %s: %w",
-				record.Sequence, head.Hash, record.Hash, ErrDiverged)
+		// The hash is compared before the record is committed. Appending first
+		// and checking after would store the other history's record, and the
+		// follower's own chain would then verify around it.
+		f.mu.Lock()
+		err := f.appendLocked(record.Event, record.Hash)
+		f.mu.Unlock()
+		if err != nil {
+			return appended, fmt.Errorf("ingest record %d: %w", record.Sequence, err)
 		}
 		appended++
 	}
