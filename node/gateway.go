@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/arcbjorn/a4s/control"
+	"github.com/arcbjorn/a4s/internal/fsutil"
 )
 
 // DefaultGatewayTimeout bounds a config push so an unresponsive gateway cannot
@@ -208,16 +209,11 @@ func (g *CaddyGateway) push(ctx context.Context, document []byte) error {
 }
 
 // writeAtomic replaces a file in one step, so a crash mid-write cannot leave a
-// partial configuration behind.
+// partial file behind. It syncs the file and its directory: the previous
+// version renamed an unsynced temporary into place, which a power loss can
+// turn into an empty file under the final name.
 func writeAtomic(path string, content []byte) error {
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, content, 0o600); err != nil {
-		return fmt.Errorf("write gateway config: %w", err)
-	}
-	if err := os.Rename(temporary, path); err != nil {
-		return fmt.Errorf("replace gateway config: %w", err)
-	}
-	return nil
+	return fsutil.WriteFileAtomic(path, content, 0o600)
 }
 
 // weightedUpstreams reports the weights to apply, or nothing when the snapshot
