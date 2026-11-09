@@ -16,6 +16,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 
 	"github.com/arcbjorn/a4s/control"
+	"github.com/arcbjorn/a4s/internal/fsutil"
 )
 
 // SecretMaterial is decrypted secret content.
@@ -175,7 +176,9 @@ func (s *Secrets) write(allocation string, ref control.SecretRef, material Secre
 		return "", fmt.Errorf("secret name %q is not a single path element", ref.Name)
 	}
 	path := filepath.Join(directory, ref.Name)
-	if err := os.WriteFile(path, material.Bytes(), 0o400); err != nil {
+	// Written atomically: a new version replaces the old file in one step,
+	// and replacing works even though the previous file is read-only.
+	if err := fsutil.WriteFileAtomic(path, material.Bytes(), 0o400); err != nil {
 		return "", fmt.Errorf("write secret %q: %w", ref.Name, err)
 	}
 	return path, nil
