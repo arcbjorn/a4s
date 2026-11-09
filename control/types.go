@@ -402,6 +402,10 @@ type Approval struct {
 	// Reason is the operator's own words. It is the only field here a human
 	// writes freely, and it is what a later reviewer actually wants to read.
 	Reason string `json:"reason,omitempty"`
+	// RevokedAt is when the grant was withdrawn, zero while it stands. It is
+	// what lets a re-grant under the same id be told apart from a replay of an
+	// older signed grant; see CheckRegrant.
+	RevokedAt time.Time `json:"revoked_at,omitempty"`
 }
 
 // Valid reports whether an approval authorizes anything at the given time.
