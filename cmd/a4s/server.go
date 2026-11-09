@@ -68,6 +68,21 @@ func (c *cli) runServer(args []string) error {
 	if *eventLog == "" {
 		return fmt.Errorf("event-log is required")
 	}
+	// Everything a serving run needs is checked before the event log is
+	// opened. Discovering a missing flag after recovery, a listener, and an
+	// API had already started meant failing halfway through bringing up a
+	// control plane, which is the worst moment to find out.
+	if !*statusOnly {
+		if *listen == "" {
+			return fmt.Errorf("listen is required to serve; use --status to inspect recovered state")
+		}
+		if *signingKeyPath == "" || *nodeKeyDir == "" {
+			return fmt.Errorf("signing-key and node-keys are required to serve")
+		}
+		if *gitRemote != "" && *gitMirror == "" {
+			return fmt.Errorf("git-mirror is required with git-remote")
+		}
+	}
 	logger, err := obs.New(obs.Config{
 		Level: *logLevel, Format: obs.Format(*logFormat), Component: "server",
 	})
@@ -155,12 +170,6 @@ func (c *cli) runServer(args []string) error {
 		slog.Int("allocations", status.Allocations),
 		slog.Int("routes", status.Routes),
 		slog.Int("goals", status.Goals))
-	if *listen == "" {
-		return fmt.Errorf("listen is required to serve; use --status to inspect recovered state")
-	}
-	if *signingKeyPath == "" || *nodeKeyDir == "" {
-		return fmt.Errorf("signing-key and node-keys are required to serve")
-	}
 	signingKey, err := loadPrivateKey(*signingKeyPath)
 	if err != nil {
 		return err
@@ -230,9 +239,6 @@ func (c *cli) runServer(args []string) error {
 	// transport rather than a privileged channel.
 	if *gitRemote != "" {
 		mirror := *gitMirror
-		if mirror == "" {
-			return fmt.Errorf("git-mirror is required with git-remote")
-		}
 		git := &gitcmd.Runner{SSHKey: *gitSSHKey}
 		if err := git.Available(); err != nil {
 			return err
