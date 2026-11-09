@@ -135,6 +135,17 @@ func (r *Resolver) answer(query []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Only standard queries get an answer. A message with the response bit set
+	// is someone else's answer: replying to it lets two resolvers, or one
+	// resolver and a spoofed source, bounce datagrams between each other
+	// forever. A non-zero opcode is a notify, update, or status request this
+	// resolver does not implement.
+	if header[2]&0x80 != 0 {
+		return nil, fmt.Errorf("message is a response, not a query")
+	}
+	if opcode := (header[2] >> 3) & 0x0f; opcode != 0 {
+		return nil, fmt.Errorf("unsupported dns opcode %d", opcode)
+	}
 
 	// Header: same id, response bit, authoritative answer, recursion refused.
 	response := make([]byte, 0, maxDNSMessage)
