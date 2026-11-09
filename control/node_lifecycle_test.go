@@ -44,11 +44,11 @@ func TestKernelRefusesPlacementOnACordonedNode(t *testing.T) {
 	world := lifecycleWorld()
 	world.Nodes["node-a"].Cordoned = true
 	world.Nodes["node-a"].CordonReason = "disk failing"
-	goal := spreadGoal(1, 0)
+	goal := spreadGoal(2, 0)
 
 	err := validateAction(goal, world, Action{
 		ID: "create", Kind: ActionCreateAllocation, Target: "web-1",
-		Workload: "web", Node: "node-a", Image: spreadImage, Replica: 0,
+		Workload: "web", Node: "node-a", Image: spreadImage, Replica: 1,
 		Resources: goal.Workload.Resources,
 	})
 	if err == nil || !strings.Contains(err.Error(), "cordoned") {
