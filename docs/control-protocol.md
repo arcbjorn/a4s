@@ -120,6 +120,18 @@ Ed25519-signed grant with a mandatory expiry, checked against the world's
 observation time and appended to durable history before the projection is
 updated.
 
+A grant's `issued_at` may not be more than 30 seconds ahead of the verifier's
+clock, because the lifetime ceiling is measured from it. Under one approval id,
+a grant is accepted only if it was issued after that id's last grant and its
+last revocation (`revoked_at`, recorded by the projection). This refuses a
+replay of the original grant after a revocation and a replay of the revocation
+itself, which is signed as the same document type, while an operator who
+re-approves signs a later grant. A revocation takes effect at the later of the
+verifier's clock and its own signed issue time.
+
+Approvals are validated for shape at admission. One that belongs to another goal
+is inert rather than an error, because authorization matches on goal id.
+
 ## Agent and proposal
 
 An agent exposes an authenticated descriptor:
