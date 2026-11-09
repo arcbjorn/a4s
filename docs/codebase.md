@@ -110,7 +110,7 @@ serves the authenticated operator API.
 | `approval_test.go` | Durable approval admission and restart survival |
 
 ```text
-server -> control, eventlog, node, obs
+server -> control, eventlog, obs
 ```
 
 ### `source`
