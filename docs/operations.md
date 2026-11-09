@@ -368,6 +368,10 @@ Two parts of that command are easy to get wrong and both fail quietly:
   is the outside witness of the true head, and it is read by the follower and
   never written. A replica-local anchor witnesses whatever the replica last
   ingested, so it agrees with itself and a copy an hour behind would promote.
+  The anchor's directory must already exist: a4s never creates it, because a
+  missing directory is what an unmounted share or a mistyped path looks like,
+  and an empty local anchor contradicts nothing. Promotion through the server
+  package also refuses an anchor that holds no witnessed head.
 - **`--file` must supply the same base world the primary was started with.** The
   log carries node inventory, capacity, and approvals granted outside recorded
   history nowhere. A follower without it promotes into a server missing exactly
