@@ -512,8 +512,29 @@ Closed:
 
 - Authenticated server API and separately authenticated approvals. Operator
   requests carry a signed envelope bound to method, path, and body, made
-  single-use by a nonce ledger.
-- Mutual controller/node authentication and encrypted transport.
+  single-use by a nonce ledger. The ledger is in memory, so mutating requests
+  issued before the server started are refused outright; a restart or a
+  promoted standby cannot be fed a captured write. The query string is not
+  signed, which affects only reads.
+- Node authentication to the controller, and an encrypted transport. The node
+  proves possession of its identity key during enrollment. The controller does
+  not yet prove its identity to the node during the handshake (see "still
+  required").
+- Approval replay. A grant is accepted only if it was issued after the last
+  grant and the last revocation recorded under its id, so neither the original
+  signed grant of a revoked approval nor the revocation token itself can
+  reinstate it, and no grant may claim an issue time in the future.
+- Evidence admission. Executor evidence must be a kind its action produces,
+  about the target it named; probe evidence must be the measurement its check
+  asked for. Operator decisions, diagnoses, and reachability never enter
+  through either path, so a compromised enrolled node cannot mint authority.
+- Kernel-compiled firewall rules and zones. `apply_policy` and `publish_zone`
+  are authorized only when their content matches what the kernel itself
+  compiles from the goal, and node-reported addresses must be IPv4 addresses
+  before they reach any rule.
+- Goal scoping. Every action's workload, allocation, and volume must belong to
+  the goal it was proposed under, so one goal's approvals and floors cannot act
+  on another's state.
 - Controller key rotation, through an active/accepted/retired keyset that
   rotates without a coordinated fleet restart.
 - Node-attributed, expiring observations. Evidence carries the reporting node's
