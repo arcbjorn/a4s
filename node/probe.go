@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/arcbjorn/a4s/control"
@@ -149,9 +151,17 @@ func (o *RuntimeObserver) ObserveReadiness(target control.ProbeTarget) (bool, ma
 		if path == "" {
 			path = "/"
 		}
-		url := "http://" + address + path
-		observed["url"] = url
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		// The URL is built from parts rather than by concatenation. A path
+		// beginning with "@" or containing "//" would otherwise be parsed as
+		// userinfo or an authority, redirecting the measurement to whatever
+		// host the path names.
+		probeURL, err := url.ParseRequestURI(path)
+		if err != nil || probeURL.Scheme != "" || probeURL.Host != "" || !strings.HasPrefix(path, "/") {
+			return false, observed, fmt.Errorf("probe path %q must be an absolute path", path)
+		}
+		probeURL.Scheme, probeURL.Host = "http", address
+		observed["url"] = probeURL.String()
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL.String(), nil)
 		if err != nil {
 			return false, observed, err
 		}
