@@ -175,18 +175,7 @@ func (c *cli) runNode(args []string) error {
 		}
 		defer secrets.Close()
 		runtime.SecretMountsFor = func(allocation string) []a4snode.SecretMountSpec {
-			mounts := secrets.Mounts(allocation)
-			specs := make([]a4snode.SecretMountSpec, 0, len(mounts))
-			for _, mount := range mounts {
-				// The destination is the path the goal declared, not the
-				// node's tmpfs location: a workload looks for its secret
-				// where its own configuration says, and binding it at the
-				// host path left that location empty.
-				specs = append(specs, a4snode.SecretMountSpec{
-					Source: mount.Path, Destination: mount.MountPath,
-				})
-			}
-			return specs
+			return secretMountSpecs(secrets.Mounts(allocation))
 		}
 	}
 
@@ -324,6 +313,21 @@ func (c *cli) runNode(args []string) error {
 	}
 	logger.Info("connecting to server", slog.String("addr", *serverAddress))
 	return a4snode.DialServer(ctx, "tcp", *serverAddress, *nodeID, identityKey, &dispatcher, 0)
+}
+
+// secretMountSpecs binds each mounted secret into the container.
+//
+// The destination is the path the goal declared, not the node's tmpfs
+// location: a workload looks for its secret where its own configuration says,
+// and binding it at the host path left that location empty.
+func secretMountSpecs(mounts []a4snode.SecretMount) []a4snode.SecretMountSpec {
+	specs := make([]a4snode.SecretMountSpec, 0, len(mounts))
+	for _, mount := range mounts {
+		specs = append(specs, a4snode.SecretMountSpec{
+			Source: mount.Path, Destination: mount.MountPath,
+		})
+	}
+	return specs
 }
 
 // volumeRefsFor reports the volumes an allocation was authorized to mount,
