@@ -163,18 +163,12 @@ func (a *Anchor) Check(store *File) error {
 			"event log is at sequence %d but the anchor witnessed %d: the log was truncated or replaced",
 			head.Sequence, witnessed.Sequence)
 	}
-	if head.Sequence == witnessed.Sequence {
-		if head.Hash != witnessed.Hash {
-			return fmt.Errorf(
-				"event log hash at sequence %d does not match the anchor: history was rewritten",
-				witnessed.Sequence)
-		}
-		return nil
-	}
 
-	// The store has grown since the last witness, so check that the witnessed
-	// record is still the one at that sequence. One hash answers it, and this
-	// runs on every server start, so it must not cost the whole log.
+	// The witnessed record is read from the records table even when the store
+	// has not grown since, rather than trusting the cached head. The head is a
+	// separate row, and comparing against it would let a rewrite that left
+	// that row alone pass. One indexed read answers it, which matters because
+	// this runs on every server start.
 	hash, err := store.HashAt(witnessed.Sequence)
 	if err != nil {
 		return err
