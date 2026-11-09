@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -220,9 +221,16 @@ func (c *cli) runServer(args []string) error {
 			WriteTimeout:      60 * time.Second,
 			IdleTimeout:       2 * time.Minute,
 		}
+		// Bound before serving, so an address already in use fails startup
+		// instead of being logged from a goroutine while the daemon carries on
+		// with no operator API.
+		apiListener, err := net.Listen("tcp", *apiListen)
+		if err != nil {
+			return fmt.Errorf("listen for the operator API: %w", err)
+		}
 		go func() {
-			logger.Info("serving operator API", slog.String("addr", *apiListen))
-			if err := httpServer.ListenAndServe(); err != nil &&
+			logger.Info("serving operator API", slog.String("addr", apiListener.Addr().String()))
+			if err := httpServer.Serve(apiListener); err != nil &&
 				!errors.Is(err, http.ErrServerClosed) {
 				logger.Error("operator API stopped", slog.Any("error", err))
 			}
