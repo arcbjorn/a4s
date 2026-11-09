@@ -177,3 +177,38 @@ func checksumTreeForTest(t *testing.T, dir string) (string, error) {
 	t.Helper()
 	return checksumTree(dir)
 }
+
+// A scratch directory left by a crash must not take a retention slot from a
+// real snapshot, or prune deletes the last recovery point.
+func TestPruneIgnoresScratchDirectories(t *testing.T) {
+	for _, suffix := range []string{".verify", ".partial", ".fetched", ".previous"} {
+		t.Run(suffix, func(t *testing.T) {
+			base := t.TempDir()
+			volumes, err := OpenVolumes(filepath.Join(base, "volumes"), filepath.Join(base, "state", "volumes.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := &control.VolumeRef{Name: "data"}
+			if _, err := volumes.Execute(context.Background(), control.Action{Kind: control.ActionCreateVolume, Volume: ref}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := volumes.Execute(context.Background(), control.Action{Kind: control.ActionSnapshotVolume, Volume: ref, Snapshot: "s1"}); err != nil {
+				t.Fatal(err)
+			}
+			scratch := filepath.Join(volumes.snapshots, "data", "s1"+suffix)
+			if err := os.MkdirAll(scratch, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			later := time.Now().Add(time.Minute)
+			if err := os.Chtimes(scratch, later, later); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := volumes.Execute(context.Background(), control.Action{Kind: control.ActionPruneSnapshots, Volume: ref, Retain: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(volumes.snapshots, "data", "s1")); err != nil {
+				t.Fatalf("prune deleted the only real snapshot and kept %s: %v", suffix, err)
+			}
+		})
+	}
+}
