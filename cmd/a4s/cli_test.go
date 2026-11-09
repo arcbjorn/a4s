@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -151,5 +152,26 @@ func TestBuildInfoString(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A help request prints usage and succeeds; any other error is reported and
+// fails.
+func TestExitCode(t *testing.T) {
+	var stderr bytes.Buffer
+	c := &cli{stdout: &bytes.Buffer{}, stderr: &stderr}
+
+	_, _, helpErr := runCLI(t, "validate", "-h")
+	if code := c.exitCode(helpErr); code != 0 {
+		t.Fatalf("validate -h exited %d, want 0", code)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("a help request was reported as an error: %q", stderr.String())
+	}
+	if code := c.exitCode(nil); code != 0 {
+		t.Fatalf("success exited %d", code)
+	}
+	if code := c.exitCode(errors.New("boom")); code != 1 || !strings.Contains(stderr.String(), "a4s: boom") {
+		t.Fatalf("an error exited %d with stderr %q", code, stderr.String())
 	}
 }
