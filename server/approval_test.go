@@ -297,3 +297,103 @@ func TestApprovalDoesNotBlockOtherGoalAdmission(t *testing.T) {
 		t.Fatalf("an approval for web-public blocked admission of api-internal: %v", err)
 	}
 }
+
+// Resubmitting the original signed grant for a revoked approval must not
+// reinstate it. The log keeps no signatures, so only the decision times stand
+// between a captured grant and a silent re-authorization.
+func TestRevokedApprovalCannotBeReinstatedByReplay(t *testing.T) {
+	server, path, key := operatorServer(t)
+	if err := server.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	grant := signedGrant(t, key, "public-route")
+	approved, err := server.Approve(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Revoke(revocationOf(t, key, approved)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Approve(grant); err == nil {
+		t.Fatal("replaying the original grant was accepted")
+	}
+	if server.World().Approvals[approved.ID].Valid(time.Now()) {
+		t.Fatal("a revoked approval was reinstated")
+	}
+
+	// The decision times are durable: a restarted server refuses the replay too.
+	server.Close()
+	public := key.Public().(ed25519.PublicKey)
+	restarted, err := Open(Config{EventLog: path, Base: baseWorld(),
+		OperatorKeys: map[string]ed25519.PublicKey{"operator-arc": public}},
+		control.PlacementAgent{}, control.NetworkAgent{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if err := restarted.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Approve(grant); err == nil {
+		t.Fatal("after a restart, replaying the original grant was accepted")
+	}
+}
+
+// A revocation is signed as the same document type as a grant. Submitting the
+// revocation token as a grant must not reinstate the approval it withdrew.
+func TestRevocationTokenIsNotAGrant(t *testing.T) {
+	server, _, key := operatorServer(t)
+	if err := server.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	approved, err := server.Approve(signedGrant(t, key, "public-route"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revocation := revocationOf(t, key, approved)
+	if err := server.Revoke(revocation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Approve(revocation); err == nil {
+		t.Fatal("the revocation token was accepted as a grant")
+	}
+}
+
+// An operator who genuinely re-approves signs a later grant, which succeeds.
+func TestNewerGrantReapprovesAfterRevocation(t *testing.T) {
+	server, _, key := operatorServer(t)
+	if err := server.Submit(testGoal()); err != nil {
+		t.Fatal(err)
+	}
+	approved, err := server.Approve(signedGrant(t, key, "public-route"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Revoke(revocationOf(t, key, approved)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	again, err := server.Approve(signedGrant(t, key, "public-route"))
+	if err != nil {
+		t.Fatalf("a newer grant was refused: %v", err)
+	}
+	if !server.World().Approvals[again.ID].Valid(time.Now()) {
+		t.Fatal("the re-approval did not take effect")
+	}
+}
+
+// revocationOf signs a revocation for a granted approval, issued now, the way
+// the operator CLI does.
+func revocationOf(t *testing.T, key ed25519.PrivateKey, grant control.ApprovalGrant) control.SignedApproval {
+	t.Helper()
+	time.Sleep(2 * time.Millisecond)
+	now := time.Now().UTC()
+	signed, err := control.SignApproval(control.ApprovalGrant{
+		ID: grant.ID, GoalID: grant.GoalID, Scope: grant.Scope, IssuedBy: "arc",
+		IssuedAt: now, ExpiresAt: now.Add(time.Hour), Reason: "withdrawn",
+	}, "operator-arc", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
