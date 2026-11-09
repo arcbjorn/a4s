@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -290,5 +292,43 @@ func TestSupervisorDoesNotRestartDuringAuthorizedStop(t *testing.T) {
 	}
 	if backend.starts != 0 {
 		t.Fatalf("the supervisor started the task %d times during its stop", backend.starts)
+	}
+}
+
+type inspectFailBackend struct {
+	supervisedBackend
+	broken string
+}
+
+func (b *inspectFailBackend) Inspect(ctx context.Context, id string) (BackendState, error) {
+	if id == b.broken {
+		return BackendState{}, errors.New("containerd: corrupted record")
+	}
+	return b.supervisedBackend.Inspect(ctx, id)
+}
+
+// One allocation that cannot be inspected must not stop supervision of the
+// allocations after it.
+func TestSupervisorIsolatesPerAllocationErrors(t *testing.T) {
+	desired, err := OpenDesiredState(filepath.Join(t.TempDir(), "desired.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &inspectFailBackend{supervisedBackend: supervisedBackend{states: map[string]BackendState{}}, broken: "api-0"}
+	supervisor := NewSupervisor(NewContainerRuntime(backend), desired)
+	supervisor.Backoff, supervisor.MaxBackoff = 0, 0
+	for _, id := range []string{"api-0", "web-0"} {
+		if err := desired.Record(DesiredAllocation{ID: id, Workload: "w", Running: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backend.states["web-0"] = BackendState{Exists: true, Running: false, ExitCode: 137}
+
+	_, err = supervisor.Reconcile(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "api-0") {
+		t.Fatalf("the failing allocation should still be reported, got %v", err)
+	}
+	if backend.starts != 1 {
+		t.Fatalf("crashed web-0 was not restarted because api-0 failed to inspect (starts=%d)", backend.starts)
 	}
 }
