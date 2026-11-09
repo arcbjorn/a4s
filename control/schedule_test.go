@@ -288,3 +288,19 @@ func TestDurationJSON(t *testing.T) {
 		t.Fatal("an unparseable duration was accepted")
 	}
 }
+
+// A step near the integer limit must not wrap and add values outside the
+// field's range.
+func TestParseCronStepDoesNotOverflow(t *testing.T) {
+	schedule, err := ParseCron("30-59/9223372036854775807 * * * *")
+	if err != nil {
+		return // refusing an absurd step is also correct
+	}
+	for minute := 0; minute < 60; minute++ {
+		at := time.Date(2026, 1, 1, 0, minute, 0, 0, time.UTC)
+		if schedule.Matches(at) != (minute == 30) {
+			t.Fatalf("minute %d matched=%t; only minute 30 is in 30-59 with an enormous step",
+				minute, schedule.Matches(at))
+		}
+	}
+}
