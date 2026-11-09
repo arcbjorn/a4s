@@ -1,6 +1,7 @@
 package control
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -108,5 +109,18 @@ func TestCeilingDoesNotBlockRemoval(t *testing.T) {
 	}}
 	if err := kernel.checkClusterBudget(world, stopProposal("web-0")); err != nil {
 		t.Fatalf("a full cluster could not shrink: %v", err)
+	}
+}
+
+func TestBudgetAddSaturates(t *testing.T) {
+	sum := Budget{Tokens: math.MaxInt - 1, ToolCalls: 5}.Add(Budget{Tokens: 10, ToolCalls: 3})
+	if sum.Tokens != math.MaxInt {
+		t.Fatalf("tokens = %d, want saturation at MaxInt", sum.Tokens)
+	}
+	if sum.ToolCalls != 8 {
+		t.Fatalf("tool calls = %d, want 8", sum.ToolCalls)
+	}
+	if low := (Budget{Tokens: math.MinInt + 1}).Add(Budget{Tokens: -10}); low.Tokens != math.MinInt {
+		t.Fatalf("tokens = %d, want saturation at MinInt", low.Tokens)
 	}
 }
