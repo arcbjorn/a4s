@@ -233,6 +233,23 @@ func (f *File) Append(event control.Event) error {
 	return f.appendLocked(event, "")
 }
 
+// AppendNext records an event at the next sequence, assigning the sequence
+// under the same lock as the append, and returns the event as recorded.
+//
+// Every writer sharing this store in one process should use it. The two-step
+// NextSequence then Append lets concurrent writers claim the same number, and
+// the loser's append fails after whatever it was recording has already
+// happened.
+func (f *File) AppendNext(event control.Event) (control.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	event.Sequence = f.count + 1
+	if err := f.appendLocked(event, ""); err != nil {
+		return control.Event{}, err
+	}
+	return event, nil
+}
+
 // appendLocked extends the chain with one event. When want is non-empty the
 // derived hash must equal it, and the comparison happens before anything is
 // written, so a record that would diverge never reaches the database.
@@ -571,3 +588,7 @@ func (f *File) Path() string {
 func quoteLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
+
+// File assigns sequences atomically, so the engine and the server can share one
+// store without racing on the next sequence number.
+var _ control.SequencingSink = (*File)(nil)
