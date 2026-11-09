@@ -155,7 +155,15 @@ func (o *RuntimeObserver) ObserveReadiness(target control.ProbeTarget) (bool, ma
 		if err != nil {
 			return false, observed, err
 		}
-		response, err := o.client().Do(request)
+		// A redirect is the workload's answer, not an instruction to measure
+		// somewhere else. Following it would let a workload aim the node's
+		// requests at any address the host can reach, and report a dead
+		// workload ready because the redirect target answered.
+		client := *o.client()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		response, err := client.Do(request)
 		if err != nil {
 			observed["reason"] = err.Error()
 			return false, observed, nil
