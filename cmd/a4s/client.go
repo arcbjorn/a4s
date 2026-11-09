@@ -91,10 +91,16 @@ func (c *operatorClient) do(method, path string, body any) ([]byte, error) {
 	defer response.Body.Close()
 
 	// The response is bounded for the same reason the server bounds requests: a
-	// hostile or broken peer must not be able to exhaust this process.
-	answer, err := io.ReadAll(io.LimitReader(response.Body, server.MaxRequestBody))
+	// hostile or broken peer must not be able to exhaust this process. One byte
+	// past the limit is read so an oversized answer is reported as such, rather
+	// than silently truncated into JSON that then fails to decode for a reason
+	// nobody can see.
+	answer, err := io.ReadAll(io.LimitReader(response.Body, server.MaxRequestBody+1))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if len(answer) > server.MaxRequestBody {
+		return nil, fmt.Errorf("server response to %s %s exceeds %d bytes", method, path, server.MaxRequestBody)
 	}
 	if response.StatusCode >= 400 {
 		return nil, fmt.Errorf("server refused %s %s: %s: %s",
