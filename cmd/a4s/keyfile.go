@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/arcbjorn/a4s/internal/fsutil"
 )
 
 // loadPrivateKey reads a base64 Ed25519 private key from a file. Keys are never
@@ -76,4 +80,42 @@ func loadPublicKey(path string) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("public key must be a base64-encoded Ed25519 public key")
 	}
 	return ed25519.PublicKey(decoded), nil
+}
+
+// writeKeypair stores a freshly generated keypair as path and path.pub.
+//
+// Neither file may already exist. Overwriting a private key destroys an
+// identity that nodes, operators, or a keyset still trust, and the only
+// recovery is re-enrolling everything that trusted it, so replacing one must be
+// a deliberate removal rather than a re-run of the same command.
+func writeKeypair(path string, public ed25519.PublicKey, private ed25519.PrivateKey) error {
+	publicPath := path + ".pub"
+	// Both paths are checked before either is written, so a stray .pub file is
+	// reported up front instead of leaving a private key with no public half.
+	for _, candidate := range []string{path, publicPath} {
+		if _, err := os.Lstat(candidate); err == nil {
+			return fmt.Errorf("refusing to overwrite existing key %s", candidate)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("check key path: %w", err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create key directory: %w", err)
+	}
+	if err := fsutil.WriteFileExclusive(path, []byte(encodeBase64(private)+"\n"), 0o600); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("refusing to overwrite existing key %s", path)
+		}
+		return fmt.Errorf("write private key: %w", err)
+	}
+	if err := fsutil.WriteFileExclusive(publicPath, []byte(encodeBase64(public)+"\n"), 0o644); err != nil {
+		// The private half was created by this call, so removing it leaves no
+		// unpaired key behind and the operator can simply retry.
+		_ = os.Remove(path)
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("refusing to overwrite existing key %s", publicPath)
+		}
+		return fmt.Errorf("write public key: %w", err)
+	}
+	return nil
 }
