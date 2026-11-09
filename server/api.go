@@ -53,6 +53,8 @@ type API struct {
 	server *Server
 	config APIConfig
 	nonces *nonceLedger
+	// startedAt bounds which mutating requests can be fresh; see authenticated.
+	startedAt time.Time
 }
 
 // NewAPI builds the operator API for a server.
@@ -63,7 +65,7 @@ func NewAPI(server *Server, config APIConfig) *API {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &API{server: server, config: config, nonces: newNonceLedger()}
+	return &API{server: server, config: config, nonces: newNonceLedger(), startedAt: config.Now()}
 }
 
 // Handler returns the HTTP handler for the operator API.
@@ -175,6 +177,23 @@ func (a *API) authenticated(handler func(http.ResponseWriter, *http.Request, Req
 				slog.String("method", request.Method),
 				slog.Any("error", err))
 			a.record("denied")
+			http.Error(writer, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		// The nonce ledger lives in memory and forgets everything on restart,
+		// so a mutating request captured before this process started would
+		// otherwise be accepted again for the rest of its validity window: a
+		// cordon an operator has since undone, or an approval since revoked.
+		// Every client signs at the moment it sends, so refusing requests
+		// issued before startup costs a legitimate caller only a re-sign.
+		// Reads are exempt; replaying one changes nothing.
+		if request.Method != http.MethodGet && envelope.IssuedAt.Before(a.startedAt) {
+			a.config.Logger.Warn("operator request predates this server",
+				slog.String("path", request.URL.Path),
+				slog.String("operator", envelope.IssuedBy),
+				slog.Time("issued_at", envelope.IssuedAt),
+				slog.Time("started_at", a.startedAt))
+			a.record("replayed")
 			http.Error(writer, "unauthorized", http.StatusUnauthorized)
 			return
 		}
