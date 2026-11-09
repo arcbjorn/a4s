@@ -146,7 +146,6 @@ type BridgeIPAM struct {
 	subnet   *net.IPNet
 	next     uint32
 	assigned map[string]string
-	released map[string]bool
 }
 
 // NewBridgeIPAM creates an allocator over a node-local CIDR.
@@ -160,7 +159,7 @@ func NewBridgeIPAM(cidr string) (*BridgeIPAM, error) {
 	}
 	return &BridgeIPAM{
 		subnet: subnet, next: 2, // .1 is the bridge itself.
-		assigned: make(map[string]string), released: make(map[string]bool),
+		assigned: make(map[string]string),
 	}, nil
 }
 
