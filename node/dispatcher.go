@@ -140,6 +140,15 @@ func (d *Dispatcher) Dispatch(ctx context.Context, signed SignedAction) (Dispatc
 	if err := d.checkLease(envelope); err != nil {
 		return DispatchResult{}, err
 	}
+	// Intent that removes or stops a workload is narrowed before the mutation
+	// runs. The supervisor reconciles concurrently and without this lock, so
+	// recording a stop only after it completed left a window in which a
+	// supervision pass saw the task exit, still found it desired running, and
+	// restarted it: the server got stopped evidence for a container that kept
+	// running and that nothing would stop again.
+	if err := d.narrowDesired(envelope.Action); err != nil {
+		return DispatchResult{}, err
+	}
 	evidence, err := d.Runtime.Execute(ctx, envelope.Action)
 	if err != nil {
 		return DispatchResult{}, err
@@ -154,9 +163,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, signed SignedAction) (Dispatc
 	if err != nil {
 		return DispatchResult{}, err
 	}
-	// Record intent only after the mutation succeeded, so the node never
-	// supervises a workload the runtime failed to create.
-	if err := d.recordDesired(envelope.Action); err != nil {
+	// Intent that adds or starts a workload is widened only after the mutation
+	// succeeded, so the node never supervises a workload the runtime failed to
+	// create.
+	if err := d.widenDesired(envelope.Action); err != nil {
 		return DispatchResult{}, err
 	}
 	d.noteLease(envelope)
@@ -295,10 +305,32 @@ func (d *Dispatcher) attribute(evidence control.Evidence, action control.Action)
 	return evidence
 }
 
-// recordDesired translates an authorized action into local supervision intent.
-// The node only ever mirrors what the server authorized; it never adds a
-// workload of its own.
-func (d *Dispatcher) recordDesired(action control.Action) error {
+// narrowDesired and widenDesired translate an authorized action into local
+// supervision intent. The node only ever mirrors what the server authorized; it
+// never adds a workload of its own.
+
+// narrowDesired records intent that withdraws supervision, ahead of the
+// mutation that carries it out. If the mutation then fails, the controller
+// retries it; the workload is simply not restarted on the node's own
+// initiative in the meantime, which is the direction an authorized stop asked
+// for.
+func (d *Dispatcher) narrowDesired(action control.Action) error {
+	if d.Desired == nil {
+		return nil
+	}
+	switch action.Kind {
+	case control.ActionStopAllocation:
+		return d.Desired.SetRunning(action.Target, false)
+	case control.ActionDeleteAllocation:
+		return d.Desired.Forget(action.Target)
+	default:
+		return nil
+	}
+}
+
+// widenDesired records intent that adds supervision, after the mutation it
+// describes has succeeded.
+func (d *Dispatcher) widenDesired(action control.Action) error {
 	if d.Desired == nil {
 		return nil
 	}
@@ -320,10 +352,6 @@ func (d *Dispatcher) recordDesired(action control.Action) error {
 		return d.Desired.AddVolume(action.Target, *action.Volume)
 	case control.ActionStartAllocation:
 		return d.Desired.SetRunning(action.Target, true)
-	case control.ActionStopAllocation:
-		return d.Desired.SetRunning(action.Target, false)
-	case control.ActionDeleteAllocation:
-		return d.Desired.Forget(action.Target)
 	default:
 		return nil
 	}
