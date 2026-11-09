@@ -240,7 +240,12 @@ Commands:
 | `standby` | Follower replicating a primary's history over the operator API |
 | `version` | Stamped version, commit, and build date |
 
-Keep business and policy logic out of `main.go`.
+Keep business and policy logic out of `main.go`. Each command lives in its own
+file, and every command is a method on `cli`, which carries the process's
+stdin, stdout, and stderr. Commands never touch `os.Stdout` directly, so tests
+drive the real command code with buffers; `server` and `node` both check their
+required flags before opening anything, and a daemon component that stops
+cancels the daemon with its cause.
 
 ## Main control call path
 
