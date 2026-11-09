@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/ed25519"
+	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -221,3 +222,34 @@ func encodeBase64(raw []byte) string {
 }
 
 func nowUTC() time.Time { return time.Now().UTC() }
+
+// keygen writes an Ed25519 keypair to disk. Keys are written to files with
+// restrictive permissions and never printed, because a private key echoed to a
+// terminal ends up in scrollback and shell history.
+func keygen(args []string) error {
+	flags := flag.NewFlagSet("keygen", flag.ContinueOnError)
+	out := flags.String("out", "", "path for the private key; the public key gets a .pub suffix")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *out == "" {
+		return fmt.Errorf("out is required")
+	}
+	public, private, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate key: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(*out), 0o750); err != nil {
+		return fmt.Errorf("create key directory: %w", err)
+	}
+	privateText := base64.RawStdEncoding.EncodeToString(private)
+	if err := os.WriteFile(*out, []byte(privateText+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write private key: %w", err)
+	}
+	publicText := base64.RawStdEncoding.EncodeToString(public)
+	if err := os.WriteFile(*out+".pub", []byte(publicText+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write public key: %w", err)
+	}
+	fmt.Printf("wrote %s and %s.pub\n", *out, *out)
+	return nil
+}
