@@ -317,3 +317,42 @@ func TestContainerReceivesSecretMountsReadOnly(t *testing.T) {
 		t.Fatalf("unexpected mount destination: %+v", mount)
 	}
 }
+
+// A truncated or corrupt sealed file must be refused, not panic the node: the
+// cipher panics on a nonce of the wrong length and nothing recovers it.
+func TestUnsealRejectsMalformedNonceWithoutPanic(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, nonceLength := range map[string]int{"short": 4, "empty": 0, "long": 40} {
+		t.Run(name, func(t *testing.T) {
+			sealed, err := Seal("db-password", "v1", "base", public, []byte("hunter2"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sealed.Nonce = make([]byte, nonceLength)
+			raw, err := json.Marshal(sealed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "db-password.v1.sealed"), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			broker, err := NewFileBroker(dir, "base", private)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("a malformed sealed secret panicked the node: %v", recovered)
+				}
+			}()
+			if _, err := broker.Fetch(context.Background(),
+				control.SecretRef{Name: "db-password", Version: "v1"}); err == nil {
+				t.Fatal("a malformed nonce was accepted")
+			}
+		})
+	}
+}
