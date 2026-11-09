@@ -3,6 +3,7 @@ package control
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -238,4 +239,37 @@ func TestSortedOrdersByLifecycle(t *testing.T) {
 
 func bytesContain(haystack, needle []byte) bool {
 	return len(needle) > 0 && strings.Contains(string(haystack), string(needle))
+}
+
+// Rotating to key material the set already holds would keep it verifying after
+// its original id is retired.
+func TestRotateRefusesReusedKeyMaterial(t *testing.T) {
+	public, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+	set, err := NewKeySet("k1", public, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := set.Rotate("k2", public, now); err == nil {
+		t.Fatal("rotation accepted the active key's material under a new id")
+	}
+}
+
+// A hand-edited keyset holding one key under two ids is refused at load.
+func TestValidateRefusesSharedKeyMaterial(t *testing.T) {
+	public, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(public)
+	set := KeySet{Version: KeySetVersion, Keys: []ControllerKey{
+		{KeyID: "k1", PublicKey: encoded, State: KeyRetired},
+		{KeyID: "k2", PublicKey: encoded, State: KeyActive},
+	}}
+	if err := set.Validate(); err == nil {
+		t.Fatal("a keyset holding one key under two ids validated")
+	}
 }
