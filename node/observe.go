@@ -95,15 +95,19 @@ func (o *RegistryObserver) ObserveReadiness(target control.ProbeTarget) (bool, m
 	return evidence.Observed["ready"] == "true", evidence.Observed, nil
 }
 
+// executorFor returns an executor bound to the node's current session, on the
+// same terms as RegistryExecutor: a cached executor is reused only while its
+// connection is still the one the registry holds.
 func (o *RegistryObserver) executorFor(nodeID string) (*RemoteExecutor, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if executor, ok := o.executors[nodeID]; ok {
-		return executor, nil
-	}
 	connection, ok := o.Registry.Get(nodeID)
 	if !ok {
+		delete(o.executors, nodeID)
 		return nil, fmt.Errorf("node %q is not connected", nodeID)
+	}
+	if executor, ok := o.executors[nodeID]; ok && executor.Transport == Transport(connection) {
+		return executor, nil
 	}
 	executor := NewRemoteExecutor(nodeID, o.KeyID, o.Key, connection)
 	executor.TTL, executor.Now = o.TTL, o.Now
@@ -114,8 +118,8 @@ func (o *RegistryObserver) executorFor(nodeID string) (*RemoteExecutor, error) {
 	return executor, nil
 }
 
-// Forget drops the cached connection for a node, so a reconnected node is
-// measured over its new session rather than a closed one.
+// Forget drops the cached connection for a node. A reconnected node is picked
+// up automatically, so this only releases the cache entry early.
 func (o *RegistryObserver) Forget(nodeID string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
