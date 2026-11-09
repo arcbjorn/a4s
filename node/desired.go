@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/arcbjorn/a4s/control"
+	"github.com/arcbjorn/a4s/internal/fsutil"
 )
 
 // DesiredAllocation is what the node believes should be running locally. It is
@@ -94,40 +95,31 @@ func (s *DesiredState) load() error {
 // rewriting it keeps recovery trivial: the file is either the old state or the
 // new one, never a partial mixture.
 func (s *DesiredState) persist() error {
-	temporary := s.path + ".tmp"
-	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("open desired state temp: %w", err)
-	}
 	ids := make([]string, 0, len(s.entries))
 	for id := range s.entries {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	writer := bufio.NewWriter(file)
-	for _, id := range ids {
-		record, err := json.Marshal(s.entries[id])
-		if err != nil {
-			file.Close()
-			return fmt.Errorf("encode desired state: %w", err)
+	// Written through fsutil so the rename itself is durable: syncing only the
+	// file left a crash able to lose the directory entry, and with it the
+	// node's record of what the server authorized.
+	err := fsutil.WriteAtomic(s.path, 0o600, func(w io.Writer) error {
+		writer := bufio.NewWriter(w)
+		for _, id := range ids {
+			record, err := json.Marshal(s.entries[id])
+			if err != nil {
+				return fmt.Errorf("encode desired state: %w", err)
+			}
+			if _, err := writer.Write(append(record, '\n')); err != nil {
+				return err
+			}
 		}
-		if _, err := writer.Write(append(record, '\n')); err != nil {
-			file.Close()
-			return fmt.Errorf("write desired state: %w", err)
-		}
+		return writer.Flush()
+	})
+	if err != nil {
+		return fmt.Errorf("persist desired state: %w", err)
 	}
-	if err := writer.Flush(); err != nil {
-		file.Close()
-		return fmt.Errorf("flush desired state: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		return fmt.Errorf("sync desired state: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close desired state: %w", err)
-	}
-	return os.Rename(temporary, s.path)
+	return nil
 }
 
 // Record stores server-authorized intent for an allocation.
