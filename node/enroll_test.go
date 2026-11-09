@@ -1,10 +1,12 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"io"
 	"net"
 	"path/filepath"
 	"strings"
@@ -316,5 +318,77 @@ func TestHandshakeBoundsHelloSize(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		// The handshake deadline is 5s; refusing the hello must not wait for it.
 		t.Fatal("the server accepted an oversized hello and carried on")
+	}
+}
+
+// slowConn delays every read, so the server's first encrypted record arrives
+// in the same read as its last handshake message.
+type slowConn struct {
+	net.Conn
+	delay time.Duration
+}
+
+func (c slowConn) Read(p []byte) (int, error) {
+	time.Sleep(c.delay)
+	return c.Conn.Read(p)
+}
+
+// The first record after enrollment must reach the channel even when it was
+// read together with the handshake's last message.
+func TestHandshakeCarriesCoalescedFirstRecord(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	payload := bytes.Repeat([]byte("x"), 3000)
+	release := make(chan struct{})
+	defer close(release)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		negotiated, _, err := acceptNode(conn, map[string]ed25519.PublicKey{"node-a": public}, "control-1", 5*time.Second)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		secure, err := newSecureConn(conn, negotiated.sendKey, negotiated.receiveKey, negotiated.buffered)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = secure.Write(payload)
+		<-release
+	}()
+	raw, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	conn := slowConn{Conn: raw, delay: 100 * time.Millisecond}
+	negotiated, _, err := connectToServer(conn, "node-a", private, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secure, err := newSecureConn(conn, negotiated.sendKey, negotiated.receiveKey, negotiated.buffered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(secure, got); err != nil {
+		t.Fatalf("the first record after enrollment was lost: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatal("the first record arrived corrupted")
 	}
 }
