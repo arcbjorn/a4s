@@ -140,3 +140,27 @@ func TestCreateTargetIsBoundToReplica(t *testing.T) {
 		t.Fatalf("the canonical create was refused: %v", err)
 	}
 }
+
+// A host already serving another workload is not this goal's to take.
+func TestPublishRouteRefusesAnotherWorkloadsHost(t *testing.T) {
+	scenario := validScenario()
+	scenario.Goal.Route.Exposure = "tailnet"
+	world := scenario.World
+	world.normalize()
+	world.ObservedAt = time.Unix(1_700_000_000, 0).UTC()
+	world.Routes["app.example.com"] = &Route{Host: "app.example.com", Workload: "billing",
+		Port: 443, Exposure: "public"}
+	world.Allocations["app-0"] = &Allocation{ID: "app-0", Workload: "app", Node: "base", Image: testImage,
+		Resources: scenario.Goal.Workload.Resources, Phase: AllocationRunning, Ready: true}
+	publish := Action{ID: "publish", Kind: ActionPublishRoute, Target: "app.example.com",
+		Workload: "app", Port: 443, Exposure: "tailnet"}
+
+	err := validatePublishRoute(scenario.Goal, world, publish)
+	if err == nil || !strings.Contains(err.Error(), "already routed") {
+		t.Fatalf("a tailnet goal captured billing's public host: %v", err)
+	}
+	world.Routes["app.example.com"].Workload = "app"
+	if err := validatePublishRoute(scenario.Goal, world, publish); err != nil {
+		t.Fatalf("republishing the goal's own route was refused: %v", err)
+	}
+}
