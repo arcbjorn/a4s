@@ -212,6 +212,60 @@ stable version and no compatibility guarantee, so everything below is under
 
 ### Fixed
 
+A review of every package found the following, each now covered by a test that
+failed before its fix. Confirmed defects not yet fixed are listed in
+[project status](docs/project-status.md).
+
+- Authority could be minted from below. The engine projected any evidence an
+  executor or prober returned, so a compromised enrolled node could answer a
+  pull with an operator approval. Evidence is now admitted against a
+  default-deny table of what each action and check can produce.
+- `apply_policy` authorized any nft script and `publish_zone` any records. The
+  kernel now recompiles both from the goal and authorizes only an exact match,
+  and node-reported addresses must be IPv4 before they reach a rule.
+- Actions were not confined to their goal: one goal's restore approval could
+  overwrite another goal's volume, secrets and tools could be installed into
+  another workload, and a create could alias a replica or escape its backoff.
+- The first approval granted to any goal blocked admission of every other goal.
+- A revoked approval could be reinstated by replaying its original grant or
+  the revocation itself, and a grant issued in the future escaped the lifetime
+  ceiling.
+- A route already serving one workload could be taken by another, and an
+  invalid network policy was admitted and then silently skipped.
+- Leases treated another goal's identical proposal id as a retry.
+- Projection: dry-run prunes and collections deleted world state, a negative
+  tool count panicked it, stale spend un-exhausted agents, and deleting an
+  agent leaked node budget. Budget addition now saturates instead of wrapping.
+- Rollback grants were chosen in map order.
+- The event log accepted rewritten history whose chain head row was left
+  unchanged, stored a diverged record before refusing it, lost a preserved log
+  when two restores ran in one second, and let a backup delete the live log.
+- An empty replica could promote against a missing anchor, and an unmounted
+  anchor directory was silently created.
+- Operator writes and reconciliation raced on event sequence numbers, leaving
+  dispatched actions with no completion record.
+- A captured mutating API request could be replayed after a restart, and an
+  unbounded cordon reason could stall replication for good.
+- The model client forwarded its API key on redirects and read responses
+  without a bound; `diagnose --model` never reached the provider.
+- Node: a malformed sealed secret panicked the process; secrets sharing a mount
+  basename overwrote each other and were bound at the host path instead of the
+  declared one; prune deleted the last real snapshot in favour of a scratch
+  directory; a torn ledger append made the node unbootable; the supervisor
+  restarted workloads mid-stop and stopped supervising after one bad entry; the
+  server kept using a closed session after a node reconnected; the handshake
+  read unbounded input and could drop the first encrypted record; two resolvers
+  answered each other forever; released addresses were never reused; the HTTP
+  probe followed redirects; cancellation did not end a node session; and state
+  files were replaced without syncing their directory, or at all.
+- CLI: `keygen` overwrote existing private keys, `keys rotate` stranded an
+  orphan key on a refused rotation, keysets were rewritten in place, `-h` exited
+  non-zero, the server checked required flags after opening its log and kept
+  running when its API could not bind, rollback images were derived in map
+  order, and oversized server responses were silently truncated.
+- CI built and tested with a Go release carrying reachable standard-library
+  vulnerabilities.
+
 - An event log holding undecodable event blobs no longer opens cleanly. Opening
   only checked that the chain head and the row count agreed, which such a store
   satisfies, so it came up and then failed in whichever caller read records
