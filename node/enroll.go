@@ -26,6 +26,12 @@ const DefaultHandshakeTimeout = 10 * time.Second
 // previously observed proof computationally hopeless.
 const challengeSize = 32
 
+// maxHandshakeBytes bounds everything one side reads during a handshake. The
+// messages are a few hundred bytes; the server reads the hello before any
+// authentication, so without a bound an unenrolled peer could make it buffer
+// arbitrarily large JSON for the length of the handshake deadline.
+const maxHandshakeBytes = 16 << 10
+
 // Hello is the node's opening claim. It is only a claim: the server does not
 // act on it until the node proves possession of the matching private key.
 type Hello struct {
@@ -110,7 +116,7 @@ func acceptNode(conn net.Conn, nodeKeys map[string]ed25519.PublicKey,
 	// Clear the handshake deadline so it does not later expire mid-session.
 	defer conn.SetDeadline(time.Time{})
 
-	decoder := json.NewDecoder(bufio.NewReader(conn))
+	decoder := json.NewDecoder(bufio.NewReader(io.LimitReader(conn, maxHandshakeBytes)))
 	decoder.DisallowUnknownFields()
 	encoder := json.NewEncoder(conn)
 
@@ -256,7 +262,7 @@ func connectToServer(conn net.Conn, nodeID string, nodeKey ed25519.PrivateKey,
 	}
 	defer conn.SetDeadline(time.Time{})
 
-	decoder := json.NewDecoder(bufio.NewReader(conn))
+	decoder := json.NewDecoder(bufio.NewReader(io.LimitReader(conn, maxHandshakeBytes)))
 	decoder.DisallowUnknownFields()
 	encoder := json.NewEncoder(conn)
 
