@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/arcbjorn/a4s/control"
@@ -117,5 +118,68 @@ func TestHTTPProbeUsesStatusCode(t *testing.T) {
 	}
 	if ready || observed["status"] != "503" {
 		t.Fatalf("expected unhealthy probe: ready=%t observed=%+v", ready, observed)
+	}
+}
+
+// A redirect is the workload's answer, not an instruction to measure elsewhere.
+func TestHTTPProbeDoesNotFollowRedirects(t *testing.T) {
+	var reached atomic.Bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer elsewhere.Close()
+	workload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+"/internal", http.StatusFound)
+	}))
+	defer workload.Close()
+	observer := observerWithState(BackendState{Exists: true, Running: true})
+	observer.Endpoints["web-0"] = strings.TrimPrefix(workload.URL, "http://")
+	if _, _, err := observer.ObserveReadiness(control.ProbeTarget{
+		Allocation: "web-0", Kind: control.ProbeHTTP, Path: "/healthz"}); err != nil {
+		t.Fatal(err)
+	}
+	if reached.Load() {
+		t.Fatal("the probe followed a workload-controlled redirect to another host")
+	}
+}
+
+// The probe path must not be able to name a different host.
+func TestHTTPProbePathCannotChangeHost(t *testing.T) {
+	var reached atomic.Bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer elsewhere.Close()
+	host := strings.TrimPrefix(elsewhere.URL, "http://")
+	observer := observerWithState(BackendState{Exists: true, Running: true})
+	observer.Endpoints["web-0"] = "127.0.0.1:1"
+	for _, path := range []string{"@" + host + "/", "http://" + host + "/", "relative"} {
+		ready, _, _ := observer.ObserveReadiness(control.ProbeTarget{
+			Allocation: "web-0", Kind: control.ProbeHTTP, Path: path})
+		if reached.Load() || ready {
+			t.Fatalf("probe path %q redirected the measurement (ready=%t)", path, ready)
+		}
+	}
+}
+
+// A path with a query string still reaches the workload intact.
+func TestHTTPProbeKeepsQueryString(t *testing.T) {
+	var gotQuery string
+	workload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer workload.Close()
+	observer := observerWithState(BackendState{Exists: true, Running: true})
+	observer.Endpoints["web-0"] = strings.TrimPrefix(workload.URL, "http://")
+	ready, _, err := observer.ObserveReadiness(control.ProbeTarget{
+		Allocation: "web-0", Kind: control.ProbeHTTP, Path: "/healthz?deep=1"})
+	if err != nil || !ready {
+		t.Fatalf("ready=%t err=%v", ready, err)
+	}
+	if gotQuery != "deep=1" {
+		t.Fatalf("query = %q, want deep=1", gotQuery)
 	}
 }
