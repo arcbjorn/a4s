@@ -17,6 +17,7 @@
 |-- reason/                   model-backed control agents
 |-- source/                   goals from a versioned repository
 |-- obs/                      structured logging and metrics
+|-- internal/fsutil/          crash-safe file writes shared by every package
 |-- docs/                     handbook and decision records
 |-- examples/                 safe simulation inputs
 |-- scripts/                  release, doc-link, and nftables checks
@@ -143,6 +144,15 @@ diagnostics never contaminate the protocol stream.
 | `metrics.go` | Counters and gauges behind a closed set of outcome labels |
 | `text.go` | Prometheus text exposition rendering, without a client library |
 
+### `internal/fsutil`
+
+Atomic replace, exclusive create, and directory sync. Every durability claim
+elsewhere reduces to writing the bytes, syncing the file, and syncing the
+directory that names it; getting one wrong is invisible in tests and shows up
+only as an empty or missing file after a power loss, so the steps live here
+once. Use it for any file a4s must not lose or tear. It depends only on the
+standard library.
+
 ### `eventlog`
 
 `eventlog.File` implements `control.EventSink`. It appends hash-chained records
@@ -160,7 +170,7 @@ work.
 Dependency direction:
 
 ```text
-eventlog -> control
+eventlog -> control, internal/fsutil
 ```
 
 The anchor is a separate append-only file, not a row in the database. Storing the
@@ -199,7 +209,7 @@ The node package owns the host mutation trust boundary.
 Dependency direction:
 
 ```text
-node -> control
+node -> control, internal/fsutil
 node/containerd_linux -> containerd v2 client
 ```
 
