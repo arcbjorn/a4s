@@ -331,6 +331,13 @@ func unseal(sealed SealedSecret, secretKey [32]byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create cipher: %w", err)
 	}
+	// Open panics on a nonce of the wrong length rather than returning an
+	// error, and the node has no recover: one truncated .sealed file would
+	// crash the process on every mount. It is refused with the same opaque
+	// error a failed decryption gets.
+	if len(sealed.Nonce) != aead.NonceSize() {
+		return nil, fmt.Errorf("secret %q version %q could not be decrypted", sealed.Name, sealed.Version)
+	}
 	associated := []byte(sealed.Name + "\x00" + sealed.Version + "\x00" + sealed.NodeID)
 	value, err := aead.Open(nil, sealed.Nonce, sealed.Ciphertext, associated)
 	if err != nil {
