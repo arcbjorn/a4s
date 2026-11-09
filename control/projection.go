@@ -611,6 +611,10 @@ func projectInto(world *World, evidence Evidence) error {
 		}
 		if node, ok := world.Nodes[allocation.Node]; ok {
 			node.Used = node.Used.Subtract(allocation.Resources)
+			// The agent budget reserved at creation is released with the
+			// allocation, exactly as simulation releases it. Otherwise a node's
+			// agent capacity drains a little with every deleted agent.
+			node.BudgetUsed = node.BudgetUsed.Subtract(allocation.Budget)
 		}
 		recordDisruption(world, allocation, evidence.Kind, evidence.ObservedAt)
 		delete(world.Allocations, evidence.Target)
