@@ -481,3 +481,26 @@ func TestRegistryObserverReportsDisconnectedNode(t *testing.T) {
 		t.Fatal("a target with no node produced a measurement")
 	}
 }
+
+// A cancelled context must end the node's session promptly, which is what lets
+// SIGTERM stop the daemon.
+func TestDialServerHonorsCancellation(t *testing.T) {
+	fixture := newEnrollFixture(t)
+	defer fixture.stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- DialServer(ctx, "tcp", fixture.listener.Addr().String(), "base",
+			fixture.nodeKey, fixture.dispatcher, 2*time.Second)
+	}()
+	waitForNode(t, fixture.registry, "base")
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("a requested shutdown was reported as an error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DialServer did not return after its context was cancelled")
+	}
+}
