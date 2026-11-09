@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -95,14 +96,19 @@ func (s *Supervisor) Reconcile(ctx context.Context) ([]control.Evidence, error) 
 	// reports the agents which are about to stop being ready.
 	observations = append(observations, s.refreshProviders(ctx)...)
 	observations = append(observations, s.observeQueues()...)
+	// One allocation's failure must not stop the pass. Entries are visited in
+	// a fixed order, so returning on the first error left every allocation
+	// after a single broken container record unsupervised indefinitely: a
+	// crashed workload behind it would never be restarted.
+	var failures []error
 	for _, entry := range s.Desired.List() {
 		evidence, err := s.reconcileOne(ctx, entry)
-		if err != nil {
-			return observations, err
-		}
 		observations = append(observations, evidence...)
+		if err != nil {
+			failures = append(failures, err)
+		}
 	}
-	return observations, nil
+	return observations, errors.Join(failures...)
 }
 
 // refreshProviders measures egress and attributes the result to this node.
