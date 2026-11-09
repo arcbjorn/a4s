@@ -217,15 +217,21 @@ func Restore(archive, path string) (BackupManifest, error) {
 	}
 
 	if existing, err := os.Stat(path); err == nil && existing.Size() > 0 {
-		aside := fmt.Sprintf("%s.superseded-%d", path, time.Now().UTC().Unix())
+		aside, err := supersededPath(path)
+		if err != nil {
+			return BackupManifest{}, err
+		}
 		if err := os.Rename(path, aside); err != nil {
 			return BackupManifest{}, fmt.Errorf("preserve existing log: %w", err)
 		}
 		// WAL and shared-memory sidecars belong to the log that was moved
 		// aside. Leaving them would let SQLite recover the old log's tail into
-		// the restored database.
+		// the restored database, so failing to move one stops the restore
+		// rather than being ignored.
 		for _, suffix := range []string{"-wal", "-shm"} {
-			_ = os.Rename(path+suffix, aside+suffix)
+			if err := os.Rename(path+suffix, aside+suffix); err != nil && !os.IsNotExist(err) {
+				return BackupManifest{}, fmt.Errorf("preserve existing log sidecar %s: %w", suffix, err)
+			}
 		}
 	}
 	if err := writeFileAtomic(path, payload, 0o600); err != nil {
@@ -293,6 +299,25 @@ func writeFileAtomic(path string, payload []byte, mode os.FileMode) error {
 		handle.Close()
 	}
 	return nil
+}
+
+// supersededPath names where an existing log is preserved during a restore.
+//
+// The name must never collide with an earlier preserved log. A rename onto an
+// existing path replaces it, so two restores in one second with a coarse
+// timestamp would destroy the history the first restore set aside.
+func supersededPath(path string) (string, error) {
+	base := fmt.Sprintf("%s.superseded-%s", path, time.Now().UTC().Format("20060102T150405.000000000Z"))
+	for attempt := 0; attempt < 100; attempt++ {
+		candidate := base
+		if attempt > 0 {
+			candidate = fmt.Sprintf("%s-%d", base, attempt)
+		}
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("no free name to preserve the existing log beside %s", path)
 }
 
 // sameOrSidecar reports whether candidate names the log at path or one of its
