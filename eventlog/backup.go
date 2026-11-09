@@ -63,6 +63,12 @@ func (f *File) Backup(destination string) (BackupManifest, error) {
 	if f.db == nil {
 		return BackupManifest{}, fmt.Errorf("event log is closed")
 	}
+	// The destination is removed before VACUUM INTO writes it, so a backup
+	// aimed at the live log, or at one of its sidecars, would delete the very
+	// history it was meant to protect.
+	if sameOrSidecar(destination, f.path) {
+		return BackupManifest{}, fmt.Errorf("backup destination %s is the live event log", destination)
+	}
 
 	records, err := f.readRecords()
 	if err != nil {
@@ -287,4 +293,22 @@ func writeFileAtomic(path string, payload []byte, mode os.FileMode) error {
 		handle.Close()
 	}
 	return nil
+}
+
+// sameOrSidecar reports whether candidate names the log at path or one of its
+// SQLite sidecars.
+func sameOrSidecar(candidate, path string) bool {
+	clean := filepath.Clean(candidate)
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		target := filepath.Clean(path + suffix)
+		if clean == target {
+			return true
+		}
+		if a, err := os.Stat(clean); err == nil {
+			if b, err := os.Stat(target); err == nil && os.SameFile(a, b) {
+				return true
+			}
+		}
+	}
+	return false
 }
