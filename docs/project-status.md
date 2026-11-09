@@ -1,6 +1,6 @@
 # Project status
 
-Status date: 2026-07-28
+Status date: 2026-11-09
 
 Version: `0.2.0-dev`
 
@@ -474,6 +474,84 @@ node's `RuntimeObserver` performs real process, TCP, and HTTP measurements.
 - Distributed tracing. Structured logs and metrics exist; spans do not.
 - IPv6 allocation addressing. The CNI configuration and the policy compiler
   both assume IPv4.
+
+## Open defects from the November 2026 review
+
+A review of every package confirmed the defects below, most with a reproducing
+test, and they are not yet fixed. Everything the same review found and fixed is
+in the changelog. They are listed here rather than under "not implemented"
+because each is a way the current code is wrong, not a missing feature.
+
+Kernel:
+
+- A drain and a stop in one proposal stop an agent while it still holds its
+  task, because simulation assumes the drain completed.
+- Readiness is refreshed only after it lapses, which resets `ReadySince`; canary
+  holds longer than the 30-second readiness TTL never complete.
+- Restore, verify, backup, and transfer do not require the action's checksum to
+  equal the recorded one, and a mismatched verification still marks a snapshot
+  verified.
+- Nothing sets `Allocation.Stateful`, so the `destroy-stateful` gate never arms
+  for real allocations and evacuation never lists stateful ones.
+- A queue-scaled agent goal can never be reported achieved.
+- Unknown evidence check kinds are authorized and fail only after mutation.
+- Firewall rulesets and service zones are compiled per goal but installed per
+  node, so two goals with workloads on one node overwrite each other every
+  round, and a rule naming another workload never resolves.
+- Canary weights can exceed the authorized step when the step is smaller than
+  the number of new endpoints.
+- A public CIDR egress rule without a port is admitted, contrary to the policy
+  type's own contract. The default-drop chains sit on the host's input and
+  output hooks, which needs verification on a real host.
+- Cron decides day-of-month and day-of-week semantics by value count rather
+  than by a leading `*`, which differs from vixie cron.
+- A rollback approval's target is not checked against the known-good image,
+  provenance is checked for the original image rather than the rolled-back one,
+  `DryRun` does not mirror `Run`'s compensation, and transfer and adopt do not
+  recheck the `move-volume` approval.
+- Node error text reaches the model context unredacted.
+
+Server and event log:
+
+- Replication responses are unsigned; see [security](security.md).
+- Goals submitted over the API are held only in memory and are lost on restart
+  or promotion.
+- No single-writer lock: a second writer, including `a4s approve --event-log`
+  against a live log, makes the server's appends fail until it restarts.
+- Removing a node from the base world after it was ever observed stops the
+  server from starting, because replay is fatal for unknown nodes.
+- Two processes witnessing one anchor can fork it undetected, and a torn final
+  anchor line prevents startup.
+- `Records` and `RecordsAfter` return nothing on a read error, replication
+  batches are bounded by count rather than bytes, and an operator observation is
+  made durable before it is known to project.
+- The git source accepts a ref that moved backward, and deleting a goal file
+  does not withdraw the goal.
+
+Node:
+
+- The server is not authenticated during the handshake, and session frames are
+  not size-bounded.
+- A claim can race a drain, and two concurrent claims can give one allocation
+  two tasks.
+- A persist failure in volumes, the queue, or desired state leaves memory ahead
+  of disk, and a retry then reports success without persisting.
+- A ledger replay older than the attestation age is refused forever, which can
+  wedge an idempotent retry after a long partition.
+- containerd tasks that are stopped, or created but never started, are not
+  replaced, so crashed containers are not restarted on a real node.
+- CNI integration does not create the namespace, sends CHECK without the
+  previous result, passes a conflist to one plugin, and keeps attachments only
+  in memory.
+- Gateway routes are held in memory, so a node restart drops routes on the next
+  publish, and canary weights never reach the gateway.
+- Oversized DNS answers are truncated mid-record without setting TC.
+- `Execute` takes no context or deadline, so one hung node stalls every goal.
+- Copied trees (snapshots, restores, backups) are not fsynced, backup fetches
+  are not staged, and the copy follows symlinks swapped in after the check.
+- Agent runtime state is not durable across a node restart.
+- Snapshot ids and action targets are not validated on the node before they are
+  used in paths. Control constrains them, so this is defense in depth.
 
 ## Known implementation constraints
 
