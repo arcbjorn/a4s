@@ -65,7 +65,11 @@ type SecretBroker interface {
 type SecretMount struct {
 	Name    string
 	Version string
-	Path    string
+	// Path is where the material sits on the node's tmpfs.
+	Path string
+	// MountPath is where the goal declared the workload reads it, which is
+	// where the container runtime must bind Path.
+	MountPath string
 	// AlreadyMounted reports an idempotent repeat.
 	AlreadyMounted bool
 }
@@ -133,7 +137,7 @@ func (s *Secrets) Execute(ctx context.Context, action control.Action) (control.E
 	if err != nil {
 		return control.Evidence{}, err
 	}
-	mount := SecretMount{Name: ref.Name, Version: ref.Version, Path: path}
+	mount := SecretMount{Name: ref.Name, Version: ref.Version, Path: path, MountPath: ref.MountPath}
 
 	s.mu.Lock()
 	if s.mounts[action.Target] == nil {
