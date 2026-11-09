@@ -86,6 +86,7 @@ func (s KeySet) Validate() error {
 		return fmt.Errorf("keyset holds no keys")
 	}
 	seen := make(map[string]bool, len(s.Keys))
+	material := make(map[string]string, len(s.Keys))
 	active := 0
 	for _, key := range s.Keys {
 		if key.KeyID == "" {
@@ -105,9 +106,17 @@ func (s KeySet) Validate() error {
 		default:
 			return fmt.Errorf("key %q has unknown state %q", key.KeyID, key.State)
 		}
-		if _, err := key.Decode(); err != nil {
+		public, err := key.Decode()
+		if err != nil {
 			return err
 		}
+		// One key's material under two ids would let a retired key keep
+		// verifying: retire the first id and anyone holding its private half
+		// signs under the second.
+		if other, reused := material[string(public)]; reused {
+			return fmt.Errorf("keys %q and %q share the same public key", other, key.KeyID)
+		}
+		material[string(public)] = key.KeyID
 	}
 	if active != 1 {
 		// Two active keys would make it unclear which one a verifier should
@@ -183,6 +192,11 @@ func (s KeySet) Rotate(keyID string, public ed25519.PublicKey, now time.Time) (K
 			// Reusing an id would silently change what a historical signature
 			// means, which destroys the audit trail's value.
 			return KeySet{}, fmt.Errorf("key id %q is already in the keyset", keyID)
+		}
+		// Reusing material is the mirror image: rotating to a key the set
+		// already holds would keep it verifying after the old id is retired.
+		if existing, err := key.Decode(); err == nil && existing.Equal(public) {
+			return KeySet{}, fmt.Errorf("key %q reuses the public key of %q", keyID, key.KeyID)
 		}
 	}
 
