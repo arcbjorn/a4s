@@ -3,6 +3,7 @@ package node
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,7 +25,17 @@ type FileLedger struct {
 	mu      sync.Mutex
 	file    *os.File
 	results map[string]DispatchResult
+	// size is the length of the acknowledged prefix: every byte before it
+	// belongs to a record whose Put returned success.
+	size int64
+	// broken holds the error that left the file in an unknown state, after
+	// which no further append is attempted.
+	broken error
 }
+
+// maxLedgerLine bounds one record, so a corrupt file cannot make replay read
+// an unbounded line into memory.
+const maxLedgerLine = 1 << 20
 
 func OpenFileLedger(path string) (*FileLedger, error) {
 	if !filepath.IsAbs(path) {
@@ -59,18 +70,40 @@ func (l *FileLedger) replay() error {
 	if _, err := l.file.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("seek ledger: %w", err)
 	}
-	scanner := bufio.NewScanner(l.file)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	line := 0
-	for scanner.Scan() {
-		line++
+	reader := bufio.NewReader(l.file)
+	var offset int64
+	for line := 1; ; line++ {
+		raw, err := reader.ReadBytes('\n')
+		if errors.Is(err, io.EOF) {
+			if len(raw) > 0 {
+				// A final line with no newline is a record whose append was
+				// interrupted. Put acknowledges only after the newline is
+				// written and synced, so this record was never reported as
+				// stored and nothing relies on it. Refusing to open over it
+				// would leave the node unable to start after any crash during
+				// an append, so it is cut off instead.
+				if err := l.truncate(offset); err != nil {
+					return fmt.Errorf("drop torn ledger tail at line %d: %w", line, err)
+				}
+			}
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read ledger: %w", err)
+		}
+		if len(raw) > maxLedgerLine {
+			return fmt.Errorf("ledger line %d exceeds %d bytes", line, maxLedgerLine)
+		}
 		var record ledgerRecord
-		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+		if err := json.Unmarshal(raw[:len(raw)-1], &record); err != nil {
+			// A complete line that does not decode is corruption, not an
+			// interrupted append, and the node must not guess past it.
 			return fmt.Errorf("decode ledger line %d: %w", line, err)
 		}
 		if record.Key == "" || record.Result.EnvelopeDigest == "" {
 			return fmt.Errorf("ledger line %d is incomplete", line)
 		}
+		offset += int64(len(raw))
 		if previous, exists := l.results[record.Key]; exists {
 			if previous.EnvelopeDigest != record.Result.EnvelopeDigest {
 				return fmt.Errorf("ledger line %d conflicts with idempotency key %q", line, record.Key)
@@ -79,11 +112,17 @@ func (l *FileLedger) replay() error {
 		}
 		l.results[record.Key] = record.Result
 	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read ledger: %w", err)
-	}
+	l.size = offset
 	_, err := l.file.Seek(0, io.SeekEnd)
 	return err
+}
+
+// truncate cuts the file back to an acknowledged length and makes that durable.
+func (l *FileLedger) truncate(size int64) error {
+	if err := l.file.Truncate(size); err != nil {
+		return err
+	}
+	return l.file.Sync()
 }
 
 func (l *FileLedger) Get(key string) (DispatchResult, bool) {
