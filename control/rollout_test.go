@@ -2,8 +2,10 @@ package control
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 const nextImage = "registry.example/app@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -312,5 +314,45 @@ func TestAdoptingKnownGoodClearsRollback(t *testing.T) {
 
 	if _, failed := RollbackTarget(goal, world); failed {
 		t.Fatal("a goal already naming the known-good image still requested rollback")
+	}
+}
+
+// With two live rollback grants, compensation must choose the one that
+// applies to the goal's current image every time, not whichever map order
+// happens to yield first.
+func TestCompensatedGoalIsDeterministic(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	world := World{ObservedAt: now, Approvals: map[string]*Approval{
+		"stale": {ID: "stale", GoalID: "web", Scope: "rollback", IssuedBy: "op", Granted: true,
+			IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour),
+			Subject: "img@sha256:old", Rollback: "img@sha256:a"},
+		"current": {ID: "current", GoalID: "web", Scope: "rollback", IssuedBy: "op", Granted: true,
+			IssuedAt: now.Add(-2 * time.Minute), ExpiresAt: now.Add(time.Hour),
+			Subject: "img@sha256:bad", Rollback: "img@sha256:good"},
+	}}
+	goal := Goal{ID: "web", Workload: WorkloadSpec{Name: "web", Image: "img@sha256:bad"}}
+	for i := 0; i < 200; i++ {
+		compensated, failed, ok := CompensatedGoal(goal, world)
+		if !ok || compensated.Workload.Image != "img@sha256:good" || failed != "img@sha256:bad" {
+			t.Fatalf("iteration %d chose %q (ok=%t)", i, compensated.Workload.Image, ok)
+		}
+	}
+}
+
+// Among grants that apply, the most recently issued wins.
+func TestCompensatedGoalPrefersNewestApplicableGrant(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	world := World{ObservedAt: now, Approvals: map[string]*Approval{}}
+	for i, target := range []string{"img@sha256:first", "img@sha256:second", "img@sha256:third"} {
+		id := fmt.Sprintf("grant-%d", i)
+		world.Approvals[id] = &Approval{ID: id, GoalID: "web", Scope: "rollback", IssuedBy: "op",
+			Granted: true, IssuedAt: now.Add(time.Duration(i) * time.Second),
+			ExpiresAt: now.Add(time.Hour), Subject: "img@sha256:bad", Rollback: target}
+	}
+	goal := Goal{ID: "web", Workload: WorkloadSpec{Name: "web", Image: "img@sha256:bad"}}
+	for i := 0; i < 50; i++ {
+		if compensated, _, _ := CompensatedGoal(goal, world); compensated.Workload.Image != "img@sha256:third" {
+			t.Fatalf("chose %q, want the newest grant's target", compensated.Workload.Image)
+		}
 	}
 }
