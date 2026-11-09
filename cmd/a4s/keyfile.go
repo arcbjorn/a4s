@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
@@ -21,7 +22,15 @@ func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	if err != nil || len(decoded) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("signing key must be a base64-encoded Ed25519 private key")
 	}
-	return ed25519.PrivateKey(decoded), nil
+	// An Ed25519 private key carries its public half after the seed. A file
+	// whose halves disagree signs with one key while claiming another, and
+	// every signature it produced would fail verification for a reason that
+	// looks like a trust problem rather than a corrupt file.
+	key := ed25519.PrivateKey(decoded)
+	if !bytes.Equal(ed25519.NewKeyFromSeed(key.Seed()), key) {
+		return nil, fmt.Errorf("signing key %s is corrupt: its public half does not match its seed", path)
+	}
+	return key, nil
 }
 
 // loadNodeKeys reads enrolled node public keys from <node-id>.pub files. A node
