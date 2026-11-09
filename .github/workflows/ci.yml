@@ -89,6 +89,19 @@ jobs:
       - name: simulate spread example
         run: go run ./cmd/a4s simulate --file examples/spread-service.json
 
+  vulnerabilities:
+    name: known vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: .go-version
+      # Fails only on a vulnerability the code can actually reach, in the
+      # module graph or the standard library of the pinned toolchain.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
   docs:
     name: documentation links
     runs-on: ubuntu-latest
