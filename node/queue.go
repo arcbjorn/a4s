@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/arcbjorn/a4s/control"
+	"github.com/arcbjorn/a4s/internal/fsutil"
 )
 
 // DefaultClaimLease bounds how long one agent may hold a task before the queue
@@ -141,40 +142,27 @@ func (q *Queue) load() error {
 // persist writes the whole queue atomically, matching how desired state is
 // stored: a partially written queue would lose or duplicate work.
 func (q *Queue) persist() error {
-	temporary := q.path + ".tmp"
-	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	// Written through fsutil so the rename itself is durable, not only the
+	// file's content.
+	err := fsutil.WriteAtomic(q.path, 0o600, func(w io.Writer) error {
+		writer := bufio.NewWriter(w)
+		for _, id := range q.order {
+			task, ok := q.tasks[id]
+			if !ok {
+				continue
+			}
+			record, err := json.Marshal(task)
+			if err != nil {
+				return fmt.Errorf("encode queue task: %w", err)
+			}
+			if _, err := writer.Write(append(record, '\n')); err != nil {
+				return err
+			}
+		}
+		return writer.Flush()
+	})
 	if err != nil {
-		return fmt.Errorf("open queue temp: %w", err)
-	}
-	writer := bufio.NewWriter(file)
-	for _, id := range q.order {
-		task, ok := q.tasks[id]
-		if !ok {
-			continue
-		}
-		record, err := json.Marshal(task)
-		if err != nil {
-			file.Close()
-			return fmt.Errorf("encode queue task: %w", err)
-		}
-		if _, err := writer.Write(append(record, '\n')); err != nil {
-			file.Close()
-			return fmt.Errorf("write queue: %w", err)
-		}
-	}
-	if err := writer.Flush(); err != nil {
-		file.Close()
-		return fmt.Errorf("flush queue: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		return fmt.Errorf("sync queue: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close queue temp: %w", err)
-	}
-	if err := os.Rename(temporary, q.path); err != nil {
-		return fmt.Errorf("replace queue: %w", err)
+		return fmt.Errorf("persist queue: %w", err)
 	}
 	return nil
 }
