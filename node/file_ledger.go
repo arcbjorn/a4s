@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/arcbjorn/a4s/internal/fsutil"
 )
 
 type ledgerRecord struct {
@@ -38,6 +40,12 @@ func OpenFileLedger(path string) (*FileLedger, error) {
 	if err := file.Chmod(0o600); err != nil {
 		file.Close()
 		return nil, fmt.Errorf("secure ledger permissions: %w", err)
+	}
+	// The directory entry is synced so a ledger created just before a crash
+	// still exists afterward.
+	if err := fsutil.SyncDir(filepath.Dir(path)); err != nil {
+		file.Close()
+		return nil, err
 	}
 	ledger := &FileLedger{file: file, results: make(map[string]DispatchResult)}
 	if err := ledger.replay(); err != nil {
