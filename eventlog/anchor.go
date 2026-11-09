@@ -46,8 +46,14 @@ func OpenAnchor(path string) (*Anchor, error) {
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("anchor path must be absolute")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return nil, fmt.Errorf("create anchor directory: %w", err)
+	// The directory is never created here. The anchor usually lives on storage
+	// shared with another machine, and a missing directory is exactly what an
+	// unmounted share or a mistyped path looks like. Creating it would quietly
+	// replace the real witness with an empty local one that contradicts
+	// nothing, which is the failure the anchor exists to prevent.
+	if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("anchor directory %s does not exist; create it, or mount the storage it lives on",
+			filepath.Dir(path))
 	}
 	anchor := &Anchor{path: path}
 	handle, err := os.Open(path)
