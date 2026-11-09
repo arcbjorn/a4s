@@ -153,6 +153,15 @@ func (s *Standby) Promote(agents ...control.Agent) (*Server, error) {
 	}
 	s.anchor = anchor
 	witnessed := anchor.Last()
+	// An anchor with no witness proves nothing about how far the primary got.
+	// It is what a fresh file on an unmounted share or a mistyped path looks
+	// like, and accepting it would let an empty replica take over and then
+	// witness its own head as though it were current.
+	if witnessed.Hash == "" {
+		return nil, fmt.Errorf(
+			"standby refuses to promote: the anchor at %s holds no witnessed head, so nothing proves this replica is current",
+			s.config.Anchor)
+	}
 	head := s.log.Head()
 	if head.Sequence < witnessed.Sequence {
 		return nil, fmt.Errorf(
