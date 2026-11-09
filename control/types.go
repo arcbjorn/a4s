@@ -5,7 +5,10 @@
 // boundary of a4s.
 package control
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 const APIVersion = "a4s.io/v1alpha1"
 
@@ -156,13 +159,30 @@ func (b Budget) Exhausts(ceiling Budget) bool {
 }
 
 // Add accumulates budget, which is how per-instance ceilings sum into what a
-// node has committed.
+// node has committed and how a node meters what an agent has spent.
+//
+// Each dimension saturates rather than wrapping. Spend deltas come from an
+// untrusted agent runtime, and a wrapped sum turns a huge reported spend into a
+// negative one, which un-exhausts the agent it should have stopped.
 func (b Budget) Add(other Budget) Budget {
 	return Budget{
-		Tokens:      b.Tokens + other.Tokens,
-		CostMillis:  b.CostMillis + other.CostMillis,
-		WallSeconds: b.WallSeconds + other.WallSeconds,
-		ToolCalls:   b.ToolCalls + other.ToolCalls,
+		Tokens:      saturatingAdd(b.Tokens, other.Tokens),
+		CostMillis:  saturatingAdd(b.CostMillis, other.CostMillis),
+		WallSeconds: saturatingAdd(b.WallSeconds, other.WallSeconds),
+		ToolCalls:   saturatingAdd(b.ToolCalls, other.ToolCalls),
+	}
+}
+
+// saturatingAdd adds two ints, clamping at the type's bounds instead of
+// overflowing.
+func saturatingAdd(a, b int) int {
+	switch {
+	case b > 0 && a > math.MaxInt-b:
+		return math.MaxInt
+	case b < 0 && a < math.MinInt-b:
+		return math.MinInt
+	default:
+		return a + b
 	}
 }
 
