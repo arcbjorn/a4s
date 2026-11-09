@@ -274,6 +274,15 @@ func (e *Engine) executeProposal(goal Goal, proposal Proposal, leaseID string) (
 			}
 			return progress, err
 		}
+		// The answer must be one this action can produce, about the target it
+		// named. Checked before anything is projected: an executor that could
+		// reply to a pull with an approval would be minting authority.
+		if err := AdmitActionEvidence(action, evidence); err != nil {
+			if recordErr := e.record(Event{Type: EventGoalBlocked, Actor: "policy-kernel", GoalID: goal.ID, ProposalID: proposal.ID, ActionID: action.ID, Target: action.Target, Kind: string(action.Kind), Message: err.Error()}); recordErr != nil {
+				return progress, fmt.Errorf("refuse evidence: %v; persist failure: %w", err, recordErr)
+			}
+			return progress, fmt.Errorf("refuse evidence for action %q: %w", action.ID, err)
+		}
 		// Declare what readiness means for a new allocation before any
 		// probe runs, so readiness is measured rather than assumed.
 		e.registerProbeTarget(goal, action)
@@ -413,11 +422,13 @@ func (e *Engine) refreshReadiness(goal Goal) error {
 		e.ensureProbeTarget(goal, id)
 		for _, prober := range e.Probers {
 			before := e.observedWorld()
-			evidence, ok := prober.Probe(before, Check{
-				Kind: check.Kind, Target: id, Want: check.Want,
-			})
+			probe := Check{Kind: check.Kind, Target: id, Want: check.Want}
+			evidence, ok := prober.Probe(before, probe)
 			if !ok {
 				continue
+			}
+			if err := AdmitProbeEvidence(probe, evidence); err != nil {
+				return fmt.Errorf("refuse readiness for %q: %w", id, err)
 			}
 			// Decided before touching anything, so an observation that changes
 			// nothing leaves both the world and the log alone.
@@ -451,6 +462,9 @@ func (e *Engine) observe(goal Goal, proposal Proposal) error {
 			evidence, ok := prober.Probe(e.observedWorld(), check)
 			if !ok {
 				continue
+			}
+			if err := AdmitProbeEvidence(check, evidence); err != nil {
+				return fmt.Errorf("refuse probe evidence for %q: %w", check.Target, err)
 			}
 			if err := e.World.Project(evidence); err != nil {
 				return fmt.Errorf("project probe evidence for %q: %w", check.Target, err)
