@@ -196,11 +196,16 @@ func (c *cli) runServer(args []string) error {
 	}
 	defer listener.Close()
 
-	ctx, cancel := signalContext()
-	defer cancel()
+	signals, stopSignals := signalContext()
+	defer stopSignals()
+	// A component that stops unexpectedly ends the whole daemon with its
+	// cause, rather than leaving a control plane that reconciles but accepts
+	// no nodes, or serves no API, and looks healthy to its service manager.
+	ctx, fail := context.WithCancelCause(signals)
+	defer fail(nil)
 	go func() {
 		if err := listener.Serve(ctx); err != nil {
-			logger.Error("listener stopped", slog.Any("error", err))
+			fail(fmt.Errorf("node listener stopped: %w", err))
 		}
 	}()
 	logger.Info("accepting enrolled nodes",
@@ -232,7 +237,7 @@ func (c *cli) runServer(args []string) error {
 			logger.Info("serving operator API", slog.String("addr", apiListener.Addr().String()))
 			if err := httpServer.Serve(apiListener); err != nil &&
 				!errors.Is(err, http.ErrServerClosed) {
-				logger.Error("operator API stopped", slog.Any("error", err))
+				fail(fmt.Errorf("operator API stopped: %w", err))
 			}
 		}()
 		defer func() {
@@ -271,7 +276,20 @@ func (c *cli) runServer(args []string) error {
 	observer := a4snode.NewRegistryObserver(registry, *keyID, signingKey)
 	observer.NodeKeys = nodeKeys
 	observer.RequireAttestation = *requireAttestation
-	return reconcileLoop(ctx, logger, instance, executor, observer, registry, metrics)
+	if err := reconcileLoop(ctx, logger, instance, executor, observer, registry, metrics); err != nil {
+		return err
+	}
+	return shutdownCause(ctx)
+}
+
+// shutdownCause reports why a daemon's context ended: nil for an operator's
+// interrupt or SIGTERM, or the failure of the component that ended it.
+func shutdownCause(ctx context.Context) error {
+	cause := context.Cause(ctx)
+	if cause == nil || errors.Is(cause, context.Canceled) {
+		return nil
+	}
+	return cause
 }
 
 // watchGitSource tracks a repository, logging what each sync applied.
