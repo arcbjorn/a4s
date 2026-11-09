@@ -205,8 +205,15 @@ stable version and no compatibility guarantee, so everything below is under
 - The full round trip verified against live containerd on linux/amd64 and
   linux/arm64, covering allocation networking, the gateway, and durable volumes.
 - CI: race tests, vet, gofmt, `go mod tidy`, Linux and arm64 cross-builds, the
-  example simulation, and documentation link checking. Fuzz seed corpora run with
-  the tests; campaigns are run locally rather than on every push.
+  example simulation, `govulncheck`, and documentation link checking. Every job
+  reads the toolchain from `.go-version`, which pins a patched release. Fuzz seed
+  corpora run with the tests; campaigns are run locally rather than on every
+  push.
+- The CLI composition root is tested. Each command is a method on a `cli` value
+  carrying its streams, so tests drive the real commands with buffers, including
+  the remote commands against a real server behind its operator API.
+- `internal/fsutil` is the one implementation of atomic replace, exclusive
+  create, and directory sync, used by the CLI, the node, and the event log.
 - Apache-2.0 license, build-time version stamping, and a release script
   producing checksummed binaries for four platforms.
 
