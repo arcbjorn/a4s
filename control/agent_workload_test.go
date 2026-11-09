@@ -210,7 +210,7 @@ func TestOrdinaryWorkloadMayNotReserveBudget(t *testing.T) {
 		ID: "p1", AgentID: "placement-agent", GoalID: goal.ID,
 		BasedOnRevision: world.Revision,
 		Actions: []Action{{
-			ID: "create", Kind: ActionCreateAllocation, Target: "web-0",
+			ID: "create", Kind: ActionCreateAllocation, Target: "app-0",
 			Workload: goal.Workload.Name, Node: "base", Image: testImage,
 			Resources: goal.Workload.Resources,
 			Budget:    Budget{Tokens: 10, CostMillis: 10, WallSeconds: 10, ToolCalls: 10},
