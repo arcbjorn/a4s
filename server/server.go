@@ -306,6 +306,9 @@ func (s *Server) Approve(signed control.SignedApproval) (control.ApprovalGrant, 
 		return control.ApprovalGrant{}, fmt.Errorf(
 			"goal %q has not been submitted; approve it after submitting", grant.GoalID)
 	}
+	if err := control.CheckRegrant(s.projector.World().Approvals[grant.ID], grant); err != nil {
+		return control.ApprovalGrant{}, err
+	}
 	if err := s.recordDecision(grant, grant.Evidence(), "approval granted"); err != nil {
 		return control.ApprovalGrant{}, err
 	}
@@ -382,7 +385,8 @@ func (s *Server) Revoke(signed control.SignedApproval) error {
 	}
 	return s.recordDecision(grant, control.Evidence{
 		Kind: control.EvidenceApprovalRevoked, Target: grant.ID,
-		Source: "operator:" + grant.IssuedBy, ObservedAt: time.Now().UTC(),
+		Source:     "operator:" + grant.IssuedBy,
+		ObservedAt: control.RevocationTime(grant, time.Now()),
 		Observed: map[string]string{
 			"goal": grant.GoalID, "scope": grant.Scope,
 			"revoked_by": grant.IssuedBy, "reason": grant.Reason,
