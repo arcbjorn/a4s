@@ -180,11 +180,22 @@ func (a *Anthropic) endpoint() string {
 	return anthropicEndpoint
 }
 
+// client returns the HTTP client with redirects refused, whatever the caller
+// configured.
+//
+// The API key travels in a custom header, and Go's client strips only
+// Authorization and cookies when following a redirect. Following one would hand
+// the key to whatever host the redirect names, so a redirect is returned as the
+// response instead, and reported as the non-200 status it is.
 func (a *Anthropic) client() *http.Client {
+	client := http.Client{Timeout: DefaultTimeout}
 	if a.Client != nil {
-		return a.Client
+		client = *a.Client
 	}
-	return &http.Client{Timeout: DefaultTimeout}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &client
 }
 
 // verify Anthropic satisfies the interface the diagnoser needs.
