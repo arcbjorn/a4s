@@ -109,3 +109,29 @@ func TestStaleSpendCannotUnexhaustAnAgent(t *testing.T) {
 		t.Fatalf("spent = %+v, want the larger reading in each dimension %+v", spent, want)
 	}
 }
+
+// Deleting an agent allocation releases the node budget it reserved, exactly
+// as simulation does, or a node's agent capacity drains with every deletion.
+func TestDeleteReleasesAgentBudget(t *testing.T) {
+	world := evidenceWorld()
+	for _, evidence := range []Evidence{
+		{Kind: EvidenceAllocationCreated, Target: "triage-0", Observed: map[string]string{
+			"node": "base", "workload": "triage", "image": testImage, "replica": "0",
+			"cpu_millis": "100", "memory_mb": "128",
+			"tokens": "10", "cost_millis": "10", "wall_seconds": "10", "tool_calls": "10"}},
+		{Kind: EvidenceAllocationDeleted, Target: "triage-0", Observed: map[string]string{"deleted": "true"}},
+	} {
+		next, err := Project(world, evidence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		world = next
+	}
+	node := world.Nodes["base"]
+	if !node.BudgetUsed.IsZero() {
+		t.Fatalf("deletion leaked agent budget %+v", node.BudgetUsed)
+	}
+	if node.Used != (Resources{}) {
+		t.Fatalf("deletion leaked resources %+v", node.Used)
+	}
+}
