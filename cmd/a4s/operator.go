@@ -3,9 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"encoding/json"
-	"flag"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -20,8 +18,8 @@ import (
 // The signing key is read from a file rather than an argument, for the same
 // reason secret material is: a command line is visible in shell history and in
 // process listings on a shared host.
-func approve(args []string) error {
-	flags := flag.NewFlagSet("approve", flag.ContinueOnError)
+func (c *cli) approve(args []string) error {
+	flags := c.flagSet("approve")
 	eventLog := flags.String("event-log", "", "absolute path to the durable event log")
 	goalID := flags.String("goal", "", "goal the approval authorizes")
 	scope := flags.String("scope", "", "decision to authorize")
@@ -41,7 +39,7 @@ func approve(args []string) error {
 		return err
 	}
 	if *listScopes {
-		return printScopes()
+		return c.printScopes()
 	}
 	if *eventLog == "" || *goalID == "" || *scope == "" {
 		return fmt.Errorf("event-log, goal, and scope are required")
@@ -90,7 +88,7 @@ func approve(args []string) error {
 		}
 		grant.Subject = failed
 		grant.Rollback = target
-		fmt.Printf("rolling back %s\n  from %s\n    to %s\n", *workload, failed, target)
+		fmt.Fprintf(c.stdout, "rolling back %s\n  from %s\n    to %s\n", *workload, failed, target)
 	}
 	signed, err := control.SignApproval(grant, *keyID, key)
 	if err != nil {
@@ -126,7 +124,7 @@ func approve(args []string) error {
 			"approval revoked"); err != nil {
 			return err
 		}
-		fmt.Printf("revoked %s (%s for %s)\n", verified.ID, verified.Scope, verified.GoalID)
+		fmt.Fprintf(c.stdout, "revoked %s (%s for %s)\n", verified.ID, verified.Scope, verified.GoalID)
 		return nil
 	}
 
@@ -134,8 +132,8 @@ func approve(args []string) error {
 		"approval granted"); err != nil {
 		return err
 	}
-	fmt.Printf("approved %s: %s for goal %s\n", verified.ID, verified.Scope, verified.GoalID)
-	fmt.Printf("issued by %s, expires %s\n",
+	fmt.Fprintf(c.stdout, "approved %s: %s for goal %s\n", verified.ID, verified.Scope, verified.GoalID)
+	fmt.Fprintf(c.stdout, "issued by %s, expires %s\n",
 		verified.IssuedBy, verified.ExpiresAt.Format(time.RFC3339))
 	return nil
 }
@@ -161,14 +159,14 @@ func recordOperatorDecision(store *eventlog.File, projector *control.DurableProj
 	return projector.Project(evidence)
 }
 
-func printScopes() error {
+func (c *cli) printScopes() error {
 	names := make([]string, 0, len(control.ApprovalScopes))
 	for scope := range control.ApprovalScopes {
 		names = append(names, scope)
 	}
 	sort.Strings(names)
 	for _, scope := range names {
-		fmt.Printf("  %-22s %s\n", scope, control.ApprovalScopes[scope])
+		fmt.Fprintf(c.stdout, "  %-22s %s\n", scope, control.ApprovalScopes[scope])
 	}
 	return nil
 }
@@ -178,8 +176,8 @@ func printScopes() error {
 // The unfiltered log stops being readable on the first busy day, and an
 // operator who cannot find the relevant entries will stop consulting it, which
 // defeats the point of keeping durable history at all.
-func history(args []string) error {
-	flags := flag.NewFlagSet("history", flag.ContinueOnError)
+func (c *cli) history(args []string) error {
+	flags := c.flagSet("history")
 	eventLog := flags.String("event-log", "", "absolute path to the durable event log")
 	goalID := flags.String("goal", "", "only events for this goal")
 	target := flags.String("target", "", "only events naming this target")
@@ -216,10 +214,10 @@ func history(args []string) error {
 	matched := query.Apply(events)
 
 	if *jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(matched)
+		return json.NewEncoder(c.stdout).Encode(matched)
 	}
 	if len(matched) == 0 {
-		fmt.Println("no matching events")
+		fmt.Fprintln(c.stdout, "no matching events")
 		return nil
 	}
 	for _, event := range matched {
@@ -229,7 +227,7 @@ func history(args []string) error {
 		if event.Target != "" {
 			line += fmt.Sprintf(" [%s]", event.Target)
 		}
-		fmt.Println(strings.TrimRight(line, " "))
+		fmt.Fprintln(c.stdout, strings.TrimRight(line, " "))
 	}
 	return nil
 }

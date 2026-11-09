@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
-	"os"
 
 	"github.com/arcbjorn/a4s/control"
 	"github.com/arcbjorn/a4s/eventlog"
@@ -15,8 +13,8 @@ import (
 // explain reconstructs why a target is in its current state from durable
 // history. It is read-only: it opens the log, walks the causal chain, and
 // mutates nothing.
-func explain(args []string) error {
-	flags := flag.NewFlagSet("explain", flag.ContinueOnError)
+func (c *cli) explain(args []string) error {
+	flags := c.flagSet("explain")
 	eventLog := flags.String("event-log", "", "absolute path to the durable event log")
 	target := flags.String("target", "", "allocation id or route host to explain")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
@@ -32,9 +30,9 @@ func explain(args []string) error {
 	}
 	explanation := control.Explain(events, *target)
 	if *jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(explanation)
+		return json.NewEncoder(c.stdout).Encode(explanation)
 	}
-	fmt.Print(explanation)
+	fmt.Fprint(c.stdout, explanation)
 	if !explanation.Found {
 		return fmt.Errorf("no history for %q", *target)
 	}
@@ -42,8 +40,8 @@ func explain(args []string) error {
 }
 
 // plan reports what reconciliation would do without touching anything.
-func plan(args []string) error {
-	flags := flag.NewFlagSet("plan", flag.ContinueOnError)
+func (c *cli) plan(args []string) error {
+	flags := c.flagSet("plan")
 	file := flags.String("file", "scenario.json", "goal and observed world scenario")
 	eventLog := flags.String("event-log", "", "optional event log to rebuild the world from")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
@@ -76,16 +74,16 @@ func plan(args []string) error {
 		control.RemediationAgent{}, control.RolloutAgent{},
 		control.PlacementAgent{}, control.NetworkAgent{})
 	if *jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(result)
+		return json.NewEncoder(c.stdout).Encode(result)
 	}
-	fmt.Print(result)
+	fmt.Fprint(c.stdout, result)
 	return nil
 }
 
 // diagnose explains why a goal is not converging. The diagnoser reads history
 // and writes text; it holds no capability grants and proposes no actions.
-func diagnose(args []string) error {
-	flags := flag.NewFlagSet("diagnose", flag.ContinueOnError)
+func (c *cli) diagnose(args []string) error {
+	flags := c.flagSet("diagnose")
 	eventLog := flags.String("event-log", "", "absolute path to the durable event log")
 	goalID := flags.String("goal", "", "goal id to diagnose")
 	file := flags.String("file", "", "optional scenario supplying node inventory")
@@ -129,9 +127,9 @@ func diagnose(args []string) error {
 	if *deterministic {
 		result := control.LogDiagnoser{}.Diagnose(*goalID, events, world)
 		if *jsonOutput {
-			return json.NewEncoder(os.Stdout).Encode(result)
+			return json.NewEncoder(c.stdout).Encode(result)
 		}
-		fmt.Print(result)
+		fmt.Fprint(c.stdout, result)
 		return nil
 	}
 
@@ -153,13 +151,13 @@ func diagnose(args []string) error {
 	audited := diagnoser.ExplainAudited(context.Background(), goal, world, events)
 
 	if *jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(audited)
+		return json.NewEncoder(c.stdout).Encode(audited)
 	}
-	fmt.Print(audited.Diagnosis)
+	fmt.Fprint(c.stdout, audited.Diagnosis)
 	// Provenance is printed rather than optional: an explanation whose origin
 	// is unknown cannot be audited, and a thin answer is only explicable once
 	// an operator can see it came from a fallback.
-	fmt.Printf("\nsource: %s\n", audited.Provenance)
+	fmt.Fprintf(c.stdout, "\nsource: %s\n", audited.Provenance)
 	return nil
 }
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,8 +13,8 @@ import (
 //
 // Material is read from a file rather than an argument, because a command line
 // is visible in shell history and process listings. It is never echoed back.
-func seal(args []string) error {
-	flags := flag.NewFlagSet("seal", flag.ContinueOnError)
+func (c *cli) seal(args []string) error {
+	flags := c.flagSet("seal")
 	name := flags.String("secret", "", "secret name")
 	version := flags.String("version", "", "secret version")
 	nodeID := flags.String("node", "", "node this secret is sealed for")
@@ -55,6 +54,6 @@ func seal(args []string) error {
 		return fmt.Errorf("write sealed secret: %w", err)
 	}
 	// Report only the reference. The material is never echoed.
-	fmt.Printf("sealed %s version %s for node %s: %s\n", *name, *version, *nodeID, path)
+	fmt.Fprintf(c.stdout, "sealed %s version %s for node %s: %s\n", *name, *version, *nodeID, path)
 	return nil
 }

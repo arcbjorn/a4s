@@ -2,9 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
-	"os"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -100,8 +98,8 @@ func (b BuildInfo) String() string {
 }
 
 // showVersion prints build information.
-func showVersion(args []string) error {
-	flags := flag.NewFlagSet("version", flag.ContinueOnError)
+func (c *cli) showVersion(args []string) error {
+	flags := c.flagSet("version")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 	short := flags.Bool("short", false, "print only the version string")
 	if err := flags.Parse(args); err != nil {
@@ -111,11 +109,11 @@ func showVersion(args []string) error {
 	info := buildInfo()
 	switch {
 	case *jsonOutput:
-		return json.NewEncoder(os.Stdout).Encode(info)
+		return json.NewEncoder(c.stdout).Encode(info)
 	case *short:
-		fmt.Println(info.Version)
+		fmt.Fprintln(c.stdout, info.Version)
 	default:
-		fmt.Println(info)
+		fmt.Fprintln(c.stdout, info)
 	}
 	return nil
 }

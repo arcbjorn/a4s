@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -36,8 +35,8 @@ const DefaultFollowInterval = 5 * time.Second
 // on the replica's log and anchor, which runs the same recovery, verification,
 // and anchor check as any other start. A promotion-only shortcut would be a
 // second path nothing else exercises.
-func standby(args []string) error {
-	flags := flag.NewFlagSet("standby", flag.ContinueOnError)
+func (c *cli) standby(args []string) error {
+	flags := c.flagSet("standby")
 	connection := registerClientFlags(flags)
 	eventLog := flags.String("event-log", "", "absolute path to this replica's event log")
 	anchorPath := flags.String("anchor", "",

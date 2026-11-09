@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,8 +21,8 @@ import (
 // runServer starts the control plane against a durable event log and reports
 // the world it recovered. Recovery is the normal startup path, so the same code
 // runs whether the log is empty or holds a full history.
-func runServer(args []string) error {
-	flags := flag.NewFlagSet("server", flag.ContinueOnError)
+func (c *cli) runServer(args []string) error {
+	flags := c.flagSet("server")
 	eventLog := flags.String("event-log", "", "absolute path to the durable event log")
 	file := flags.String("file", "", "optional scenario supplying node inventory and approvals")
 	statusOnly := flags.Bool("status", false, "report recovered state and exit")
@@ -145,7 +144,7 @@ func runServer(args []string) error {
 	if *statusOnly {
 		// --status is an operator query, so its answer goes to stdout where it
 		// can be read or piped, not into the log stream.
-		fmt.Printf("recovered revision %d from %d events: %d nodes, %d allocations, %d routes, %d goals\n",
+		fmt.Fprintf(c.stdout, "recovered revision %d from %d events: %d nodes, %d allocations, %d routes, %d goals\n",
 			status.Revision, status.Events, status.Nodes, status.Allocations, status.Routes, status.Goals)
 		return nil
 	}

@@ -2,9 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
-	"os"
 
 	"github.com/arcbjorn/a4s/eventlog"
 )
@@ -15,8 +13,8 @@ import (
 // derived from it. Backing it up is therefore the whole disaster-recovery
 // story, and verifying the chain during the copy is what keeps a recovery point
 // from being a guess.
-func backup(args []string) error {
-	flags := flag.NewFlagSet("backup", flag.ContinueOnError)
+func (c *cli) backup(args []string) error {
+	flags := c.flagSet("backup")
 	eventLog := flags.String("event-log", "", "absolute path to the durable event log")
 	out := flags.String("out", "", "absolute path to write the backup to")
 	verifyOnly := flags.String("verify", "", "verify an existing backup and exit")
@@ -30,7 +28,7 @@ func backup(args []string) error {
 		if err != nil {
 			return err
 		}
-		return reportManifest(manifest, *jsonOutput, "verified")
+		return c.reportManifest(manifest, *jsonOutput, "verified")
 	}
 
 	if *eventLog == "" || *out == "" {
@@ -46,7 +44,7 @@ func backup(args []string) error {
 	if err != nil {
 		return err
 	}
-	return reportManifest(manifest, *jsonOutput, "wrote")
+	return c.reportManifest(manifest, *jsonOutput, "wrote")
 }
 
 // restore installs a verified backup.
@@ -54,8 +52,8 @@ func backup(args []string) error {
 // Verification happens before the destination is touched, so an operator
 // recovering from a bad backup finds their existing log intact rather than
 // overwritten by something unusable.
-func restore(args []string) error {
-	flags := flag.NewFlagSet("restore", flag.ContinueOnError)
+func (c *cli) restore(args []string) error {
+	flags := c.flagSet("restore")
 	from := flags.String("from", "", "absolute path to the backup archive")
 	eventLog := flags.String("event-log", "", "absolute path to restore the log to")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
@@ -78,18 +76,18 @@ func restore(args []string) error {
 	}
 	defer store.Close()
 
-	return reportManifest(manifest, *jsonOutput, "restored")
+	return c.reportManifest(manifest, *jsonOutput, "restored")
 }
 
-func reportManifest(manifest eventlog.BackupManifest, asJSON bool, verb string) error {
+func (c *cli) reportManifest(manifest eventlog.BackupManifest, asJSON bool, verb string) error {
 	if asJSON {
-		return json.NewEncoder(os.Stdout).Encode(manifest)
+		return json.NewEncoder(c.stdout).Encode(manifest)
 	}
-	fmt.Printf("%s backup: %d records, head %d, %d bytes, taken %s\n",
+	fmt.Fprintf(c.stdout, "%s backup: %d records, head %d, %d bytes, taken %s\n",
 		verb, manifest.Records, manifest.HeadSequence, manifest.Bytes,
 		manifest.TakenAt.Format("2006-01-02 15:04:05 UTC"))
 	if manifest.HeadHash != "" {
-		fmt.Printf("head hash: %s\n", manifest.HeadHash)
+		fmt.Fprintf(c.stdout, "head hash: %s\n", manifest.HeadHash)
 	}
 	return nil
 }

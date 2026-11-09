@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"net/http"
 	"strings"
@@ -20,8 +19,8 @@ import (
 // It reports what is still running on the node rather than only confirming the
 // cordon, because "it is out of the rotation" is not the question an operator
 // asks next. They ask what still has to move, and which of it holds data.
-func cordon(args []string) error {
-	flags := flag.NewFlagSet("cordon", flag.ContinueOnError)
+func (c *cli) cordon(args []string) error {
+	flags := c.flagSet("cordon")
 	connection := registerClientFlags(flags)
 	node := flags.String("node", "", "node to take out of service")
 	reason := flags.String("reason", "", "why the node is being cordoned")
@@ -42,7 +41,7 @@ func cordon(args []string) error {
 		if _, err := client.do(http.MethodPost, "/v1/nodes/"+*node+"/uncordon", nil); err != nil {
 			return err
 		}
-		fmt.Printf("node %s is schedulable again\n", *node)
+		fmt.Fprintf(c.stdout, "node %s is schedulable again\n", *node)
 		return nil
 	}
 
@@ -55,7 +54,7 @@ func cordon(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		fmt.Print(string(answer))
+		fmt.Fprint(c.stdout, string(answer))
 		return nil
 	}
 
@@ -63,17 +62,17 @@ func cordon(args []string) error {
 	if err := json.Unmarshal(answer, &evacuation); err != nil {
 		return fmt.Errorf("decode evacuation: %w", err)
 	}
-	fmt.Printf("node %s will accept no new allocations\n", *node)
+	fmt.Fprintf(c.stdout, "node %s will accept no new allocations\n", *node)
 	if evacuation.Empty() {
-		fmt.Println("nothing is running on it; it is drained")
+		fmt.Fprintln(c.stdout, "nothing is running on it; it is drained")
 		return nil
 	}
-	fmt.Printf("still running: %s\n", strings.Join(evacuation.Allocations, ", "))
+	fmt.Fprintf(c.stdout, "still running: %s\n", strings.Join(evacuation.Allocations, ", "))
 	if len(evacuation.Stateful) > 0 {
 		// Named separately because these are the ones an operator has to decide
 		// about. Everything else the remediation agent will move on its own.
-		fmt.Printf("holding durable data: %s\n", strings.Join(evacuation.Stateful, ", "))
-		fmt.Println("these need a destroy-stateful approval before they can be moved")
+		fmt.Fprintf(c.stdout, "holding durable data: %s\n", strings.Join(evacuation.Stateful, ", "))
+		fmt.Fprintln(c.stdout, "these need a destroy-stateful approval before they can be moved")
 	}
 	return nil
 }

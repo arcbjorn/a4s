@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"flag"
 	"fmt"
 	"log/slog"
-	"os"
 	"time"
 
 	"github.com/arcbjorn/a4s/control"
@@ -14,8 +12,8 @@ import (
 	"github.com/arcbjorn/a4s/obs"
 )
 
-func runNode(args []string) error {
-	flags := flag.NewFlagSet("node", flag.ContinueOnError)
+func (c *cli) runNode(args []string) error {
+	flags := c.flagSet("node")
 	nodeID := flags.String("node-id", "", "identity of this node")
 	keyID := flags.String("key-id", "", "trusted server signing key id")
 	publicKeyPath := flags.String("public-key", "", "path to base64 Ed25519 public key")
@@ -315,7 +313,7 @@ func runNode(args []string) error {
 	if *serverAddress == "" {
 		// Without a server address the node reads a local stream, which remains
 		// useful for offline testing against a real containerd.
-		return a4snode.Serve(ctx, &dispatcher, os.Stdin, os.Stdout)
+		return a4snode.Serve(ctx, &dispatcher, c.stdin, c.stdout)
 	}
 	if identityKey == nil {
 		return fmt.Errorf("identity-key is required to connect to a server")

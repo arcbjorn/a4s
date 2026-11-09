@@ -5,7 +5,6 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,26 +19,26 @@ import (
 // signing must keep verifying until every envelope it signed has expired and
 // every node has seen the new keyset; only then is retiring it safe. Collapsing
 // that into a single command would make the unsafe path the easy one.
-func keys(args []string) error {
+func (c *cli) keys(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("keys requires a subcommand: init, rotate, retire, or list")
 	}
 	switch args[0] {
 	case "init":
-		return keysInit(args[1:])
+		return c.keysInit(args[1:])
 	case "rotate":
-		return keysRotate(args[1:])
+		return c.keysRotate(args[1:])
 	case "retire":
-		return keysRetire(args[1:])
+		return c.keysRetire(args[1:])
 	case "list":
-		return keysList(args[1:])
+		return c.keysList(args[1:])
 	default:
 		return fmt.Errorf("unknown keys subcommand %q", args[0])
 	}
 }
 
-func keysInit(args []string) error {
-	flags := flag.NewFlagSet("keys init", flag.ContinueOnError)
+func (c *cli) keysInit(args []string) error {
+	flags := c.flagSet("keys init")
 	keysetPath := flags.String("keyset", "", "path to write the controller keyset to")
 	keyID := flags.String("key-id", "control-1", "identifier for the first signing key")
 	out := flags.String("out", "", "path to write the new private signing key to")
@@ -66,13 +65,13 @@ func keysInit(args []string) error {
 	if err := writeKeySet(*keysetPath, set); err != nil {
 		return err
 	}
-	fmt.Printf("initialized keyset %s with active key %s\n", *keysetPath, *keyID)
-	fmt.Printf("private key written to %s\n", *out)
+	fmt.Fprintf(c.stdout, "initialized keyset %s with active key %s\n", *keysetPath, *keyID)
+	fmt.Fprintf(c.stdout, "private key written to %s\n", *out)
 	return nil
 }
 
-func keysRotate(args []string) error {
-	flags := flag.NewFlagSet("keys rotate", flag.ContinueOnError)
+func (c *cli) keysRotate(args []string) error {
+	flags := c.flagSet("keys rotate")
 	keysetPath := flags.String("keyset", "", "path to the controller keyset")
 	keyID := flags.String("key-id", "", "identifier for the new signing key")
 	out := flags.String("out", "", "path to write the new private signing key to")
@@ -103,16 +102,16 @@ func keysRotate(args []string) error {
 		return err
 	}
 
-	fmt.Printf("rotated: %s is now active, %s still verifies\n", *keyID, previous.KeyID)
-	fmt.Printf("private key written to %s\n", *out)
-	fmt.Printf("\nDistribute the keyset to every node, restart the server with the new\n")
-	fmt.Printf("signing key, and only then run:\n  a4s keys retire --keyset %s --key-id %s\n",
+	fmt.Fprintf(c.stdout, "rotated: %s is now active, %s still verifies\n", *keyID, previous.KeyID)
+	fmt.Fprintf(c.stdout, "private key written to %s\n", *out)
+	fmt.Fprintf(c.stdout, "\nDistribute the keyset to every node, restart the server with the new\n")
+	fmt.Fprintf(c.stdout, "signing key, and only then run:\n  a4s keys retire --keyset %s --key-id %s\n",
 		*keysetPath, previous.KeyID)
 	return nil
 }
 
-func keysRetire(args []string) error {
-	flags := flag.NewFlagSet("keys retire", flag.ContinueOnError)
+func (c *cli) keysRetire(args []string) error {
+	flags := c.flagSet("keys retire")
 	keysetPath := flags.String("keyset", "", "path to the controller keyset")
 	keyID := flags.String("key-id", "", "key to stop trusting")
 	if err := flags.Parse(args); err != nil {
@@ -133,13 +132,13 @@ func keysRetire(args []string) error {
 	if err := writeKeySet(*keysetPath, retired); err != nil {
 		return err
 	}
-	fmt.Printf("retired %s; envelopes signed by it are no longer accepted\n", *keyID)
-	fmt.Printf("distribute the updated keyset to every node\n")
+	fmt.Fprintf(c.stdout, "retired %s; envelopes signed by it are no longer accepted\n", *keyID)
+	fmt.Fprintf(c.stdout, "distribute the updated keyset to every node\n")
 	return nil
 }
 
-func keysList(args []string) error {
-	flags := flag.NewFlagSet("keys list", flag.ContinueOnError)
+func (c *cli) keysList(args []string) error {
+	flags := c.flagSet("keys list")
 	keysetPath := flags.String("keyset", "", "path to the controller keyset")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 	if err := flags.Parse(args); err != nil {
@@ -153,9 +152,9 @@ func keysList(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(set)
+		return json.NewEncoder(c.stdout).Encode(set)
 	}
-	fmt.Printf("%-16s  %-9s  %-20s  %s\n", "KEY ID", "STATE", "CREATED", "NOTE")
+	fmt.Fprintf(c.stdout, "%-16s  %-9s  %-20s  %s\n", "KEY ID", "STATE", "CREATED", "NOTE")
 	for _, key := range set.Sorted() {
 		note := ""
 		switch key.State {
@@ -166,7 +165,7 @@ func keysList(args []string) error {
 		case control.KeyActive:
 			note = "signs new envelopes"
 		}
-		fmt.Printf("%-16s  %-9s  %-20s  %s\n", key.KeyID, key.State,
+		fmt.Fprintf(c.stdout, "%-16s  %-9s  %-20s  %s\n", key.KeyID, key.State,
 			key.CreatedAt.Format("2006-01-02 15:04:05"), note)
 	}
 	return nil
@@ -226,8 +225,8 @@ func nowUTC() time.Time { return time.Now().UTC() }
 // keygen writes an Ed25519 keypair to disk. Keys are written to files with
 // restrictive permissions and never printed, because a private key echoed to a
 // terminal ends up in scrollback and shell history.
-func keygen(args []string) error {
-	flags := flag.NewFlagSet("keygen", flag.ContinueOnError)
+func (c *cli) keygen(args []string) error {
+	flags := c.flagSet("keygen")
 	out := flags.String("out", "", "path for the private key; the public key gets a .pub suffix")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -250,6 +249,6 @@ func keygen(args []string) error {
 	if err := os.WriteFile(*out+".pub", []byte(publicText+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write public key: %w", err)
 	}
-	fmt.Printf("wrote %s and %s.pub\n", *out, *out)
+	fmt.Fprintf(c.stdout, "wrote %s and %s.pub\n", *out, *out)
 	return nil
 }

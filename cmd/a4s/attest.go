@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"time"
@@ -20,8 +19,8 @@ import (
 // The signing key is read from a file rather than an argument, for the same
 // reason every other key in this CLI is: a command line is visible in shell
 // history and in process listings on a shared host.
-func attest(args []string) error {
-	flags := flag.NewFlagSet("attest", flag.ContinueOnError)
+func (c *cli) attest(args []string) error {
+	flags := c.flagSet("attest")
 	image := flags.String("image", "", "digest-pinned image the statement covers")
 	builder := flags.String("builder", "", "pipeline or person that produced the image")
 	keyPath := flags.String("key", "", "path to the base64 Ed25519 signing key")
@@ -66,7 +65,7 @@ func attest(args []string) error {
 	payload = append(payload, '\n')
 
 	if *out == "" {
-		fmt.Print(string(payload))
+		fmt.Fprint(c.stdout, string(payload))
 		return nil
 	}
 	// An attestation is a public statement, not secret material, so it is
@@ -75,6 +74,6 @@ func attest(args []string) error {
 	if err := os.WriteFile(*out, payload, 0o644); err != nil {
 		return fmt.Errorf("write attestation: %w", err)
 	}
-	fmt.Printf("wrote %s for %s\n", *out, *image)
+	fmt.Fprintf(c.stdout, "wrote %s for %s\n", *out, *image)
 	return nil
 }

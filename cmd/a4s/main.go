@@ -2,69 +2,92 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
 )
 
+// cli is the process boundary every command reads and writes through.
+//
+// Commands take it rather than reaching for os.Stdout directly, so a test can
+// drive the real command code with buffers and assert on exactly what an
+// operator would see. Results go to stdout, where they can be piped; usage and
+// diagnostics go to stderr, so they never contaminate a result.
+type cli struct {
+	stdin  io.Reader
+	stdout io.Writer
+	stderr io.Writer
+}
+
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "a4s:", err)
+	c := &cli{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}
+	if err := c.run(os.Args[1:]); err != nil {
+		fmt.Fprintln(c.stderr, "a4s:", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string) error {
+// flagSet returns a flag set whose usage and parse errors go to this cli's
+// stderr rather than the process's.
+func (c *cli) flagSet(name string) *flag.FlagSet {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	flags.SetOutput(c.stderr)
+	return flags
+}
+
+func (c *cli) run(args []string) error {
 	if len(args) == 0 {
-		usage()
+		c.usage()
 		return fmt.Errorf("command is required")
 	}
 	switch args[0] {
 	case "validate":
-		return validate(args[1:])
+		return c.validate(args[1:])
 	case "simulate":
-		return simulate(args[1:])
+		return c.simulate(args[1:])
 	case "node":
-		return runNode(args[1:])
+		return c.runNode(args[1:])
 	case "server":
-		return runServer(args[1:])
+		return c.runServer(args[1:])
 	case "keygen":
-		return keygen(args[1:])
+		return c.keygen(args[1:])
 	case "keys":
-		return keys(args[1:])
+		return c.keys(args[1:])
 	case "seal":
-		return seal(args[1:])
+		return c.seal(args[1:])
 	case "attest":
-		return attest(args[1:])
+		return c.attest(args[1:])
 	case "explain":
-		return explain(args[1:])
+		return c.explain(args[1:])
 	case "plan":
-		return plan(args[1:])
+		return c.plan(args[1:])
 	case "diagnose":
-		return diagnose(args[1:])
+		return c.diagnose(args[1:])
 	case "approve":
-		return approve(args[1:])
+		return c.approve(args[1:])
 	case "history":
-		return history(args[1:])
+		return c.history(args[1:])
 	case "backup":
-		return backup(args[1:])
+		return c.backup(args[1:])
 	case "restore":
-		return restore(args[1:])
+		return c.restore(args[1:])
 	case "submit":
-		return submit(args[1:])
+		return c.submit(args[1:])
 	case "status":
-		return status(args[1:])
+		return c.status(args[1:])
 	case "events":
-		return remoteEvents(args[1:])
+		return c.remoteEvents(args[1:])
 	case "cordon":
-		return cordon(args[1:])
+		return c.cordon(args[1:])
 	case "standby":
-		return standby(args[1:])
+		return c.standby(args[1:])
 	case "version":
-		return showVersion(args[1:])
+		return c.showVersion(args[1:])
 	case "help", "-h", "--help":
-		usage()
+		c.usage()
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
@@ -79,8 +102,8 @@ func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
-func usage() {
-	fmt.Fprintln(os.Stderr, `a4s - agentic infrastructure control-plane spike
+func (c *cli) usage() {
+	fmt.Fprintln(c.stderr, `a4s - agentic infrastructure control-plane spike
 
 Usage:
   a4s validate --file scenario.json

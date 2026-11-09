@@ -147,8 +147,8 @@ func (f clientFlags) client() (*operatorClient, error) {
 }
 
 // submit sends a goal to a running control plane.
-func submit(args []string) error {
-	flags := flag.NewFlagSet("submit", flag.ContinueOnError)
+func (c *cli) submit(args []string) error {
+	flags := c.flagSet("submit")
 	connection := registerClientFlags(flags)
 	file := flags.String("file", "", "scenario or goal document to submit")
 	if err := flags.Parse(args); err != nil {
@@ -169,7 +169,7 @@ func submit(args []string) error {
 	if _, err := client.do(http.MethodPost, "/v1/goals", goal); err != nil {
 		return err
 	}
-	fmt.Printf("submitted goal %s\n", goal.ID)
+	fmt.Fprintf(c.stdout, "submitted goal %s\n", goal.ID)
 	return nil
 }
 
@@ -197,8 +197,8 @@ func loadGoal(path string) (control.Goal, error) {
 }
 
 // status reports what a running control plane currently holds.
-func status(args []string) error {
-	flags := flag.NewFlagSet("status", flag.ContinueOnError)
+func (c *cli) status(args []string) error {
+	flags := c.flagSet("status")
 	connection := registerClientFlags(flags)
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 	if err := flags.Parse(args); err != nil {
@@ -213,29 +213,29 @@ func status(args []string) error {
 		return err
 	}
 	if *jsonOutput {
-		fmt.Print(string(answer))
+		fmt.Fprint(c.stdout, string(answer))
 		return nil
 	}
 	var reported server.Status
 	if err := json.Unmarshal(answer, &reported); err != nil {
 		return fmt.Errorf("decode status: %w", err)
 	}
-	fmt.Printf("revision %d from %d events: %d goals, %d nodes, %d allocations, %d routes\n",
+	fmt.Fprintf(c.stdout, "revision %d from %d events: %d goals, %d nodes, %d allocations, %d routes\n",
 		reported.Revision, reported.Events, reported.Goals,
 		reported.Nodes, reported.Allocations, reported.Routes)
 	// Printed only when a safeguard is actually holding something back. A line
 	// of zeroes on every healthy cluster would train an operator to skip the
 	// one line that explains a stalled one.
 	if reported.Cordoned > 0 || reported.BackingOff > 0 || reported.Disruptions > 0 {
-		fmt.Printf("holding back: %d/%d nodes schedulable, %d targets in backoff, %d recent disruptions\n",
+		fmt.Fprintf(c.stdout, "holding back: %d/%d nodes schedulable, %d targets in backoff, %d recent disruptions\n",
 			reported.Schedulable, reported.Nodes, reported.BackingOff, reported.Disruptions)
 	}
 	return nil
 }
 
 // remoteEvents queries history from a running server.
-func remoteEvents(args []string) error {
-	flags := flag.NewFlagSet("events", flag.ContinueOnError)
+func (c *cli) remoteEvents(args []string) error {
+	flags := c.flagSet("events")
 	connection := registerClientFlags(flags)
 	goalID := flags.String("goal", "", "restrict to one goal")
 	target := flags.String("target", "", "restrict to one allocation or route")
@@ -285,11 +285,11 @@ func remoteEvents(args []string) error {
 		return fmt.Errorf("decode events: %w", err)
 	}
 	if len(events) == 0 {
-		fmt.Println("no matching events")
+		fmt.Fprintln(c.stdout, "no matching events")
 		return nil
 	}
 	for _, event := range events {
-		fmt.Printf("%02d  %-20s  %-16s  %s\n",
+		fmt.Fprintf(c.stdout, "%02d  %-20s  %-16s  %s\n",
 			event.Sequence, event.Type, event.Actor, event.Message)
 	}
 	return nil

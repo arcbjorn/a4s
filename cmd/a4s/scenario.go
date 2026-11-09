@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 
@@ -11,8 +10,8 @@ import (
 	"github.com/arcbjorn/a4s/eventlog"
 )
 
-func validate(args []string) error {
-	flags := flag.NewFlagSet("validate", flag.ContinueOnError)
+func (c *cli) validate(args []string) error {
+	flags := c.flagSet("validate")
 	file := flags.String("file", "scenario.json", "goal and observed world scenario")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -21,12 +20,12 @@ func validate(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("valid goal %q against %d observed nodes\n", scenario.Goal.ID, len(scenario.World.Nodes))
+	fmt.Fprintf(c.stdout, "valid goal %q against %d observed nodes\n", scenario.Goal.ID, len(scenario.World.Nodes))
 	return nil
 }
 
-func simulate(args []string) error {
-	flags := flag.NewFlagSet("simulate", flag.ContinueOnError)
+func (c *cli) simulate(args []string) error {
+	flags := c.flagSet("simulate")
 	file := flags.String("file", "scenario.json", "goal and observed world scenario")
 	jsonOutput := flags.Bool("json", false, "emit JSON events")
 	maxRounds := flags.Int("max-rounds", 10, "maximum reconciliation rounds")
@@ -50,7 +49,7 @@ func simulate(args []string) error {
 	}
 	runErr := engine.Run(scenario.Goal, *maxRounds)
 	if *jsonOutput {
-		encoder := json.NewEncoder(os.Stdout)
+		encoder := json.NewEncoder(c.stdout)
 		for _, event := range engine.Events {
 			if err := encoder.Encode(event); err != nil {
 				return err
@@ -58,10 +57,10 @@ func simulate(args []string) error {
 		}
 	} else {
 		for _, event := range engine.Events {
-			fmt.Printf("%02d  %-20s  %-16s  %s\n", event.Sequence, event.Type, event.Actor, event.Message)
+			fmt.Fprintf(c.stdout, "%02d  %-20s  %-16s  %s\n", event.Sequence, event.Type, event.Actor, event.Message)
 		}
 		world := executor.World()
-		fmt.Printf("\nworld revision %d: %d allocations, %d routes\n", world.Revision, len(world.Allocations), len(world.Routes))
+		fmt.Fprintf(c.stdout, "\nworld revision %d: %d allocations, %d routes\n", world.Revision, len(world.Allocations), len(world.Routes))
 	}
 	return runErr
 }
