@@ -71,11 +71,7 @@ func loadPublicKey(path string) (ed25519.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read public key: %w", err)
 	}
-	encoded := strings.TrimSpace(string(raw))
-	decoded, err := base64.RawStdEncoding.DecodeString(encoded)
-	if err != nil {
-		decoded, err = base64.StdEncoding.DecodeString(encoded)
-	}
+	decoded, err := decodeBase64(strings.TrimSpace(string(raw)))
 	if err != nil || len(decoded) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("public key must be a base64-encoded Ed25519 public key")
 	}
