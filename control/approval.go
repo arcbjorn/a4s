@@ -41,6 +41,10 @@ const DefaultApprovalLifetime = time.Hour
 // reviewer, not a payload.
 const maxApprovalReason = 512
 
+// maxApprovalSkew is how far ahead of the verifier's clock a grant's issue time
+// may be, to absorb clock disagreement between an operator and the server.
+const maxApprovalSkew = 30 * time.Second
+
 // ApprovalGrant is what an operator signs.
 //
 // It is a separate type from Approval because the two answer different
@@ -142,6 +146,14 @@ func VerifyApproval(signed SignedApproval, keys map[string]ed25519.PublicKey,
 	}
 	if err := validateGrant(grant); err != nil {
 		return ApprovalGrant{}, err
+	}
+	// The lifetime ceiling is measured from IssuedAt, so IssuedAt must not lie
+	// in the future. Otherwise a grant issued ten years ahead with a one-hour
+	// lifetime verifies today and stands for ten years. A little skew is
+	// tolerated, as it is for node evidence, because clocks disagree.
+	if grant.IssuedAt.After(now.Add(maxApprovalSkew)) {
+		return ApprovalGrant{}, fmt.Errorf("approval is issued at %s, in the future",
+			grant.IssuedAt.UTC().Format(time.RFC3339))
 	}
 	if !grant.ExpiresAt.After(now) {
 		return ApprovalGrant{}, fmt.Errorf("approval expired at %s",
