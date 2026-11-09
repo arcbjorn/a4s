@@ -388,3 +388,68 @@ func TestAPIRefusesUnknownBodyFields(t *testing.T) {
 		t.Fatalf("unknown field = %d, want 400", recorder.Code)
 	}
 }
+
+// The nonce ledger is in memory. A mutating request captured before a restart
+// must not be accepted by the restarted server.
+func TestCapturedRequestCannotBeReplayedAfterRestart(t *testing.T) {
+	first, path, key := operatorServer(t)
+	public := key.Public().(ed25519.PublicKey)
+	api := NewAPI(first, APIConfig{})
+	time.Sleep(2 * time.Millisecond)
+	now := time.Now().UTC()
+	cordon, err := SignRequest(RequestEnvelope{
+		Nonce: "captured", Method: http.MethodPost, Path: "/v1/nodes/base/cordon",
+		BodyDigest: BodyDigest(nil), IssuedBy: "arc",
+		IssuedAt: now, ExpiresAt: now.Add(2 * time.Minute),
+	}, "operator-arc", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := issue(t, api, cordon, http.MethodPost, "/v1/nodes/base/cordon", nil); got.Code != http.StatusOK {
+		t.Fatalf("cordon: %d %s", got.Code, got.Body.String())
+	}
+	if got := call(t, api, key, http.MethodPost, "/v1/nodes/base/uncordon", nil); got.Code != http.StatusOK {
+		t.Fatalf("uncordon: %d %s", got.Code, got.Body.String())
+	}
+	first.Close()
+
+	time.Sleep(2 * time.Millisecond)
+	second, err := Open(Config{EventLog: path, Base: baseWorld(),
+		OperatorKeys: map[string]ed25519.PublicKey{"operator-arc": public}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	restarted := NewAPI(second, APIConfig{})
+	got := issue(t, restarted, cordon, http.MethodPost, "/v1/nodes/base/cordon", nil)
+	if got.Code != http.StatusUnauthorized {
+		t.Fatalf("a captured cordon was replayed after restart: %d", got.Code)
+	}
+	if second.World().Nodes["base"].Cordoned {
+		t.Fatal("the replayed cordon took effect")
+	}
+	// A freshly signed request is accepted as normal.
+	if got := call(t, restarted, key, http.MethodPost, "/v1/nodes/base/cordon", nil); got.Code != http.StatusOK {
+		t.Fatalf("a fresh request after restart was refused: %d %s", got.Code, got.Body.String())
+	}
+}
+
+// Reads are exempt: replaying one changes nothing, and refusing them would
+// make a follower's first poll after a primary restart fail for no reason.
+func TestReadSignedBeforeStartupIsAccepted(t *testing.T) {
+	server, _, key := operatorServer(t)
+	now := time.Now().UTC()
+	signed, err := SignRequest(RequestEnvelope{
+		Nonce: "early-read", Method: http.MethodGet, Path: "/v1/status",
+		BodyDigest: BodyDigest(nil), IssuedBy: "arc",
+		IssuedAt: now, ExpiresAt: now.Add(2 * time.Minute),
+	}, "operator-arc", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	api := NewAPI(server, APIConfig{})
+	if got := issue(t, api, signed, http.MethodGet, "/v1/status", nil); got.Code != http.StatusOK {
+		t.Fatalf("a read signed just before startup was refused: %d", got.Code)
+	}
+}
