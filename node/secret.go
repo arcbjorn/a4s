@@ -164,10 +164,17 @@ func (s *Secrets) write(allocation string, ref control.SecretRef, material Secre
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return "", fmt.Errorf("create secret directory: %w", err)
 	}
-	// The mount path is goal-declared and already validated to be absolute and
-	// free of traversal, but joining defensively means a future validation gap
-	// cannot place material outside this allocation's directory.
-	path := filepath.Join(directory, filepath.Base(ref.MountPath))
+	// The file is named for the secret, not for its mount path. Two secrets
+	// may legitimately mount at /etc/api/token and /run/db/token, and naming
+	// files by the path's base name made them the same file: the second
+	// overwrote the first, so the workload read the database token where it
+	// expected the API one. Names are unique per allocation, which control
+	// enforces, and are checked here as one path element so a validation gap
+	// upstream still cannot place material outside this directory.
+	if ref.Name == "" || ref.Name == "." || ref.Name == ".." || filepath.Base(ref.Name) != ref.Name {
+		return "", fmt.Errorf("secret name %q is not a single path element", ref.Name)
+	}
+	path := filepath.Join(directory, ref.Name)
 	if err := os.WriteFile(path, material.Bytes(), 0o400); err != nil {
 		return "", fmt.Errorf("write secret %q: %w", ref.Name, err)
 	}
