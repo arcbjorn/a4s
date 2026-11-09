@@ -178,8 +178,12 @@ func (c *cli) runNode(args []string) error {
 			mounts := secrets.Mounts(allocation)
 			specs := make([]a4snode.SecretMountSpec, 0, len(mounts))
 			for _, mount := range mounts {
+				// The destination is the path the goal declared, not the
+				// node's tmpfs location: a workload looks for its secret
+				// where its own configuration says, and binding it at the
+				// host path left that location empty.
 				specs = append(specs, a4snode.SecretMountSpec{
-					Source: mount.Path, Destination: mount.Path,
+					Source: mount.Path, Destination: mount.MountPath,
 				})
 			}
 			return specs
