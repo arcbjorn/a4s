@@ -201,3 +201,18 @@ func TestAPICordonRequiresAuthenticationAndAWellFormedBody(t *testing.T) {
 		t.Fatalf("unknown node = %d, want 422", missing.Code)
 	}
 }
+
+// A reason long enough to make one record exceed a follower's read limit would
+// stall replication for good, so it is refused at the boundary.
+func TestCordonRefusesOversizedReason(t *testing.T) {
+	server, _, _ := operatorServer(t)
+	if err := server.Cordon("base", strings.Repeat("x", maxCordonReason+1), "arc"); err == nil {
+		t.Fatal("an oversized cordon reason was accepted")
+	}
+	if server.World().Nodes["base"].Cordoned {
+		t.Fatal("the refused cordon took effect")
+	}
+	if err := server.Cordon("base", strings.Repeat("x", maxCordonReason), "arc"); err != nil {
+		t.Fatalf("a reason at the limit was refused: %v", err)
+	}
+}
