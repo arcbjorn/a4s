@@ -510,7 +510,24 @@ func (f *File) Verify() error {
 	if err != nil {
 		return err
 	}
-	return verifyChain(records)
+	if err := verifyChain(records); err != nil {
+		return err
+	}
+	// The chain proves each record follows the one before it, but nothing in
+	// the records says where the chain ends. The chain_head row does, and it is
+	// what an anchor compares against. Without tying it to the last record, an
+	// edit that re-derives every hash after the changed record while leaving
+	// the head row alone would verify here and match the anchor too.
+	tip := Record{}
+	if len(records) > 0 {
+		tip = records[len(records)-1]
+	}
+	if f.head.Sequence != tip.Sequence || f.head.Hash != tip.Hash {
+		return fmt.Errorf(
+			"chain head (%d, %.12s) does not match the last record (%d, %.12s): history was modified outside a4s",
+			f.head.Sequence, f.head.Hash, tip.Sequence, tip.Hash)
+	}
+	return nil
 }
 
 // Head reports the current chain tip. The zero value means an empty log.
