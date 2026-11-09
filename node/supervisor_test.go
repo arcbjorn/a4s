@@ -2,6 +2,8 @@ package node
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"path/filepath"
 	"testing"
 	"time"
@@ -226,5 +228,67 @@ func TestDesiredStateSurvivesRestart(t *testing.T) {
 	entry, ok := reopened.Get("web-0")
 	if !ok || !entry.Running || entry.Image != testImage {
 		t.Fatalf("desired state did not survive restart: %+v ok=%t", entry, ok)
+	}
+}
+
+// stopHookBackend runs a supervision pass at the moment the task exits,
+// before the stop returns to the dispatcher.
+type stopHookBackend struct {
+	supervisedBackend
+	onStop func()
+}
+
+func (b *stopHookBackend) Stop(_ context.Context, id string, _ time.Duration) (BackendStop, error) {
+	state := b.states[id]
+	state.Running = false
+	b.states[id] = state
+	if b.onStop != nil {
+		b.onStop()
+	}
+	return BackendStop{}, nil
+}
+
+// A supervision pass that lands while an authorized stop is in flight must not
+// restart the workload the server is stopping.
+func TestSupervisorDoesNotRestartDuringAuthorizedStop(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired, err := OpenDesiredState(filepath.Join(t.TempDir(), "desired.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &stopHookBackend{supervisedBackend: supervisedBackend{states: map[string]BackendState{}}}
+	runtime := NewContainerRuntime(backend)
+	supervisor := NewSupervisor(runtime, desired)
+	supervisor.Backoff, supervisor.MaxBackoff = 0, 0
+	dispatcher := &Dispatcher{NodeID: "base", Keys: map[string]ed25519.PublicKey{"control-1": public},
+		Runtime: runtime, Ledger: NewMemoryLedger(), Desired: desired, Now: time.Now}
+	if err := desired.Record(DesiredAllocation{ID: "web-0", Workload: "web", Running: true}); err != nil {
+		t.Fatal(err)
+	}
+	backend.states["web-0"] = BackendState{Exists: true, Running: true}
+	backend.onStop = func() {
+		if _, err := supervisor.Reconcile(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}
+
+	envelope := validEnvelope(time.Now().UTC())
+	envelope.Action = control.Action{ID: "stop-web-0", Kind: control.ActionStopAllocation,
+		Target: "web-0", Node: "base"}
+	signed, err := Sign(envelope, "control-1", private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dispatcher.Dispatch(context.Background(), signed); err != nil {
+		t.Fatal(err)
+	}
+	if backend.states["web-0"].Running {
+		t.Fatal("the stop returned success but the supervisor restarted the task")
+	}
+	if backend.starts != 0 {
+		t.Fatalf("the supervisor started the task %d times during its stop", backend.starts)
 	}
 }
