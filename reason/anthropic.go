@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -25,6 +26,11 @@ const anthropicEndpoint = "https://api.anthropic.com/v1/messages"
 
 // anthropicVersion is the API version header every request carries.
 const anthropicVersion = "2023-06-01"
+
+// maxProviderResponse bounds how much of a provider response is read. A
+// diagnosis is a few kilobytes; anything far larger is a misbehaving proxy or
+// provider, and reading it unbounded would let it exhaust the control plane.
+const maxProviderResponse = 1 << 20
 
 // maxDiagnosisTokens bounds one response. A diagnosis is a short list of
 // causes; a larger ceiling would only buy a longer refusal to be concise.
@@ -137,15 +143,26 @@ func (a *Anthropic) Complete(ctx context.Context, prompt string) (string, error)
 	}
 	defer response.Body.Close()
 
-	var decoded anthropicResponse
-	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxProviderResponse+1))
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
 	}
+	if len(raw) > maxProviderResponse {
+		return "", fmt.Errorf("provider response exceeds %d bytes", maxProviderResponse)
+	}
+	// The status is checked before the body is trusted to be JSON. A proxy's
+	// HTML error page would otherwise surface as a decode error and lose the
+	// one fact worth reporting, which is the status.
 	if response.StatusCode != http.StatusOK {
-		if decoded.Error != nil {
-			return "", fmt.Errorf("provider returned %d: %s", response.StatusCode, decoded.Error.Message)
+		var failure anthropicResponse
+		if json.Unmarshal(raw, &failure) == nil && failure.Error != nil {
+			return "", fmt.Errorf("provider returned %d: %s", response.StatusCode, failure.Error.Message)
 		}
 		return "", fmt.Errorf("provider returned %d", response.StatusCode)
+	}
+	var decoded anthropicResponse
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
 	}
 	// A refusal is a definite answer, not a transport failure. It means the
 	// model declined rather than that the provider is unreachable, and either
