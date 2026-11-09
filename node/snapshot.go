@@ -261,9 +261,6 @@ func listSnapshotDirs(dir string) ([]string, error) {
 
 // recentSnapshots returns the `retain` most recently modified snapshots, which
 // the node protects from pruning independently of the controller's ordering.
-
-// recentSnapshots returns the `retain` most recently modified snapshots, which
-// the node protects from pruning independently of the controller's ordering.
 func recentSnapshots(dir string, ids []string, retain int) (map[string]bool, error) {
 	type dated struct {
 		id      string
