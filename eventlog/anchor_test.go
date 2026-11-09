@@ -215,3 +215,13 @@ func TestAnchorRequiresAbsolutePath(t *testing.T) {
 		t.Fatal("a relative anchor path was accepted")
 	}
 }
+
+func TestOpenAnchorRefusesMissingDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unmounted", "anchor.jsonl")
+	if _, err := OpenAnchor(path); err == nil {
+		t.Fatal("an anchor opened in a directory that does not exist")
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+		t.Fatal("OpenAnchor created the missing directory")
+	}
+}
