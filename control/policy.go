@@ -320,6 +320,15 @@ func checkActionScope(goal Goal, world World, action Action) error {
 		!workloadDeclaresVolume(goal, action.Volume.Name) {
 		return fmt.Errorf("volume %q is not declared by goal %q", action.Volume.Name, goal.ID)
 	}
+	if action.Kind == ActionCreateAllocation {
+		// The target is derived, not chosen. Backoff, spread, and replica
+		// accounting are all keyed by this id, so a free-form target could
+		// add replicas beyond the goal or rename one out of its backoff.
+		if want := AllocationID(goal.Workload.Name, action.Replica); action.Target != want {
+			return fmt.Errorf("replica %d must be created as %q, not %q",
+				action.Replica, want, action.Target)
+		}
+	}
 	return nil
 }
 
