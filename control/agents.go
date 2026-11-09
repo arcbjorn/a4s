@@ -336,11 +336,6 @@ func stalePolicies(goal Goal, world World) []Action {
 	if goal.Workload.Policy == nil {
 		return nil
 	}
-	policy := *goal.Workload.Policy
-	if policy.Workload == "" {
-		policy.Workload = goal.Workload.Name
-	}
-	ports := map[string]int{goal.Workload.Name: goal.Workload.Port}
 
 	nodes := make([]string, 0, len(world.Nodes))
 	for id, node := range world.Nodes {
@@ -352,7 +347,7 @@ func stalePolicies(goal Goal, world World) []Action {
 
 	actions := make([]Action, 0, len(nodes))
 	for _, id := range nodes {
-		compiled, err := CompilePolicies(world, ports, []NetworkPolicy{policy}, id)
+		compiled, err := compileGoalPolicy(goal, world, id)
 		if err != nil {
 			// An intent that cannot be compiled is a goal-level error, and the
 			// kernel will report it when the action is validated. Proposing
@@ -399,7 +394,7 @@ func staleZones(goal Goal, world World) []Action {
 
 	actions := make([]Action, 0, len(nodes))
 	for _, id := range nodes {
-		zone := BuildServiceZone(world, ports, id)
+		zone := goalZone(goal, world, id)
 		if len(zone.Records) == 0 {
 			continue
 		}
@@ -510,4 +505,27 @@ func volumeInFlight(goal Goal, world World) string {
 		}
 	}
 	return ""
+}
+
+// compileGoalPolicy renders the ruleset a goal's declared policy implies for
+// one node. The network agent proposes it and the kernel recompiles it to
+// authorize the proposal, so both sides must derive it identically; that is
+// why it lives in one place.
+func compileGoalPolicy(goal Goal, world World, node string) (CompiledPolicy, error) {
+	if goal.Workload.Policy == nil {
+		return CompiledPolicy{}, fmt.Errorf("goal %q declares no network policy", goal.ID)
+	}
+	policy := *goal.Workload.Policy
+	if policy.Workload == "" {
+		policy.Workload = goal.Workload.Name
+	}
+	ports := map[string]int{goal.Workload.Name: goal.Workload.Port}
+	return CompilePolicies(world, ports, []NetworkPolicy{policy}, node)
+}
+
+// goalZone renders the service names a goal publishes to one node, shared by
+// the agent that proposes the zone and the kernel that authorizes it.
+func goalZone(goal Goal, world World, node string) ServiceZone {
+	ports := map[string]int{goal.Workload.Name: goal.Workload.Port}
+	return BuildServiceZone(world, ports, node)
 }
